@@ -1,0 +1,39 @@
+[project]
+name = "pallares-lead-generator"
+version = "0.1.0"
+description = "Commercial exterior cleaning lead discovery for PALLARES (Places + Firecrawl → CSV)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.28.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.7.0",
+  "pyyaml>=6.0.2",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.9.0",
+]
+
+[project.scripts]
+pallares-leads = "pallares_leads.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pallares_leads"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

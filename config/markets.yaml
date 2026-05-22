@@ -1,0 +1,30 @@
+# Central Valley CA markets — add cities as needed
+markets:
+  reedley:
+    city: Reedley
+    state: CA
+    region: central_valley
+  dinuba:
+    city: Dinuba
+    state: CA
+    region: central_valley
+  selma:
+    city: Selma
+    state: CA
+    region: central_valley
+  kingsburg:
+    city: Kingsburg
+    state: CA
+    region: central_valley
+  sanger:
+    city: Sanger
+    state: CA
+    region: central_valley
+  fresno:
+    city: Fresno
+    state: CA
+    region: central_valley
+  visalia:
+    city: Visalia
+    state: CA
+    region: central_valley

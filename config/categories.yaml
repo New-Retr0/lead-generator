@@ -1,0 +1,61 @@
+# Search queries sent to Google Places Text Search (city appended automatically)
+categories:
+  gas_station:
+    label: Gas Station
+    property_type: gas_station
+    queries:
+      - gas station
+      - fuel station
+      - convenience store gas
+
+  fast_food:
+    label: Fast Food Drive-Thru
+    property_type: fast_food
+    queries:
+      - fast food restaurant drive thru
+      - quick service restaurant
+
+  strip_mall:
+    label: Strip Mall / Retail Plaza
+    property_type: strip_mall
+    queries:
+      - strip mall
+      - retail plaza
+      - shopping center
+
+  grocery:
+    label: Grocery-Anchored Center
+    property_type: grocery
+    queries:
+      - grocery store
+      - supermarket
+
+  medical_plaza:
+    label: Medical Plaza
+    property_type: medical_plaza
+    queries:
+      - medical plaza
+      - medical office building
+      - urgent care clinic
+
+  pharmacy:
+    label: Pharmacy
+    property_type: pharmacy
+    queries:
+      - pharmacy
+      - drugstore
+
+  bank:
+    label: Bank / Financial Branch
+    property_type: bank
+    queries:
+      - bank branch
+      - credit union
+
+  property_manager:
+    label: Property Management / CRE
+    property_type: property_manager
+    queries:
+      - commercial property management
+      - property management company
+      - commercial real estate management
