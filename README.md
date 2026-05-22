@@ -19,10 +19,14 @@ copy .env.example .env
 
 ### Google Cloud
 
-1. Create/select a GCP project.
-2. Enable **Places API (New)**.
-3. Create an API key restricted to Places API (New).
-4. Set `GOOGLE_PLACES_API_KEY` in `.env`.
+Full walkthrough: **[docs/GOOGLE-PLACES-SETUP.md](docs/GOOGLE-PLACES-SETUP.md)**
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → create/select project + enable billing.
+2. Enable **Places API (New)** (not legacy Places API).
+3. [Credentials](https://console.cloud.google.com/apis/credentials) → **Create credentials → API key**.
+4. Restrict key to **Places API (New)** only.
+5. Set `GOOGLE_PLACES_API_KEY` in `.env`.
+6. Verify: `pallares-leads doctor`
 
 ## Usage
 

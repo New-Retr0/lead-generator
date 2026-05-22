@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import yaml
 
@@ -10,12 +10,17 @@ class MarketConfig(TypedDict):
     city: str
     state: str
     region: str
+    latitude: NotRequired[float]
+    longitude: NotRequired[float]
+    search_radius_m: NotRequired[int]
 
 
 class CategoryConfig(TypedDict):
     label: str
     property_type: str
     queries: list[str]
+    included_type: NotRequired[str]
+    nearby_types: NotRequired[list[str]]
 
 
 def load_markets(config_dir: Path) -> dict[str, MarketConfig]:

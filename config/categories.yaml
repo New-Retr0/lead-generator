@@ -1,23 +1,34 @@
-# Search queries sent to Google Places Text Search (city appended automatically)
+# Search queries for Text Search (New). Optional Table A filters:
+#   included_type — single type for text search bias (see place-types Table A)
+#   nearby_types — list of types for Nearby Search supplement
 categories:
   gas_station:
     label: Gas Station
     property_type: gas_station
+    included_type: gas_station
+    nearby_types:
+      - gas_station
     queries:
       - gas station
       - fuel station
-      - convenience store gas
 
   fast_food:
     label: Fast Food Drive-Thru
     property_type: fast_food
+    included_type: fast_food_restaurant
+    nearby_types:
+      - fast_food_restaurant
+      - restaurant
     queries:
-      - fast food restaurant drive thru
+      - fast food drive thru
       - quick service restaurant
 
   strip_mall:
     label: Strip Mall / Retail Plaza
     property_type: strip_mall
+    included_type: shopping_mall
+    nearby_types:
+      - shopping_mall
     queries:
       - strip mall
       - retail plaza
@@ -26,6 +37,10 @@ categories:
   grocery:
     label: Grocery-Anchored Center
     property_type: grocery
+    included_type: grocery_store
+    nearby_types:
+      - grocery_store
+      - supermarket
     queries:
       - grocery store
       - supermarket
@@ -33,6 +48,11 @@ categories:
   medical_plaza:
     label: Medical Plaza
     property_type: medical_plaza
+    included_type: doctor
+    nearby_types:
+      - doctor
+      - hospital
+      - medical_lab
     queries:
       - medical plaza
       - medical office building
@@ -41,6 +61,10 @@ categories:
   pharmacy:
     label: Pharmacy
     property_type: pharmacy
+    included_type: pharmacy
+    nearby_types:
+      - pharmacy
+      - drugstore
     queries:
       - pharmacy
       - drugstore
@@ -48,6 +72,9 @@ categories:
   bank:
     label: Bank / Financial Branch
     property_type: bank
+    included_type: bank
+    nearby_types:
+      - bank
     queries:
       - bank branch
       - credit union
@@ -55,6 +82,7 @@ categories:
   property_manager:
     label: Property Management / CRE
     property_type: property_manager
+    # No reliable Table A type — text search only
     queries:
       - commercial property management
       - property management company

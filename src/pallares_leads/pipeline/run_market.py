@@ -4,6 +4,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
+from pallares_leads.config_loader import CategoryConfig, MarketConfig
 from pallares_leads.discover.places import PlacesClient
 from pallares_leads.enrich.contact_extract import (
     exterior_signals,
@@ -84,28 +85,28 @@ def run_market_category(
     *,
     settings: Settings,
     market_key: str,
-    city: str,
-    state: str,
+    market: MarketConfig,
     category_key: str,
-    category_label: str,
-    property_type: str,
-    queries: list[str],
+    category: CategoryConfig,
     discover_only: bool = False,
     dry_run: bool = False,
 ) -> Path | None:
     if dry_run:
-        for q in queries:
-            logger.info("[dry-run] Would search: %r in %s, %s", q, city, state)
+        for q in category["queries"]:
+            logger.info("[dry-run] Text search: %r in %s, %s", q, market["city"], market["state"])
+        nearby = category.get("nearby_types")
+        if nearby:
+            logger.info("[dry-run] Nearby search types: %s", nearby)
+        included = category.get("included_type")
+        if included:
+            logger.info("[dry-run] Text search includedType: %s", included)
         return None
 
     places = PlacesClient(settings)
     raw_leads = places.discover_category(
         market_key=market_key,
-        city=city,
-        state=state,
-        property_type=property_type,
-        lead_category=category_label,
-        queries=queries,
+        market=market,
+        category=category,
     )
     raw_leads = dedupe_by_place_id(raw_leads)
 

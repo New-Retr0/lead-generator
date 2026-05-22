@@ -5,6 +5,7 @@ import logging
 import sys
 
 from pallares_leads.config_loader import load_categories, load_markets
+from pallares_leads.discover.places import PlacesClient
 from pallares_leads.pipeline.run_market import run_market_category
 from pallares_leads.settings import get_settings
 
@@ -26,8 +27,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     market = markets[args.market]
-    city = market["city"]
-    state = market["state"]
 
     if args.all_categories:
         cat_keys = list(categories.keys())
@@ -44,16 +43,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     for cat_key in cat_keys:
-        cat = categories[cat_key]
         run_market_category(
             settings=settings,
             market_key=args.market,
-            city=city,
-            state=state,
+            market=market,
             category_key=cat_key,
-            category_label=cat["label"],
-            property_type=cat["property_type"],
-            queries=cat["queries"],
+            category=categories[cat_key],
             discover_only=args.discover_only,
             dry_run=args.dry_run,
         )
@@ -68,6 +63,29 @@ def cmd_list_config(_args: argparse.Namespace) -> int:
     print("Markets:", ", ".join(sorted(markets)))
     print("Categories:", ", ".join(sorted(categories)))
     return 0
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    settings = get_settings()
+    ok = True
+
+    if not settings.google_places_api_key:
+        print("Places API (New): MISSING — set GOOGLE_PLACES_API_KEY in .env")
+        print("  Setup guide: docs/GOOGLE-PLACES-SETUP.md")
+        ok = False
+    else:
+        client = PlacesClient(settings)
+        places_ok, places_msg = client.health_check()
+        status = "OK" if places_ok else "FAIL"
+        print(f"Places API (New): {status} — {places_msg}")
+        ok = ok and places_ok
+
+    if not settings.firecrawl_api_key:
+        print("Firecrawl: MISSING — set FIRECRAWL_API_KEY in .env (needed for enrichment)")
+    else:
+        print("Firecrawl: configured (not probed — scrape costs credits)")
+
+    return 0 if ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     lst = sub.add_parser("list", help="List configured markets and categories")
     lst.set_defaults(func=cmd_list_config)
+
+    doc = sub.add_parser("doctor", help="Verify API keys and Places API (New) connectivity")
+    doc.set_defaults(func=cmd_doctor)
 
     return parser
 
