@@ -13,13 +13,15 @@ def _find_project_root() -> Path:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
     google_places_api_key: str = ""
     firecrawl_api_key: str = ""
+    google_sheets_spreadsheet_id: str = ""
+    google_service_account_json: str = ""
 
     project_root: Path = _find_project_root()
     config_dir: Path = project_root / "config"

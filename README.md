@@ -14,7 +14,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 copy .env.example .env
-# Add GOOGLE_PLACES_API_KEY and FIRECRAWL_API_KEY to .env
+# Fill in .env — see .env.example for all keys
+# Put the Google service account JSON in secrets/google-service-account.json
 ```
 
 ### Google Cloud

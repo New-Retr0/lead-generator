@@ -1,6 +1,13 @@
+# Environment (never commit real keys)
 .env
 .env.*
 !.env.example
+
+# Google Cloud credentials
+secrets/*
+!secrets/.gitkeep
+
+# Python
 .venv/
 venv/
 __pycache__/
@@ -9,8 +16,17 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Pipeline output
 data/raw/*.jsonl
 data/snapshots/**/*
 data/output/*.csv
 !.gitkeep
+
+# Stray credential files (if saved outside secrets/)
+*-service-acct.json
+pallares-lead-generator-*.json
+service-acct-eml.txt
+service-account-email.txt
 .firecrawl/
+.cursor/
