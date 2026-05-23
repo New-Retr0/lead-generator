@@ -1,6 +1,16 @@
 # Search queries for Text Search (New). Optional Table A filters:
 #   included_type — single type for text search bias (see place-types Table A)
 #   nearby_types — list of types for Nearby Search supplement
+# Per-category enrichment rules (see enrich/contact_requirements.py).
+# min_contact_bar: form < email < phone < labeled_phone
+# require_property_manager_clue: ownership / PM company required for sales
+# always_investigate: run Firecrawl even when Google listing looks complete
+enrichment_defaults:
+  min_contact_bar: phone
+  require_property_manager_clue: false
+  always_investigate: false
+  allow_agent: false
+
 categories:
   gas_station:
     label: Gas Station
@@ -11,6 +21,9 @@ categories:
     queries:
       - gas station
       - fuel station
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
 
   fast_food:
     label: Fast Food Drive-Thru
@@ -22,6 +35,9 @@ categories:
     queries:
       - fast food drive thru
       - quick service restaurant
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
 
   strip_mall:
     label: Strip Mall / Retail Plaza
@@ -32,7 +48,26 @@ categories:
     queries:
       - strip mall
       - retail plaza
+    enrichment:
+      min_contact_bar: labeled_phone
+      require_property_manager_clue: true
+      always_investigate: true
+      allow_agent: true
+
+  shopping_center:
+    label: Shopping Center
+    property_type: shopping_center
+    included_type: shopping_mall
+    nearby_types:
+      - shopping_mall
+    queries:
       - shopping center
+      - retail shopping center
+    enrichment:
+      min_contact_bar: labeled_phone
+      require_property_manager_clue: true
+      always_investigate: true
+      allow_agent: true
 
   grocery:
     label: Grocery-Anchored Center
@@ -44,6 +79,9 @@ categories:
     queries:
       - grocery store
       - supermarket
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
 
   medical_plaza:
     label: Medical Plaza
@@ -57,6 +95,9 @@ categories:
       - medical plaza
       - medical office building
       - urgent care clinic
+    enrichment:
+      min_contact_bar: labeled_phone
+      allow_agent: true
 
   pharmacy:
     label: Pharmacy
@@ -68,6 +109,9 @@ categories:
     queries:
       - pharmacy
       - drugstore
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
 
   bank:
     label: Bank / Financial Branch
@@ -78,12 +122,93 @@ categories:
     queries:
       - bank branch
       - credit union
+    enrichment:
+      franchise_fast_path: true
+
+  industrial:
+    label: Industrial / Warehouse Storefront
+    property_type: industrial
+    queries:
+      - industrial park
+      - warehouse commercial
+      - light industrial building
+
+  big_box:
+    label: Big Box Retail
+    property_type: big_box
+    included_type: department_store
+    nearby_types:
+      - department_store
+      - home_improvement_store
+    queries:
+      - big box retail
+      - home depot style store
+      - department store
+    enrichment:
+      suggest_recurring: true
+
+  auto_dealer:
+    label: Auto Dealership
+    property_type: auto_dealer
+    included_type: car_dealer
+    nearby_types:
+      - car_dealer
+      - car_repair
+    queries:
+      - car dealership
+      - auto dealer
+      - auto mall
+    enrichment:
+      min_contact_bar: phone
+
+  dollar_store:
+    label: Dollar / Discount Store
+    property_type: dollar_store
+    included_type: store
+    nearby_types:
+      - store
+      - department_store
+    queries:
+      - dollar store
+      - discount store
+      - dollar general
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
+
+  restaurant:
+    label: Sit-Down Restaurant
+    property_type: restaurant
+    included_type: restaurant
+    nearby_types:
+      - restaurant
+    queries:
+      - restaurant
+      - family restaurant
+
+  parking:
+    label: Parking Structure / Lot
+    property_type: parking
+    queries:
+      - parking garage
+      - parking lot commercial
+      - park and ride lot
+
+  hoa:
+    label: HOA / Homeowners Association Office
+    property_type: hoa
+    queries:
+      - homeowners association office
+      - HOA management office
 
   property_manager:
-    label: Property Management / CRE
+    label: Commercial Property Manager
     property_type: property_manager
-    # No reliable Table A type — text search only
+    # No reliable Table A type — text search only (run at county level via campaign.yaml)
     queries:
       - commercial property management
       - property management company
       - commercial real estate management
+    enrichment:
+      min_contact_bar: labeled_phone
+      always_investigate: true

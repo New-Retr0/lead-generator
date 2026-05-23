@@ -235,6 +235,7 @@ class PlacesClient:
         market_key: str,
         market: MarketConfig,
         category: CategoryConfig,
+        limit: int | None = None,
     ) -> list[RawLead]:
         city = market["city"]
         state = market["state"]
@@ -263,6 +264,18 @@ class PlacesClient:
             except httpx.HTTPStatusError as exc:
                 logger.error("Nearby search failed: %s", exc.response.text[:300])
 
+        if limit and len(leads) >= limit:
+            logger.info(
+                "Discovered %d places (limit %d) for %s / %s in %s, %s",
+                len(leads[:limit]),
+                limit,
+                market_key,
+                property_type,
+                city,
+                state,
+            )
+            return leads[:limit]
+
         for query in queries:
             page_token: str | None = None
             for page in range(MAX_PAGES):
@@ -288,10 +301,19 @@ class PlacesClient:
                     leads=leads,
                 )
 
+                if limit and len(leads) >= limit:
+                    break
+
                 page_token = payload.get("nextPageToken")
                 if not page_token:
                     break
                 time.sleep(PAGE_DELAY_S)
+
+            if limit and len(leads) >= limit:
+                break
+
+        if limit and len(leads) > limit:
+            leads = leads[:limit]
 
         logger.info(
             "Discovered %d unique places for %s / %s in %s, %s",

@@ -8,6 +8,95 @@ _US_PHONE = re.compile(
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _ZIP = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 
+_PLACEHOLDER_PHRASES = frozenset({
+    "not specified",
+    "not found",
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "unavailable",
+    "tbd",
+    "see website",
+})
+
+
+def phone_digits(raw: str | None) -> str:
+    if not raw:
+        return ""
+    digits = re.sub(r"\D", "", raw.strip())
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits
+
+
+def is_placeholder_phone(raw: str | None) -> bool:
+    if not raw:
+        return True
+    text = raw.strip().lower()
+    if not text or text in _PLACEHOLDER_PHRASES:
+        return True
+    if any(phrase in text for phrase in _PLACEHOLDER_PHRASES if len(phrase) > 3):
+        return True
+
+    digits = phone_digits(raw)
+    if len(digits) != 10:
+        return True
+
+    area, exchange, line = digits[:3], digits[3:6], digits[6:]
+    if area in {"000", "111", "555"} or exchange in {"000", "555"}:
+        return True
+    if digits in {"1234567890", "0123456789", "0000000000"}:
+        return True
+    if len(set(digits)) == 1:
+        return True
+    return False
+
+
+def is_valid_phone_format(raw: str | None) -> bool:
+    return len(phone_digits(raw)) == 10
+
+
+def phone_quality_score(
+    raw: str | None,
+    *,
+    source: str = "scrape",
+    labeled: bool = False,
+) -> int:
+    """Higher is better. Google Places > labeled scrape > unlabeled scrape."""
+    if is_placeholder_phone(raw) or not is_valid_phone_format(raw):
+        return 0
+    if source == "google":
+        return 4
+    if labeled:
+        return 3
+    return 2
+
+
+def pick_best_phone(
+    google_phone: str | None,
+    *candidates: tuple[str | None, str, bool],
+) -> str | None:
+    """Pick highest-quality callable phone; never downgrade from Google to worse scrape."""
+    best_phone: str | None = None
+    best_score = 0
+
+    if google_phone and not is_placeholder_phone(google_phone):
+        google_score = phone_quality_score(google_phone, source="google")
+        best_phone = normalize_phone(google_phone) or google_phone.strip()
+        best_score = google_score
+
+    for phone, source, labeled in candidates:
+        if not phone or is_placeholder_phone(phone):
+            continue
+        score = phone_quality_score(phone, source=source, labeled=labeled)
+        if score > best_score:
+            normalized = normalize_phone(phone) or phone.strip()
+            best_phone = normalized
+            best_score = score
+
+    return best_phone
+
 
 def normalize_phone(raw: str | None) -> str | None:
     if not raw:

@@ -49,3 +49,10 @@ markets:
     latitude: 36.3302
     longitude: -119.2921
     search_radius_m: 20000
+  fresno_county:
+    city: Fresno County
+    state: CA
+    region: central_valley
+    latitude: 36.7378
+    longitude: -119.7871
+    search_radius_m: 80000

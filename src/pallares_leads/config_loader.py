@@ -23,6 +23,13 @@ class CategoryConfig(TypedDict):
     nearby_types: NotRequired[list[str]]
 
 
+class CampaignConfig(TypedDict):
+    description: str
+    markets: list[str]
+    categories: list[str]
+    county_overrides: NotRequired[dict[str, str]]
+
+
 def load_markets(config_dir: Path) -> dict[str, MarketConfig]:
     path = config_dir / "markets.yaml"
     with path.open(encoding="utf-8") as f:
@@ -41,3 +48,13 @@ def load_categories(config_dir: Path) -> dict[str, CategoryConfig]:
     if not isinstance(categories, dict):
         raise ValueError("categories.yaml: expected 'categories' mapping")
     return categories
+
+
+def load_campaigns(config_dir: Path) -> dict[str, CampaignConfig]:
+    path = config_dir / "campaign.yaml"
+    with path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    campaigns = data.get("campaigns", {})
+    if not isinstance(campaigns, dict):
+        raise ValueError("campaign.yaml: expected 'campaigns' mapping")
+    return campaigns

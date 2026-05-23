@@ -99,15 +99,42 @@ def property_manager_clues(markdown: str) -> str | None:
     return None
 
 
+_PROPERTY_SURFACE_DEFAULTS: dict[str, list[str]] = {
+    "gas_station": ["parking lot", "canopy/pump island", "concrete"],
+    "fast_food": ["drive-thru lane", "storefront", "parking lot"],
+    "strip_mall": ["parking lot", "storefronts", "dumpster enclosure"],
+    "shopping_center": ["parking lot", "main entries", "dumpster areas"],
+    "grocery": ["parking lot", "storefront", "cart corrals"],
+    "medical_plaza": ["parking lot", "building facade", "entries"],
+    "pharmacy": ["storefront", "parking lot", "drive-through"],
+    "bank": ["storefront", "drive-through lane", "walkways"],
+    "big_box": ["parking lot", "storefront", "loading dock area"],
+    "restaurant": ["patio/storefront", "parking lot", "entries"],
+    "property_manager": ["multi-tenant properties", "parking lots", "storefronts"],
+    "auto_dealer": ["showroom facade", "lot/concrete", "service drive"],
+    "dollar_store": ["storefront", "parking lot", "entries"],
+}
+
+
 def exterior_signals(markdown: str, property_type: str) -> str:
     signals: list[str] = []
     text = markdown.lower()
-    if "drive-thru" in text or "drive through" in text or "drive thru" in text:
-        signals.append("drive-thru")
-    if "canopy" in text or "awning" in text:
-        signals.append("canopy/awning")
-    if "parking lot" in text or "strip mall" in text or "retail center" in text:
-        signals.append("retail/parking exposure")
-    if property_type in {"gas_station", "fast_food", "strip_mall", "grocery"}:
+    keyword_map = {
+        "drive-thru": ("drive-thru", "drive through", "drive thru"),
+        "canopy/awning": ("canopy", "awning"),
+        "parking lot/concrete": ("parking lot", "concrete", "asphalt"),
+        "dumpster enclosure": ("dumpster", "enclosure", "trash area"),
+        "storefront/facade": ("storefront", "facade", "exterior wall"),
+        "oil stains": ("oil stain", "fuel spill"),
+        "signage": ("signage", "monument sign"),
+    }
+    for label, terms in keyword_map.items():
+        if any(term in text for term in terms):
+            signals.append(label)
+
+    for default in _PROPERTY_SURFACE_DEFAULTS.get(property_type, []):
+        signals.append(f"service:{default}")
+
+    if property_type:
         signals.append(f"category:{property_type}")
     return ", ".join(dict.fromkeys(signals))

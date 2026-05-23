@@ -21,6 +21,8 @@ __pycache__/
 data/raw/*.jsonl
 data/snapshots/**/*
 data/output/*.csv
+data/pallares.db
+data/evals/
 !.gitkeep
 
 # Stray credential files (if saved outside secrets/)
