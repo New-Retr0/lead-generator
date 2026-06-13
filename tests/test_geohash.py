@@ -1,5 +1,5 @@
-from pallares_leads.schemas import RawLead
 from pallares_leads.pipeline.dedupe import dedupe_by_geohash
+from pallares_leads.schemas import RawLead
 from pallares_leads.utils.geohash import encode_geohash
 
 

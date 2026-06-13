@@ -4,7 +4,13 @@ import csv
 import logging
 from dataclasses import dataclass, field
 
-from pallares_leads.config_loader import CampaignConfig, CategoryConfig, MarketConfig, load_campaigns, load_categories, load_markets
+from pallares_leads.config_loader import (
+    CampaignConfig,
+    MarketConfig,
+    load_campaigns,
+    load_categories,
+    load_markets,
+)
 from pallares_leads.db.store import LeadStore
 from pallares_leads.pipeline.export_sheets import export_sheets, sheets_configured
 from pallares_leads.pipeline.run_market import run_market_category
@@ -138,7 +144,9 @@ def run_campaign(
         for market_key, category_key in jobs:
             if category_key not in categories:
                 summary.results.append(
-                    CampaignRunResult(market_key, category_key, 0, error=f"Unknown category {category_key!r}")
+                    CampaignRunResult(
+                        market_key, category_key, 0, error=f"Unknown category {category_key!r}"
+                    )
                 )
                 continue
 

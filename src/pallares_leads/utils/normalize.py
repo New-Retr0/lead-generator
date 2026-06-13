@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import re
 
-_US_PHONE = re.compile(
-    r"(?:\+1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}"
-)
+_US_PHONE = re.compile(r"(?:\+1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}")
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _ZIP = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 
-_PLACEHOLDER_PHRASES = frozenset({
-    "not specified",
-    "not found",
-    "unknown",
-    "n/a",
-    "na",
-    "none",
-    "unavailable",
-    "tbd",
-    "see website",
-})
+_PLACEHOLDER_PHRASES = frozenset(
+    {
+        "not specified",
+        "not found",
+        "unknown",
+        "n/a",
+        "na",
+        "none",
+        "unavailable",
+        "tbd",
+        "see website",
+    }
+)
 
 
 def phone_digits(raw: str | None) -> str:
@@ -43,7 +43,7 @@ def is_placeholder_phone(raw: str | None) -> bool:
     if len(digits) != 10:
         return True
 
-    area, exchange, line = digits[:3], digits[3:6], digits[6:]
+    area, exchange, _line = digits[:3], digits[3:6], digits[6:]
     if area in {"000", "111", "555"} or exchange in {"000", "555"}:
         return True
     if digits in {"1234567890", "0123456789", "0000000000"}:
@@ -109,7 +109,9 @@ def normalize_phone(raw: str | None) -> str | None:
     return f"({digits[0:3]}) {digits[3:6]}-{digits[6:10]}"
 
 
-def parse_city_state_zip(formatted_address: str, fallback_city: str, fallback_state: str) -> tuple[str, str, str]:
+def parse_city_state_zip(
+    formatted_address: str, fallback_city: str, fallback_state: str
+) -> tuple[str, str, str]:
     """Best-effort parse from Google formatted address."""
     city = fallback_city
     state = fallback_state
@@ -140,14 +142,30 @@ def normalize_website(url: str | None) -> str | None:
 
 
 def extract_phones(text: str) -> list[str]:
+    return [phone for phone, _pos in extract_phones_with_positions(text)]
+
+
+def extract_phones_with_positions(text: str) -> list[tuple[str, int]]:
+    """Normalized phones with the char offset of their first occurrence."""
     seen: set[str] = set()
-    phones: list[str] = []
-    for match in _US_PHONE.findall(text):
-        normalized = normalize_phone(match)
+    phones: list[tuple[str, int]] = []
+    for match in _US_PHONE.finditer(text):
+        normalized = normalize_phone(match.group())
         if normalized and normalized not in seen:
             seen.add(normalized)
-            phones.append(normalized)
+            phones.append((normalized, match.start()))
     return phones
+
+
+def extract_emails_with_positions(text: str) -> list[tuple[str, int]]:
+    seen: set[str] = set()
+    emails: list[tuple[str, int]] = []
+    for match in _EMAIL.finditer(text):
+        lower = match.group().lower()
+        if lower not in seen and not lower.endswith((".png", ".jpg", ".gif", ".svg")):
+            seen.add(lower)
+            emails.append((lower, match.start()))
+    return emails
 
 
 def extract_emails(text: str) -> list[str]:
@@ -165,3 +183,8 @@ def slugify(value: str) -> str:
     value = value.lower().strip()
     value = re.sub(r"[^\w\s-]", "", value)
     return re.sub(r"[-\s]+", "-", value).strip("-")
+
+
+def normalize_entity_name(name: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+    return re.sub(r"\s+", " ", cleaned)

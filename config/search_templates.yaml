@@ -1,0 +1,9 @@
+# Firecrawl search query templates — {field} placeholders filled at runtime.
+templates:
+  website_discovery: "{business_name} {city} {state} official website contact"
+  contact_gap_corporate: "site:{host} {city} phone contact"
+  contact_gap_local: '"{business_name}" {city} {state} phone contact'
+  map_contact_search: "contact leasing management facilities about team"
+  bbb_profile: 'site:bbb.org "{business_name}" {city} {state}'
+  license_lookup: 'site:{serp_site} "{business_name}" {city} {state} real estate broker license'
+  linkedin_person_discovery: 'site:linkedin.com/in "{company_name}" property manager {city}'

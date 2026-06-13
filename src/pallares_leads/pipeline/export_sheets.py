@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from pallares_leads.enrich.domain_verify import scrub_unverified_website
+from pallares_leads.resolve.lead_score import compute_lead_score
 from pallares_leads.schemas import EnrichedLead, SalesExportRow
 from pallares_leads.settings import Settings
 
@@ -28,6 +29,7 @@ SHEET_FONT_SIZE = 12
 SHEETS_HEADERS: list[str] = [
     "Addressed",
     "Confidence",
+    "Score",
     "Status",
     "Date",
     "Business",
@@ -49,6 +51,7 @@ SHEETS_HEADERS: list[str] = [
 _FIELD_TO_HEADER: dict[str, str] = {
     "addressed": "Addressed",
     "confidence": "Confidence",
+    "score": "Score",
     "status": "Status",
     "date": "Date",
     "business": "Business",
@@ -70,6 +73,7 @@ _FIELD_TO_HEADER: dict[str, str] = {
 COLUMN_WIDTHS: list[int] = [
     110,  # Addressed
     115,  # Confidence
+    80,  # Score
     130,  # Status
     100,  # Date
     200,  # Business
@@ -81,8 +85,8 @@ COLUMN_WIDTHS: list[int] = [
     260,  # Why Call
     340,  # Talking Points
     180,  # Exterior Notes
-    90,   # Website
-    90,   # Maps
+    90,  # Website
+    90,  # Maps
     220,  # Notes
     120,  # _place_id (hidden)
 ]
@@ -90,11 +94,12 @@ COLUMN_WIDTHS: list[int] = [
 # Column indices for typed / aligned formatting
 COL_CHECKBOX = 0
 COL_CONFIDENCE = 1
-COL_STATUS = 2
-COL_DATE = 3
-COL_PHONE = 8
-COL_WEBSITE = 13
-COL_MAPS = 14
+COL_SCORE = 2
+COL_STATUS = 3
+COL_DATE = 4
+COL_PHONE = 9
+COL_WEBSITE = 14
+COL_MAPS = 15
 LINK_COLUMNS = (COL_WEBSITE, COL_MAPS)
 HEADER_ROW_HEIGHT = 42
 DATA_ROW_HEIGHT = 28
@@ -115,6 +120,7 @@ def _column_ranges_excluding(skip: set[int], col_count: int) -> list[tuple[int, 
     if start < col_count:
         ranges.append((start, col_count))
     return ranges
+
 
 _SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 
@@ -162,15 +168,28 @@ def _safe_sheet_text(value: str) -> str:
     return text
 
 
+from pallares_leads.utils.safe_url import is_safe_http_url
+
+
 def _hyperlink(url: str, label: str) -> str:
-    if not url or url.startswith("="):
+    if not url or url.startswith("=") or not is_safe_http_url(url):
         return ""
     escaped = url.replace('"', '""')
     return f'=HYPERLINK("{escaped}","{label}")'
 
 
-def row_to_values(lead: EnrichedLead) -> list[str]:
+def _is_vendor_lead(lead: EnrichedLead) -> bool:
+    return str(lead.property_type or "").lower().startswith("vendor")
+
+
+def row_to_values(
+    lead: EnrichedLead,
+    *,
+    addressed: bool | None = None,
+    crm_status: str = "New",
+) -> list[str]:
     export = SalesExportRow.from_enriched(lead)
+    export.status = crm_status
     data = export.model_dump()
 
     link_labels = {
@@ -181,7 +200,10 @@ def row_to_values(lead: EnrichedLead) -> list[str]:
     values: list[str] = []
     for header in SHEETS_HEADERS:
         if header == CHECKBOX_HEADER:
-            values.append("")
+            if addressed is True:
+                values.append("TRUE")
+            else:
+                values.append("")
             continue
 
         if header in link_labels:
@@ -318,6 +340,23 @@ class SheetsExporter:
             logger.info("Removed %d stale sheet column(s)", grid_cols - col_count)
         except HttpError as exc:
             logger.warning("Could not trim stale sheet columns: %s", exc.reason)
+
+    def _read_addressed_by_place_id(self, header: list[str]) -> dict[str, bool]:
+        """Map place_id → Addressed checkbox state for rewrite preservation."""
+        if PLACE_ID_HEADER not in header or CHECKBOX_HEADER not in header:
+            return {}
+        addressed_idx = header.index(CHECKBOX_HEADER)
+        place_idx = header.index(PLACE_ID_HEADER)
+        result: dict[str, bool] = {}
+        for row in self._read_data_grid():
+            place_id = row[place_idx].strip() if len(row) > place_idx else ""
+            if not place_id:
+                continue
+            addressed = ""
+            if addressed_idx < len(row):
+                addressed = str(row[addressed_idx]).strip().upper()
+            result[place_id] = addressed in ("TRUE", "YES", "1", "X")
+        return result
 
     def _read_existing_place_ids(self, header: list[str]) -> set[str]:
         if PLACE_ID_HEADER not in header or BUSINESS_NAME_HEADER not in header:
@@ -522,6 +561,7 @@ class SheetsExporter:
         for col_idx in (
             COL_CHECKBOX,
             COL_CONFIDENCE,
+            COL_SCORE,
             COL_STATUS,
             COL_DATE,
             *LINK_COLUMNS,
@@ -812,10 +852,10 @@ class SheetsExporter:
                                 "endColumnIndex": len(SHEETS_HEADERS),
                             },
                             "sortSpecs": [
-                                {"dimensionIndex": 5, "sortOrder": "ASCENDING"},  # Category
-                                {"dimensionIndex": 6, "sortOrder": "ASCENDING"},  # City
-                                {"dimensionIndex": 4, "sortOrder": "ASCENDING"},  # Business
-                                {"dimensionIndex": 1, "sortOrder": "DESCENDING"},  # Confidence
+                                {"dimensionIndex": 6, "sortOrder": "ASCENDING"},  # Category
+                                {"dimensionIndex": 2, "sortOrder": "DESCENDING"},  # Score
+                                {"dimensionIndex": 7, "sortOrder": "ASCENDING"},  # City
+                                {"dimensionIndex": 5, "sortOrder": "ASCENDING"},  # Business
                             ],
                         }
                     }
@@ -823,15 +863,45 @@ class SheetsExporter:
             },
         ).execute()
 
-    def export_leads(self, leads: list[EnrichedLead], *, rewrite: bool = False) -> int:
+    def export_leads(
+        self,
+        leads: list[EnrichedLead],
+        *,
+        rewrite: bool = False,
+        min_score: int | None = None,
+        crm_status_map: dict[str, str] | None = None,
+    ) -> int:
         if not leads:
             return 0
+
+        status_map = crm_status_map or {}
+
+        threshold = self._settings.min_export_score if min_score is None else min_score
+        exportable = [
+            lead
+            for lead in leads
+            if (lead.lead_score if lead.lead_score is not None else compute_lead_score(lead))
+            >= threshold
+        ]
+        exportable = [lead for lead in exportable if not _is_vendor_lead(lead)]
+        skipped = len(leads) - len(exportable)
+        if skipped:
+            logger.info(
+                "Google Sheets: skipped %d lead(s) below min_export_score=%d",
+                skipped,
+                threshold,
+            )
+        if not exportable:
+            return 0
+        leads = exportable
 
         sheet_id, tab = self._resolve_sheet()
         self._ensure_headers(sheet_id)
 
         header = self._read_header_row()
+        addressed_map: dict[str, bool] = {}
         if rewrite:
+            addressed_map = self._read_addressed_by_place_id(header)
             self._clear_data_rows()
             self._trim_trailing_columns(sheet_id)
             existing: set[str] = set()
@@ -842,16 +912,27 @@ class SheetsExporter:
 
         new_leads = [lead for lead in leads if lead.place_id not in existing]
         if not new_leads and not rewrite:
-            logger.info("Google Sheets: all %d leads already present — nothing to write", len(leads))
+            logger.info(
+                "Google Sheets: all %d leads already present — nothing to write", len(leads)
+            )
             self._apply_sheet_formatting(sheet_id, data_rows=start_row + 5, full_setup=True)
             return 0
 
         if rewrite:
             new_leads = [scrub_unverified_website(lead, verify_evidence=False) for lead in leads]
         else:
-            new_leads = [scrub_unverified_website(lead, verify_evidence=False) for lead in new_leads]
+            new_leads = [
+                scrub_unverified_website(lead, verify_evidence=False) for lead in new_leads
+            ]
 
-        values = [row_to_values(lead) for lead in new_leads]
+        values = [
+            row_to_values(
+                lead,
+                addressed=addressed_map.get(lead.place_id) if rewrite else None,
+                crm_status=status_map.get(lead.place_id, "New"),
+            )
+            for lead in new_leads
+        ]
         self._write_rows(tab, start_row, values)
         end_row = start_row + len(values) - 1
         self._apply_row_checkboxes(sheet_id, start_row, end_row)
@@ -877,8 +958,20 @@ class SheetsExporter:
         return len(new_leads)
 
 
-def export_sheets(leads: list[EnrichedLead], settings: Settings, *, rewrite: bool = False) -> int:
-    return SheetsExporter(settings).export_leads(leads, rewrite=rewrite)
+def export_sheets(
+    leads: list[EnrichedLead],
+    settings: Settings,
+    *,
+    rewrite: bool = False,
+    min_score: int | None = None,
+    crm_status_map: dict[str, str] | None = None,
+) -> int:
+    return SheetsExporter(settings).export_leads(
+        leads,
+        rewrite=rewrite,
+        min_score=min_score,
+        crm_status_map=crm_status_map,
+    )
 
 
 def import_feedback_from_sheets(settings: Settings) -> list[dict[str, str]]:
@@ -886,7 +979,7 @@ def import_feedback_from_sheets(settings: Settings) -> list[dict[str, str]]:
     if not sheets_configured(settings):
         raise ValueError("Google Sheets not configured")
     exporter = SheetsExporter(settings)
-    sheet_id, _tab = exporter._resolve_sheet()
+    _sheet_id, tab = exporter._resolve_sheet()
     header = exporter._read_header_row()
     if not header:
         return []
@@ -894,10 +987,15 @@ def import_feedback_from_sheets(settings: Settings) -> list[dict[str, str]]:
     try:
         col_count = len(header)
         end_col = _col_letter(col_count - 1)
-        result = exporter._service.spreadsheets().values().get(
-            spreadsheetId=sheet_id,
-            range=f"{_sheet_tab(settings)}!A2:{end_col}",
-        ).execute()
+        result = (
+            exporter._service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=exporter._spreadsheet_id,
+                range=f"{tab}!A2:{end_col}",
+            )
+            .execute()
+        )
     except HttpError as exc:
         raise ValueError(f"Failed to read sheet: {exc}") from exc
 

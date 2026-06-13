@@ -6,9 +6,7 @@ from pallares_leads.enrich.sales_copy import (
     SalesCopyResult,
     build_research_context,
     gateway_configured,
-    is_generic_copy,
     maybe_enrich_sales_copy,
-    needs_sales_copy,
 )
 from pallares_leads.schemas import EnrichedLead, RawLead
 from pallares_leads.settings import Settings

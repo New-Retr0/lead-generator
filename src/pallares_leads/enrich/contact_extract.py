@@ -4,8 +4,11 @@ import logging
 import re
 from urllib.parse import urljoin, urlparse
 
-from pallares_leads.schemas import ExtractedContact, RawLead
-from pallares_leads.utils.normalize import extract_emails, extract_phones
+from pallares_leads.schemas import ExtractedContact
+from pallares_leads.utils.normalize import (
+    extract_emails_with_positions,
+    extract_phones_with_positions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +30,64 @@ def candidate_paths(base_url: str) -> list[str]:
     return [urljoin(origin + "/", p.lstrip("/")) if p else origin for p in paths]
 
 
+# A role keyword and a phone/email only form a labeled contact when they appear
+# within this many characters of each other — never pair "first phone on the page".
+PAIRING_WINDOW_CHARS = 250
+
+
+def _window_quote(text: str, center: int, *, span: int = PAIRING_WINDOW_CHARS) -> str:
+    start = max(0, center - span)
+    end = min(len(text), center + span)
+    return " ".join(text[start:end].split()).strip()
+
+
 def extract_contacts_from_markdown(markdown: str, source_url: str) -> list[ExtractedContact]:
+    """Deterministic contact extraction with proximity-window pairing.
+
+    Role-labeled contacts are emitted only when the role keyword and the phone/email
+    occur within PAIRING_WINDOW_CHARS of each other; the surrounding window is kept
+    as the provenance quote. Everything else degrades honestly to generic facts.
+    """
     contacts: list[ExtractedContact] = []
-    phones = extract_phones(markdown)
-    emails = extract_emails(markdown)
+    phone_positions = extract_phones_with_positions(markdown)
+    email_positions = extract_emails_with_positions(markdown)
+    emails = [e for e, _ in email_positions]
 
     for role_key, pattern in ROLE_PATTERNS:
-        if pattern.search(markdown):
-            contacts.append(
-                ExtractedContact(
-                    contact_type=role_key,
-                    role=role_key.replace("_", " ").title(),
-                    phone=phones[0] if phones else None,
-                    email_or_form=emails[0] if emails else None,
-                    source_url=source_url,
-                )
+        match = pattern.search(markdown)
+        if not match:
+            continue
+        role_pos = match.start()
+
+        near_phone = next(
+            (
+                p
+                for p, pos in phone_positions
+                if pos >= 0 and abs(pos - role_pos) <= PAIRING_WINDOW_CHARS
+            ),
+            None,
+        )
+        near_email = next(
+            (
+                e
+                for e, pos in email_positions
+                if pos >= 0 and abs(pos - role_pos) <= PAIRING_WINDOW_CHARS
+            ),
+            None,
+        )
+        if not near_phone and not near_email:
+            continue  # role keyword exists but no contact info nearby — do not guess
+
+        contacts.append(
+            ExtractedContact(
+                contact_type=role_key,
+                role=role_key.replace("_", " ").title(),
+                phone=near_phone,
+                email_or_form=near_email,
+                source_url=source_url,
+                quote=_window_quote(markdown, role_pos),
             )
+        )
 
     if CONTACT_FORM_HINTS.search(markdown):
         contacts.append(
@@ -54,23 +99,30 @@ def extract_contacts_from_markdown(markdown: str, source_url: str) -> list[Extra
             )
         )
 
-    if phones and not contacts:
+    paired_phones = {c.phone for c in contacts if c.phone}
+    for phone, pos in phone_positions:
+        if phone in paired_phones:
+            continue
         contacts.append(
             ExtractedContact(
                 contact_type="generic_phone",
                 role="Business phone",
-                phone=phones[0],
+                phone=phone,
                 source_url=source_url,
+                quote=_window_quote(markdown, max(pos, 0), span=120),
             )
         )
+        break  # one generic phone fact is enough
 
-    if emails and not any(c.email_or_form for c in contacts):
+    if emails and not any(c.email_or_form and "@" in (c.email_or_form or "") for c in contacts):
+        email, pos = email_positions[0]
         contacts.append(
             ExtractedContact(
                 contact_type="generic_email",
                 role="Business email",
-                email_or_form=emails[0],
+                email_or_form=email,
                 source_url=source_url,
+                quote=_window_quote(markdown, max(pos, 0), span=120),
             )
         )
 

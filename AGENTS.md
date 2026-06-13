@@ -1,28 +1,29 @@
 ## Learned User Preferences
 
+- Primary business goal: maximize verified decision-maker callable leads for sales outreach (10% commission on closed deals); quality right-person phones beat raw volume.
 - Primary Google Sheets consumer is a sales friend doing outreach — keep exports sales-focused, not dev/audit columns.
-- Prefer hybrid Firecrawl enrichment: Map → targeted scrape/extract first; relational profile reuse for franchise locations; Agent only when contact gaps remain after cheaper tiers.
-- Enrichment behavior belongs in `config/categories.yaml`, not hardcoded per-category logic in Python.
-- Minimize relational duplication — reuse learned enrichment playbooks for franchise locations and repeated property-management companies instead of re-running full Firecrawl.
-- Google Sheets must auto-format on every export (Exo 2, 12pt, bold, column widths, wrap, hyperlinks) without manual resizing.
-- Include talking points and "Why Call" notes for sales; avoid generic fallback boilerplate in exported text.
-- Callable contacts with phone numbers and role labels matter more than separate Property Manager or Role columns for most leads.
-- Do not duplicate Website with a Source column; drop unnecessary right-side audit columns from the sales export.
-- Column A "Addressed" checkbox must persist across re-imports (match rows by place id, do not overwrite checked state).
+- Single-pass lead generation — no separate enrich pipeline; discovery and enrichment run together per place (`skip_known` default).
+- Vendor leads (`vendor_` category prefix) are distinct from client targets — CRM Vendors tab in dashboard, never Google Sheets export.
+- State licensing/registry lookups must be config-driven per state (`config/licensing.yaml`, `config/jurisdictions.yaml`), not California-hardcoded.
+- Prefer hybrid Firecrawl enrichment with templated searches in `config/search_templates.yaml` for predictable outputs and cost control.
+- Enrichment behavior in `config/categories.yaml`; reuse playbooks, page_cache, and owner_records instead of re-running full Firecrawl/Browser Use.
+- Owner-chain county recorder lookups use free grantor/grantee index only — never purchase deed images.
+- Google Sheets auto-format on every export (Exo 2, 12pt, bold, column widths, wrap, hyperlinks); Addressed checkbox persists across re-imports and `--rewrite` (match by place id).
+- Sales exports lean — talking points and Why Call notes, callable contacts with role labels, no PM/Role/duplicate Source/Website/audit columns.
 - Only git commit and push when explicitly requested.
 - Real credentials live in `.env` and `secrets/` — never commit API keys or service account JSON.
 
 ## Learned Workspace Facts
 
-- Python CLI `pallares-leads` pipeline for PALLARES exterior cleaning commercial property leads in California's Central Valley.
-- Stack: Google Places API (New) discovery → Firecrawl Map/scrape gap-fill → AI Gateway sales copy → CSV plus Google Sheets export.
-- GitHub remote: `New-Retr0/pallares-lead-generator` on branch `main`.
-- Campaign matrix in `config/campaign.yaml` (`central_valley`): Reedley, Dinuba, Selma, Kingsburg, Sanger, Fresno, Visalia × fourteen property categories.
-- `property_manager` runs at Fresno County level via `county_overrides` in campaign config, not per city.
-- Target categories: gas_station, fast_food, strip_mall, shopping_center, grocery, medical_plaza, pharmacy, bank, industrial, big_box, restaurant, parking, hoa, property_manager.
-- Per-category enrichment rules live in `config/categories.yaml` (`min_contact_bar`, `franchise_fast_path`, `require_property_manager_clue`, `always_investigate`, `allow_agent`).
-- Canonical lead state in SQLite (`data/pallares.db`); full enriched payloads in `data/raw/*.jsonl` and `data/snapshots/`; slim `SalesExportRow` for CSV/Sheets.
-- Relational learning uses `enrichment_profiles` (franchise location keys and management-company domains) to skip redundant Firecrawl/Agent work.
-- Google Sheets auth uses a service account JSON at `secrets/google-service-account.json` plus `GOOGLE_SHEETS_SPREADSHEET_ID`; default tab is `Leads`.
-- Key CLI commands: `smoke-sample`, `run`, `run-campaign` (default `--skip-known`; `--force-refresh` to re-enrich), `sync-sheets --rewrite`, `db status|import|profiles|lead|report`, `eval-replay` (stage traces + optional AI Gateway judge), `doctor`, `list`.
-- Sheets sort by Category then City with row-1 filters; setup guide at `docs/GOOGLE-PLACES-SETUP.md`.
+- Python CLI `pallares-leads` for PALLARES commercial exterior-cleaning leads; campaign matrix `central_valley` (7 cities × expanded categories); markets also include LA/OC/Reedley and vendor-scout cities in `config/markets.yaml`.
+- Stack: Google Places / Overpass → Firecrawl Map/scrape/search → Browser Use owner chain → AI Gateway (sales copy + NL parsing only) → CSV + Google Sheets.
+- Dashboard at `dashboard/` (Next.js + shadcn, Geist + glass UI) reads `data/pallares.db`; spawns CLI with repo-root `.env`.
+- Nav: Pipeline (`/requests`, `/runs`) vs Sales (`/crm`, `/leads`, `/triage`) vs Operations (`/costs`); triage at `/triage` redirects from `/duds`.
+- `/crm` shared CRM statuses via `sales_feedback.status` (New → Bad Data); PATCH `/api/leads/[placeId]` persists from dashboard.
+- `vendor_` category prefix = vendor leads; excluded from Sheets; `vendor_pressure_washing` scans insurance keywords from fetched markdown (zero extra credits).
+- Per-category enrichment in `config/categories.yaml`; search templates in `config/search_templates.yaml`; state licensing in `config/licensing.yaml`; portals in `config/jurisdictions.yaml`.
+- Canonical state in SQLite; `SalesExportRow` Score gating; relational learning via `enrichment_profiles` and `owner_records`.
+- Cost in `cost_events` with per-lead USD; `pallares-leads db report|prune <run_id>`; dashboard lead/run modals show expandable tool-call breakdowns.
+- Parallel enrichment: `enrichment_parallel_workers` (Firecrawl concurrent, AI Gateway serialized spacing); `skip_known` default avoids re-processing known places.
+- Verification: `lead_facts` ledger + grounding gate; `verification_level`; BBB registry; atomic contacts never blend Google phone with scraped names.
+- Key CLI: `run`, `run-campaign`, `smoke-sample`, `request`, `sync-sheets`, `warm-portals`, `harvest-managers`, `db report|prune`, `doctor`, `list`; `PALLARES_LOG_JSON=1` + `JobTimeline` for live observability.

@@ -1,0 +1,132 @@
+# Websites the pipeline checks automatically per lead (see enrich/source_checklist.py).
+# tier: 1=government, 2=first_party, 3=registry, 4=social
+# access: public | serp_only | login_wall_risk
+
+sources:
+  state_license:
+    tier: 1
+    access: public
+    kind: registry
+    description: State real-estate broker license lookup (designated officer)
+
+  state_sos:
+    tier: 1
+    access: public
+    kind: registry
+    description: Secretary of State entity officers
+
+  county_recorder:
+    tier: 1
+    access: public
+    kind: registry
+    description: County grantor/grantee deed index
+
+  county_fbn:
+    tier: 1
+    access: public
+    kind: registry
+    url_template: "https://fbnlookup.co.fresno.ca.us/"
+    description: Fictitious business name (DBA) registrant lookup
+
+  city_business_license:
+    tier: 1
+    access: public
+    kind: registry
+    url_template: "https://www.fresno.gov/finance/business-license-and-tax-certificate/"
+    description: City business license directory
+
+  company_website:
+    tier: 2
+    access: public
+    kind: website
+    description: Team/about/contact pages on the business website
+
+  google_places:
+    tier: 2
+    access: public
+    kind: api
+    description: Google Business Profile via Places API
+
+  bbb:
+    tier: 3
+    access: public
+    kind: registry
+    host_match: "bbb.org"
+    description: Better Business Bureau profile
+
+  loopnet:
+    tier: 3
+    access: public
+    kind: marketplace
+    host_match: "loopnet.com"
+    description: LoopNet listing brokers
+
+  crexi:
+    tier: 3
+    access: public
+    kind: marketplace
+    host_match: "crexi.com"
+    description: Crexi listing brokers
+
+  facebook:
+    tier: 4
+    access: login_wall_risk
+    kind: social
+    host_match: "facebook.com"
+    path_suffix: "/about"
+    description: Facebook page about section
+
+  yelp:
+    tier: 4
+    access: public
+    kind: social
+    host_match: "yelp.com"
+    description: Yelp business page (owner responses)
+
+  x:
+    tier: 4
+    access: public
+    kind: social
+    host_match: "x.com"
+    alt_hosts: ["twitter.com"]
+    description: X/Twitter profile bio
+
+  youtube:
+    tier: 4
+    access: public
+    kind: social
+    host_match: "youtube.com"
+    path_suffix: "/about"
+    description: YouTube channel about page
+
+  tiktok:
+    tier: 4
+    access: public
+    kind: social
+    host_match: "tiktok.com"
+    description: TikTok profile bio
+
+  instagram:
+    tier: 4
+    access: login_wall_risk
+    kind: social
+    host_match: "instagram.com"
+    description: Instagram profile bio
+
+  linkedin:
+    tier: 4
+    access: serp_only
+    kind: social
+    host_match: "linkedin.com"
+    description: LinkedIn profiles via search snippets only (never scrape profile URLs)
+
+association_directories:
+  - name: IREM San Joaquin Valley
+    url: "https://www.irem.org/about-irem/chapters/san-joaquin-valley-chapter"
+    region: central_valley
+  - name: BOMA Fresno-Kings-Madera
+    url: "https://bomafresnokingsmadera.org/member-directory"
+    region: central_valley
+  - name: NARPM
+    url: "https://www.narpm.org/find-a-property-manager/"
+    region: national

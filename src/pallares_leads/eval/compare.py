@@ -16,7 +16,9 @@ def _load_snapshot(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def find_prior_snapshots(snapshots_dir: Path, raw_market_key: str, property_type: str, business_name: str) -> dict[str, Path]:
+def find_prior_snapshots(
+    snapshots_dir: Path, raw_market_key: str, property_type: str, business_name: str
+) -> dict[str, Path]:
     base = snapshots_dir / slugify(raw_market_key) / slugify(property_type)
     stem = slugify(business_name)
     found: dict[str, Path] = {}
@@ -48,7 +50,9 @@ def compare_to_prior(
     diff: dict[str, Any] = {"prior_artifacts": {k: str(v) for k, v in prior_paths.items()}}
 
     old_agent = _load_snapshot(prior_paths["agent"]) if "agent" in prior_paths else None
-    old_extract = _load_snapshot(prior_paths.get("extract", Path())) if "extract" in prior_paths else None
+    old_extract = (
+        _load_snapshot(prior_paths.get("extract", Path())) if "extract" in prior_paths else None
+    )
     if old_extract is None and "scrape_json" in prior_paths:
         old_extract = _load_snapshot(prior_paths["scrape_json"])
 
@@ -70,9 +74,9 @@ def compare_to_prior(
             "old": old_result.get("pitch_angle") or "",
             "new": new_preview.get("why_call") or "",
         }
-        diff["agent_ran"] = {
-            "old": "agent" in prior_paths,
-            "new": new_report.get("agent_actually_ran", False),
+        diff["tier2_gate"] = {
+            "old": "",
+            "new": new_report.get("tier2_gate_reason", ""),
         }
 
     return diff

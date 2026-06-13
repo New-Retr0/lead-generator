@@ -39,17 +39,23 @@ def test_real_phones_accepted(phone: str) -> None:
 
 
 def test_pick_best_phone_keeps_google_over_scrape_placeholder() -> None:
-    assert pick_best_phone(
-        "(559) 768-1040",
-        ("559-555-0123", "scrape", True),
-    ) == "(559) 768-1040"
+    assert (
+        pick_best_phone(
+            "(559) 768-1040",
+            ("559-555-0123", "scrape", True),
+        )
+        == "(559) 768-1040"
+    )
 
 
 def test_pick_best_phone_prefers_google_over_valid_scrape() -> None:
-    assert pick_best_phone(
-        "(559) 638-5945",
-        ("(559) 638-1111", "scrape", True),
-    ) == "(559) 638-5945"
+    assert (
+        pick_best_phone(
+            "(559) 638-5945",
+            ("(559) 638-1111", "scrape", True),
+        )
+        == "(559) 638-5945"
+    )
 
 
 def test_apply_investigation_does_not_overwrite_google_with_555() -> None:
@@ -66,5 +72,10 @@ def test_apply_investigation_does_not_overwrite_google_with_555() -> None:
     enriched = EnrichedLead.model_validate(raw.model_dump())
     enriched.main_phone = raw.main_phone
     result = LeadInvestigationResult(contact_phone="559-555-0123", contact_role="Store Manager")
+    from pallares_leads.enrich.apply import apply_baseline_fields, derive_best_contact_fields
+
     apply_investigation(enriched, result, source_tool="firecrawl_scrape_json")
+    enriched = apply_baseline_fields(enriched, raw)
+    enriched = derive_best_contact_fields(enriched)
     assert enriched.best_contact_phone == "(559) 768-1040"
+    assert "555" not in (enriched.best_contact_phone or "")

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from pallares_leads.enrich.contact_requirements import needs_tier2_gap_fill, tier2_gap_reason
 from pallares_leads.enrich.sales_copy import (
     SalesCopyResult,
     build_research_context,
     is_generic_copy,
     needs_sales_copy,
 )
-from pallares_leads.enrich.contact_requirements import agent_followup_reason, needs_agent_followup
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.pipeline.run_market import enrich_lead
 from pallares_leads.schemas import EnrichedLead, RawLead
@@ -41,7 +41,10 @@ def test_is_generic_copy_detects_boilerplate() -> None:
 def test_is_generic_copy_allows_local_hooks() -> None:
     why = "Reedley Shopping Center on Manning Ave sees 19,000+ daily cars."
     points = "• Save Mart anchor draws family traffic in Reedley"
-    assert is_generic_copy(why, points, city="Reedley", business_name="Reedley Shopping Center") is False
+    assert (
+        is_generic_copy(why, points, city="Reedley", business_name="Reedley Shopping Center")
+        is False
+    )
 
 
 def test_needs_sales_copy_when_empty() -> None:
@@ -64,26 +67,23 @@ def test_build_research_context_includes_pdf_snippets() -> None:
     assert context["contacts"][0]["phone"] == "(559) 638-1111"
 
 
-def test_needs_agent_for_high_value_categories_without_contact() -> None:
+def test_needs_tier2_for_high_value_categories_without_contact() -> None:
     raw = _raw_lead(property_type="strip_mall")
     empty = LeadInvestigationResult()
-    assert needs_agent_followup(empty, raw, settings=Settings()) is True
+    assert needs_tier2_gap_fill(empty, raw, settings=Settings()) is True
 
 
-def test_skips_agent_for_high_value_when_contact_found() -> None:
-    from pallares_leads.settings import Settings
-
+def test_skips_tier2_for_high_value_when_contact_found() -> None:
     raw = _raw_lead(property_type="strip_mall")
     result = LeadInvestigationResult(
         contact_phone="(559) 638-1111",
         contact_role="Leasing Manager",
         property_manager="ABC Property Management",
     )
-    assert needs_agent_followup(result, raw, settings=Settings()) is False
+    assert needs_tier2_gap_fill(result, raw, settings=Settings()) is False
 
 
-def test_agent_followup_reason_includes_explanation() -> None:
-    from pallares_leads.enrich.contact_requirements import agent_followup_reason
+def test_tier2_gap_reason_includes_explanation() -> None:
     from pallares_leads.enrich.google_gaps import GoogleGaps
 
     raw = _raw_lead(property_type="gas_station", website="https://find.shell.com/us/fuel/123")
@@ -93,42 +93,41 @@ def test_agent_followup_reason_includes_explanation() -> None:
         corporate_website=True,
         missing_contact=True,
     )
-    needed, reason = agent_followup_reason(LeadInvestigationResult(), raw, gaps=gaps, settings=Settings())
+    needed, reason = tier2_gap_reason(
+        LeadInvestigationResult(), raw, gaps=gaps, settings=Settings()
+    )
     assert needed is True
     assert "corporate locator" in reason
 
 
 @patch("pallares_leads.pipeline.run_market.maybe_enrich_sales_copy")
 @patch("pallares_leads.pipeline.run_market.FirecrawlClient")
-def test_hybrid_enrich_uses_scrape_json_then_agent(mock_fc_cls: MagicMock, mock_gateway: MagicMock) -> None:
+def test_hybrid_enrich_uses_scrape_json_then_tier2_search(
+    mock_fc_cls: MagicMock, mock_gateway: MagicMock
+) -> None:
     from pallares_leads.enrich.contact_requirements import EnrichmentRules
 
-    settings = Settings(
-        firecrawl_api_key="test-key",
-        firecrawl_enrichment_mode="hybrid",
-        firecrawl_agent_enabled=True,
-    )
+    settings = Settings(firecrawl_api_key="test-key")
     mock_fc = mock_fc_cls.return_value
     mock_fc.scrape_lead.return_value = LeadInvestigationResult()
-    mock_fc.search_contact_gap.return_value = None
-    mock_fc.investigate_lead.return_value = LeadInvestigationResult(
+    mock_fc.search_contact_gap.return_value = LeadInvestigationResult(
         contact_phone="(559) 638-1111",
         contact_role="Leasing Manager",
         property_manager="ABC Management",
     )
+    mock_fc.pick_broker_pdf_url.return_value = None
     mock_gateway.side_effect = lambda enriched, *_args, **_kwargs: enriched
 
     raw = _raw_lead(property_type="strip_mall")
     with patch(
         "pallares_leads.pipeline.run_market.get_enrichment_rules",
-        return_value=EnrichmentRules(min_contact_bar="labeled_phone", allow_agent=True),
+        return_value=EnrichmentRules(min_contact_bar="labeled_phone"),
     ):
         enrich_lead(raw, mock_fc, settings)
 
-    mock_fc.reset_map_cache.assert_called_once()
+    mock_fc.reset_session_credits.assert_called_once()
     mock_fc.scrape_lead.assert_called_once()
     mock_fc.search_contact_gap.assert_called_once()
-    mock_fc.investigate_lead.assert_called_once()
     mock_gateway.assert_called_once()
 
 
@@ -140,7 +139,6 @@ def test_gateway_fills_empty_copy_after_markdown_fallback(
 ) -> None:
     settings = Settings(
         firecrawl_api_key="test-key",
-        firecrawl_enrichment_mode="hybrid",
         ai_gateway_api_key="gw-key",
         ai_gateway_model="google/gemini-2.5-flash",
     )
@@ -166,20 +164,23 @@ def test_gateway_fills_empty_copy_after_markdown_fallback(
 
 @patch("pallares_leads.enrich.sales_copy.generate_sales_copy")
 @patch("pallares_leads.pipeline.run_market.FirecrawlClient")
-def test_gateway_skips_rich_agent_copy(mock_fc_cls: MagicMock, mock_generate: MagicMock) -> None:
+def test_gateway_skips_rich_scrape_copy(mock_fc_cls: MagicMock, mock_generate: MagicMock) -> None:
     settings = Settings(
         firecrawl_api_key="test-key",
-        firecrawl_enrichment_mode="agent_only",
         ai_gateway_api_key="gw-key",
         ai_gateway_model="google/gemini-2.5-flash",
     )
     mock_fc = mock_fc_cls.return_value
-    mock_fc.investigate_lead.return_value = LeadInvestigationResult(
+    mock_fc.scrape_lead.return_value = LeadInvestigationResult(
         contact_phone="(559) 447-6295",
+        contact_role="Leasing Manager",
+        property_manager="ABC Property Management",
         pitch_angle="Manning Avenue retail corridor with 19,000+ daily cars in Reedley.",
         sales_talking_points="• Save Mart anchor in Reedley\n• 631-space parking lot",
     )
+    mock_fc.search_contact_gap.return_value = None
     mock_fc.pick_broker_pdf_url.return_value = None
+    mock_fc.last_map_info = {"cached": False, "urls": []}
 
     raw = _raw_lead(property_type="shopping_center")
     enrich_lead(raw, mock_fc, settings)

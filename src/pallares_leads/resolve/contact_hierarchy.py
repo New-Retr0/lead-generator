@@ -6,6 +6,9 @@ from pallares_leads.schemas import ExtractedContact
 HIERARCHY: list[str] = [
     "facilities",
     "property_manager",
+    "property_owner",
+    "registered_agent",
+    "cre_broker",
     "leasing",
     "regional",
     "general_manager",
@@ -26,16 +29,18 @@ FRANCHISE_HIERARCHY: list[str] = [
     "generic_phone",
 ]
 
-_FRANCHISE_PROPERTY_TYPES = frozenset({
-    "gas_station",
-    "fast_food",
-    "grocery",
-    "pharmacy",
-    "bank",
-    "restaurant",
-    "big_box",
-    "dollar_store",
-})
+_FRANCHISE_PROPERTY_TYPES = frozenset(
+    {
+        "gas_station",
+        "fast_food",
+        "grocery",
+        "pharmacy",
+        "bank",
+        "restaurant",
+        "big_box",
+        "dollar_store",
+    }
+)
 
 
 def hierarchy_for(property_type: str) -> list[str]:

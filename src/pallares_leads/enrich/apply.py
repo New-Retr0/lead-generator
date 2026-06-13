@@ -5,10 +5,21 @@ import logging
 from pallares_leads.enrich.contact_requirements import is_callable_phone
 from pallares_leads.enrich.domain_verify import pick_verified_website_url, verify_website_url
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.schemas import EnrichedLead, InvestigationStatus, NOT_FOUND, RawLead, SiteContact
-from pallares_leads.utils.normalize import is_placeholder_phone, normalize_phone, pick_best_phone
+from pallares_leads.schemas import (
+    NOT_FOUND,
+    EnrichedLead,
+    InvestigationStatus,
+    RawLead,
+    SiteContact,
+)
+from pallares_leads.utils.normalize import normalize_phone
 
 logger = logging.getLogger(__name__)
+
+GOOGLE_MAIN_LINE_LABEL = "Main line (Google)"
+
+# Contacts whose verification passed the grounding gate (or came from an API/registry).
+_TRUSTED_VERIFICATIONS = ("verified", "corroborated", "unverified")
 
 
 def _valid_site_contacts(contacts: list[SiteContact]) -> list[SiteContact]:
@@ -21,31 +32,30 @@ def _valid_site_contacts(contacts: list[SiteContact]) -> list[SiteContact]:
     return cleaned
 
 
-def _labeled(contact: SiteContact) -> bool:
-    return bool(contact.label.strip() or contact.name.strip())
+def _contact_key(contact: SiteContact) -> tuple[str, str, str]:
+    return (
+        contact.name.strip().casefold(),
+        contact.phone.strip(),
+        contact.email.strip().casefold(),
+    )
 
 
-def _apply_site_contacts(enriched: EnrichedLead, result: LeadInvestigationResult) -> None:
-    if not result.site_contacts:
-        return
-    enriched.site_contacts = _valid_site_contacts(result.site_contacts)
-    best = next((c for c in enriched.site_contacts if c.priority == "best" and c.phone), None)
-    if best is None:
-        best = next((c for c in enriched.site_contacts if c.phone), None)
-    if best is None:
-        return
-
-    if best.label:
-        enriched.best_contact_role = best.label
-    if best.name:
-        enriched.best_contact_name = best.name
-    if best.phone:
-        merged = pick_best_phone(
-            enriched.main_phone,
-            (best.phone, "scrape", _labeled(best)),
-        )
-        if merged:
-            enriched.best_contact_phone = merged
+def _merge_site_contacts(
+    existing: list[SiteContact],
+    incoming: list[SiteContact],
+) -> list[SiteContact]:
+    """Union of contacts, deduped by (name, phone, email). Contacts stay atomic."""
+    merged: list[SiteContact] = []
+    seen: set[tuple[str, str, str]] = set()
+    for contact in [*existing, *incoming]:
+        key = _contact_key(contact)
+        if key == ("", "", ""):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(contact)
+    return merged
 
 
 def _apply_website(enriched: EnrichedLead, result: LeadInvestigationResult) -> None:
@@ -64,56 +74,46 @@ def _apply_website(enriched: EnrichedLead, result: LeadInvestigationResult) -> N
             enriched.website = form_base
 
 
-def _merge_best_phone(
-    enriched: EnrichedLead,
-    scrape_phone: str | None,
-    *,
-    labeled: bool,
-) -> None:
-    if not scrape_phone or is_placeholder_phone(scrape_phone):
-        return
-    merged = pick_best_phone(
-        enriched.main_phone,
-        (scrape_phone, "scrape", labeled),
-    )
-    if not merged:
-        return
-    enriched.best_contact_phone = merged
-    if not enriched.main_phone or not is_callable_phone(enriched.main_phone):
-        enriched.main_phone = merged
-
-
 def apply_investigation(
     enriched: EnrichedLead,
     result: LeadInvestigationResult,
     *,
     source_tool: str,
 ) -> EnrichedLead:
+    """Fold a grounded investigation into the lead. Contacts are atomic — a scraped
+    contact's name/phone/email always travel together and are never blended with
+    other sources. best_contact_* is derived later by derive_best_contact_fields().
+    """
     _apply_website(enriched, result)
-    _apply_site_contacts(enriched, result)
 
-    if result.contact_name:
-        enriched.best_contact_name = result.contact_name
-    if result.contact_role:
-        enriched.best_contact_role = result.contact_role
-    if result.contact_phone:
-        labeled = bool(
-            (result.contact_role or "").strip()
-            or (result.contact_name or "").strip()
+    incoming = _valid_site_contacts(result.site_contacts)
+    source = result.source_urls[0] if result.source_urls else ""
+    if (result.contact_name or result.contact_phone or result.contact_email) and not any(
+        _contact_key(c)
+        == (
+            result.contact_name.strip().casefold(),
+            result.contact_phone.strip(),
+            result.contact_email.strip().casefold(),
         )
-        _merge_best_phone(enriched, result.contact_phone, labeled=labeled)
-    if result.contact_email:
-        enriched.best_contact_email_or_form = result.contact_email
-    elif result.contact_form_url:
+        for c in incoming
+    ):
+        legacy = SiteContact(
+            label=result.contact_role,
+            name=result.contact_name,
+            phone=result.contact_phone if is_callable_phone(result.contact_phone) else "",
+            email=result.contact_email,
+            priority="good",
+            source_url=source,
+            verification="unverified",
+        )
+        if legacy.name or legacy.phone or legacy.email:
+            incoming.append(legacy)
+
+    enriched.site_contacts = _merge_site_contacts(enriched.site_contacts, incoming)
+
+    if result.contact_form_url:
         enriched.best_contact_email_or_form = f"Contact form ({result.contact_form_url})"
-        if not enriched.site_contacts:
-            enriched.site_contacts = [
-                SiteContact(
-                    label="Contact form",
-                    email=result.contact_form_url,
-                    priority="fallback",
-                )
-            ]
+        enriched.contact_source_url = result.contact_form_url
 
     if result.property_manager:
         enriched.property_manager_or_ownership_clue = result.property_manager
@@ -126,17 +126,12 @@ def apply_investigation(
         enriched.why_this_is_a_good_fit = result.pitch_angle
     if result.sales_talking_points:
         enriched.sales_talking_points = result.sales_talking_points
-    if result.contact_form_url:
-        enriched.contact_source_url = result.contact_form_url
-    elif result.source_urls:
-        enriched.evidence_urls = result.source_urls
-        enriched.contact_source_url = result.source_urls[0]
+    if result.source_urls:
+        merged_evidence = list(dict.fromkeys([*enriched.evidence_urls, *result.source_urls]))
+        enriched.evidence_urls = merged_evidence
 
     if enriched.notes.startswith("No website") and enriched.website:
         enriched.notes = "Website found via Firecrawl (not on Google listing)"
-
-    if enriched.best_contact_phone in ("", NOT_FOUND) and is_callable_phone(enriched.main_phone):
-        enriched.best_contact_phone = normalize_phone(enriched.main_phone) or enriched.main_phone
 
     enriched.source_tool = source_tool
     enriched.investigation_status = InvestigationStatus.ENRICHED
@@ -144,19 +139,76 @@ def apply_investigation(
 
 
 def apply_baseline_fields(enriched: EnrichedLead, raw: RawLead) -> EnrichedLead:
-    if raw.main_phone and is_callable_phone(raw.main_phone):
-        merged = pick_best_phone(
-            raw.main_phone,
-            (enriched.best_contact_phone, "scrape", enriched.best_contact_role not in ("", NOT_FOUND)),
-        )
-        if merged:
-            enriched.best_contact_phone = merged
-            enriched.best_contact_type = "google places phone"
-            enriched.contact_source_url = raw.google_maps_url or NOT_FOUND
-            if not enriched.site_contacts:
-                normalized = normalize_phone(raw.main_phone) or raw.main_phone
-                enriched.site_contacts = [
-                    SiteContact(label="Main line (Google)", phone=normalized, priority="fallback")
-                ]
+    """Record the Google Places main line as its own verified contact fact.
 
+    Never blends the Google phone into a scraped person — it is a separate,
+    honestly-labeled contact.
+    """
+    if raw.main_phone and is_callable_phone(raw.main_phone):
+        normalized = normalize_phone(raw.main_phone) or raw.main_phone
+        already = any(
+            c.phone == normalized and c.label == GOOGLE_MAIN_LINE_LABEL
+            for c in enriched.site_contacts
+        )
+        if not already:
+            enriched.site_contacts = _merge_site_contacts(
+                enriched.site_contacts,
+                [
+                    SiteContact(
+                        label=GOOGLE_MAIN_LINE_LABEL,
+                        phone=normalized,
+                        priority="fallback",
+                        source_url=raw.google_maps_url or "",
+                        verification="verified",
+                        quote="Listed as the business phone on the Google Places listing",
+                    )
+                ],
+            )
+    return derive_best_contact_fields(enriched)
+
+
+def _rank_best_contact(contact: SiteContact) -> tuple[int, int, int]:
+    """Lower is better: named+labeled beats labeled beats bare phone; verified first."""
+    verification_rank = {
+        "verified": 0,
+        "corroborated": 1,
+        "unverified": 2,
+    }.get(contact.verification, 3)
+    has_name = 0 if contact.name.strip() else 1
+    has_label = 0 if contact.label.strip() else 1
+    return (has_name + has_label, verification_rank, 0 if contact.phone else 1)
+
+
+def derive_best_contact_fields(enriched: EnrichedLead) -> EnrichedLead:
+    """Derive best_contact_* atomically from one site contact — no cross-source blending."""
+    callable_contacts = [
+        c
+        for c in enriched.site_contacts
+        if (is_callable_phone(c.phone) or (c.email and "@" in c.email))
+        and (c.verification in _TRUSTED_VERIFICATIONS or not c.verification)
+    ]
+    if not callable_contacts:
+        if is_callable_phone(enriched.main_phone):
+            normalized = normalize_phone(enriched.main_phone) or enriched.main_phone
+            enriched.best_contact_type = "google places phone"
+            enriched.best_contact_name = NOT_FOUND
+            enriched.best_contact_role = "Main line — ask for owner/GM"
+            enriched.best_contact_phone = normalized
+            enriched.contact_source_url = enriched.google_maps_url or NOT_FOUND
+        return enriched
+
+    best = min(callable_contacts, key=_rank_best_contact)
+    is_google_line = best.label == GOOGLE_MAIN_LINE_LABEL
+    enriched.best_contact_type = "google places phone" if is_google_line else "site contact"
+    enriched.best_contact_name = best.name or NOT_FOUND
+    enriched.best_contact_role = (
+        "Main line — ask for owner/GM"
+        if is_google_line and not best.name
+        else (best.label or NOT_FOUND)
+    )
+    enriched.best_contact_phone = best.phone or NOT_FOUND
+    if best.email and "@" in best.email:
+        enriched.best_contact_email_or_form = best.email
+    if best.source_url:
+        enriched.contact_source_url = best.source_url
     return enriched

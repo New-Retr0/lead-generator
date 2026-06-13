@@ -47,7 +47,9 @@ def request_with_retry(
             if attempt >= max_attempts:
                 raise
             delay = base_delay_s * (2 ** (attempt - 1))
-            logger.warning("%s error %s — retry %d/%d in %.1fs", label, exc, attempt, max_attempts, delay)
+            logger.warning(
+                "%s error %s — retry %d/%d in %.1fs", label, exc, attempt, max_attempts, delay
+            )
             time.sleep(delay)
     if last_exc:
         raise last_exc

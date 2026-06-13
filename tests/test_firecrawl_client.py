@@ -83,10 +83,11 @@ def test_scrape_lead_uses_map_then_json(mock_client_cls: MagicMock) -> None:
     scrape_response.json.return_value = {
         "success": True,
         "data": {
+            "markdown": "Call us at (559) 638-3333 for catering.",
             "json": {
                 "contact_phone": "(559) 638-3333",
                 "exterior_signals": "parking lot",
-            }
+            },
         },
     }
 
@@ -100,7 +101,7 @@ def test_scrape_lead_uses_map_then_json(mock_client_cls: MagicMock) -> None:
     assert client.post.call_count == 2
     json_call = client.post.call_args_list[1].kwargs["json"]
     assert json_call["url"] == "https://example.com/contact"
-    assert json_call["formats"] == ["json"]
+    assert json_call["formats"] == ["markdown", "json"]
     assert json_call["jsonOptions"]["schema"]["properties"]["contact_phone"]
 
 
@@ -146,11 +147,12 @@ def test_scrape_pdf_snippet_uses_pdf_parser(mock_client_cls: MagicMock) -> None:
     assert body["parsers"] == [{"type": "pdf", "mode": "auto", "maxPages": 15}]
 
 
-@patch("pallares_leads.enrich.sales_copy.httpx.Client")
+@patch("pallares_leads.enrich.ai_gateway_client.httpx.Client")
 def test_generate_sales_copy_calls_gateway(mock_client_cls: MagicMock) -> None:
     settings = Settings(
         ai_gateway_api_key="gw-key",
         ai_gateway_model="google/gemini-2.5-flash",
+        ai_gateway_min_interval_s=0.0,
     )
     client = mock_client_cls.return_value.__enter__.return_value
     response = MagicMock()
@@ -180,7 +182,12 @@ def test_generate_sales_copy_calls_gateway(mock_client_cls: MagicMock) -> None:
 
 def test_needs_sales_copy_false_when_specific() -> None:
     lead = EnrichedLead.model_validate(_raw_lead().model_dump())
-    lead.why_this_is_a_good_fit = "Reedley Save Mart on Manning Ave with visible storefront signage."
+    lead.why_this_is_a_good_fit = (
+        "Reedley Save Mart on Manning Ave with visible storefront signage."
+    )
     lead.sales_talking_points = "• Grocery anchor for Reedley families"
     assert needs_sales_copy(lead) is False
-    assert is_generic_copy(lead.why_this_is_a_good_fit, lead.sales_talking_points, city="Reedley") is False
+    assert (
+        is_generic_copy(lead.why_this_is_a_good_fit, lead.sales_talking_points, city="Reedley")
+        is False
+    )

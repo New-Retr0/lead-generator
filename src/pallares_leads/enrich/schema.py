@@ -129,7 +129,11 @@ class LeadInvestigationResult(BaseModel):
     def from_api_payload(cls, payload: dict[str, Any] | None) -> LeadInvestigationResult | None:
         if not payload:
             return None
-        data = payload.get("data") if "data" in payload and isinstance(payload.get("data"), dict) else payload
+        data = (
+            payload.get("data")
+            if "data" in payload and isinstance(payload.get("data"), dict)
+            else payload
+        )
         if not isinstance(data, dict):
             return None
         urls = data.get("source_urls") or []
@@ -148,6 +152,9 @@ class LeadInvestigationResult(BaseModel):
                         phone=str(item.get("phone") or "").strip(),
                         email=str(item.get("email") or "").strip(),
                         priority=str(item.get("priority") or "").strip().lower(),
+                        source_url=str(item.get("source_url") or "").strip(),
+                        verification=str(item.get("verification") or "").strip(),
+                        quote=str(item.get("quote") or "").strip(),
                     )
                 )
         return cls(
@@ -197,13 +204,4 @@ def extract_prompt(raw: RawLead) -> str:
         f"(best/good/fallback) for Pallares exterior-services brokerage outreach. "
         f"Also return property_manager, exterior_signals, recommended_services, website_url, "
         f"and source_urls."
-    )
-
-
-def agent_prompt(raw: RawLead) -> str:
-    return (
-        f"For {raw.business_name} at {_location_context(raw)} ({raw.lead_category}), find "
-        f"contacts for Pallares managed exterior services — facilities, property manager, "
-        f"leasing, operations. Return site_contacts with labels and phones, exterior_signals, "
-        f"recommended_services, plus pitch_angle and sales_talking_points (3-5 • bullets)."
     )

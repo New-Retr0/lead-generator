@@ -6,11 +6,10 @@ import pytest
 
 from pallares_leads.enrich.contact_requirements import (
     EnrichmentRules,
-    agent_followup_reason,
     clear_enrichment_rules_cache,
     get_enrichment_rules,
     investigation_meets_bar,
-    needs_agent_followup,
+    tier2_gap_reason,
 )
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.schemas import RawLead, SiteContact
@@ -59,7 +58,7 @@ def test_strip_mall_requires_labeled_phone(config_dir: Path) -> None:
     assert met is True
 
 
-def test_agent_followup_triggers_on_form_only_gas(config_dir: Path) -> None:
+def test_tier2_gap_triggers_on_form_only_gas(config_dir: Path) -> None:
     raw = RawLead(
         place_id="ChIJtest",
         business_name="Chevron",
@@ -75,12 +74,12 @@ def test_agent_followup_triggers_on_form_only_gas(config_dir: Path) -> None:
     form_only = LeadInvestigationResult(
         contact_form_url="https://www.chevronwithtechron.com/en_us/home/contact-us.html"
     )
-    needed, reason = agent_followup_reason(form_only, raw, settings=settings)
+    needed, reason = tier2_gap_reason(form_only, raw, settings=settings)
     assert needed is True
     assert "contact bar" in reason
 
 
-def test_agent_skips_when_bar_met(config_dir: Path) -> None:
+def test_tier2_skips_when_bar_met(config_dir: Path) -> None:
     raw = RawLead(
         place_id="ChIJtest",
         business_name="Carl's Jr.",
@@ -94,7 +93,7 @@ def test_agent_skips_when_bar_met(config_dir: Path) -> None:
     )
     settings = Settings(config_dir=config_dir)
     result = LeadInvestigationResult(contact_phone="(559) 638-1111")
-    needed, _ = agent_followup_reason(result, raw, settings=settings)
+    needed, _ = tier2_gap_reason(result, raw, settings=settings)
     assert needed is False
 
 

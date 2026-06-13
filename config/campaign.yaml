@@ -29,6 +29,13 @@ campaigns:
       - dollar_store
       - restaurant
       - parking
+      - parking_small
+      - parking_large_private
+      - hotel
+      - thrift_store
+      - community_facility
+      - amusement_facility
+      - public_agency
       - hoa
       - property_manager
     # property_manager searches Fresno County, not individual cities

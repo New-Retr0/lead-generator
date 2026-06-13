@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal
 import yaml
 
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND, RawLead
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead, RawLead
 from pallares_leads.utils.normalize import is_placeholder_phone, phone_digits
 
 if TYPE_CHECKING:
@@ -71,27 +71,54 @@ class EnrichmentRules:
     min_contact_bar: ContactBar = "phone"
     require_property_manager_clue: bool = False
     always_investigate: bool = False
-    allow_agent: bool = False
     franchise_fast_path: bool = False
     suggest_recurring: bool = False
+    allow_owner_chain: bool = False
+    registry_lookup: tuple[str, ...] = ("bbb",)
+    insurance_keywords: tuple[str, ...] = ()
+
+    def registry_lookups(self) -> frozenset[str]:
+        return frozenset(item.strip().lower() for item in self.registry_lookup if item.strip())
 
     @classmethod
-    def from_mapping(cls, data: dict | None, *, defaults: EnrichmentRules | None = None) -> EnrichmentRules:
+    def from_mapping(
+        cls, data: dict | None, *, defaults: EnrichmentRules | None = None
+    ) -> EnrichmentRules:
         base = defaults or default_enrichment_rules()
         if not data:
             return base
         bar = str(data.get("min_contact_bar") or base.min_contact_bar).lower()
         if bar not in _BAR_ORDER:
             bar = base.min_contact_bar
+        registry_raw = data.get("registry_lookup", base.registry_lookup)
+        if isinstance(registry_raw, str):
+            registry_lookup = tuple(
+                part.strip() for part in registry_raw.split(",") if part.strip()
+            ) or base.registry_lookup
+        elif isinstance(registry_raw, (list, tuple)):
+            registry_lookup = tuple(str(item).strip() for item in registry_raw if str(item).strip())
+        else:
+            registry_lookup = base.registry_lookup
+
+        raw_ins = data.get("insurance_keywords", base.insurance_keywords)
+        if isinstance(raw_ins, str):
+            insurance_keywords = (raw_ins,) if raw_ins else ()
+        elif isinstance(raw_ins, (list, tuple)):
+            insurance_keywords = tuple(str(k) for k in raw_ins if k)
+        else:
+            insurance_keywords = base.insurance_keywords
+
         return cls(
             min_contact_bar=bar,  # type: ignore[arg-type]
             require_property_manager_clue=bool(
                 data.get("require_property_manager_clue", base.require_property_manager_clue)
             ),
             always_investigate=bool(data.get("always_investigate", base.always_investigate)),
-            allow_agent=bool(data.get("allow_agent", base.allow_agent)),
             franchise_fast_path=bool(data.get("franchise_fast_path", base.franchise_fast_path)),
             suggest_recurring=bool(data.get("suggest_recurring", base.suggest_recurring)),
+            allow_owner_chain=bool(data.get("allow_owner_chain", base.allow_owner_chain)),
+            registry_lookup=registry_lookup,
+            insurance_keywords=insurance_keywords,
         )
 
 
@@ -100,7 +127,9 @@ def default_enrichment_rules() -> EnrichmentRules:
 
 
 @lru_cache(maxsize=1)
-def _load_category_enrichment(config_dir: str) -> tuple[EnrichmentRules, dict[str, EnrichmentRules]]:
+def _load_category_enrichment(
+    config_dir: str,
+) -> tuple[EnrichmentRules, dict[str, EnrichmentRules]]:
     path = Path(config_dir) / "categories.yaml"
     with path.open(encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
@@ -143,7 +172,9 @@ def is_callable_phone(value: str | None) -> bool:
     return len(digits) == 10
 
 
-def _contact_bar_level(result: LeadInvestigationResult | None, *, property_type: str = "") -> ContactBar:
+def _contact_bar_level(
+    result: LeadInvestigationResult | None, *, property_type: str = ""
+) -> ContactBar:
     if result is None:
         return "form"
 
@@ -205,9 +236,8 @@ def investigation_meets_bar(
 
     level = _contact_bar_level(result, property_type=property_type)
 
-    if (
-        property_type == "medical_plaza"
-        and is_patient_facing_investigation(result, property_type=property_type)
+    if property_type == "medical_plaza" and is_patient_facing_investigation(
+        result, property_type=property_type
     ):
         return False, "medical plaza needs facilities/operations contact, not patient line"
 
@@ -272,7 +302,7 @@ def sales_gaps_vs_ideal(enriched: EnrichedLead, rules: EnrichmentRules) -> list[
     return gaps
 
 
-def agent_followup_reason(
+def tier2_gap_reason(
     result: LeadInvestigationResult | None,
     raw: RawLead,
     *,
@@ -308,36 +338,12 @@ def agent_followup_reason(
     return False, f"Tier 1 meets sales contact bar ({rules.min_contact_bar})"
 
 
-def needs_agent_followup(
+def needs_tier2_gap_fill(
     result: LeadInvestigationResult | None,
     raw: RawLead,
     *,
     gaps: GoogleGaps | None = None,
     settings: Settings | None = None,
 ) -> bool:
-    needed, _ = agent_followup_reason(result, raw, gaps=gaps, settings=settings)
+    needed, _ = tier2_gap_reason(result, raw, gaps=gaps, settings=settings)
     return needed
-
-
-_NON_AGENT_URL_HINTS = ("maps.google.com", "google.com/maps", "mapquest.com", "goo.gl/maps")
-
-
-def has_scrapable_website(raw: RawLead) -> bool:
-    if not raw.website:
-        return False
-    lower = raw.website.lower()
-    return not any(hint in lower for hint in _NON_AGENT_URL_HINTS)
-
-
-def agent_permitted(
-    raw: RawLead,
-    rules: EnrichmentRules,
-    settings: Settings,
-) -> tuple[bool, str]:
-    if not settings.firecrawl_agent_enabled:
-        return False, "Agent disabled (FIRECRAWL_AGENT_ENABLED=false; Map/Search/Gateway only)"
-    if not rules.allow_agent:
-        return False, "allow_agent=false for this category (default — eval showed Map+Search enough)"
-    if not has_scrapable_website(raw):
-        return False, "no scrapable website for Agent (Google Maps URLs cannot be Agent focus)"
-    return True, "Agent permitted as last resort after Map and Search tiers"

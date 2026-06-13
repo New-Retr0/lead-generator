@@ -1,0 +1,30 @@
+# USD estimates for pipeline cost tracking.
+# Firecrawl Hobby: $16 / 3,000 credits ≈ $0.00533 per credit.
+
+firecrawl:
+  credit_usd: 0.00533
+
+google_places:
+  text_search_usd: 0.032
+  nearby_search_usd: 0.032
+  health_check_usd: 0.0
+
+browser_use:
+  # Per-task USD reported by Browser Use Cloud API (total_cost_usd on session)
+  passthrough: true
+
+ai_gateway:
+  default_model: google/gemini-2.5-flash
+  models:
+    google/gemini-2.5-flash:
+      input_token_usd: 0.0000003
+      output_token_usd: 0.0000025
+    gpt-4o-mini:
+      input_token_usd: 0.00000015
+      output_token_usd: 0.0000006
+    gpt-4o:
+      input_token_usd: 0.0000025
+      output_token_usd: 0.00001
+    claude-3-5-sonnet:
+      input_token_usd: 0.000003
+      output_token_usd: 0.000015

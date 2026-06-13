@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pallares_leads.enrich.contact_requirements import is_callable_phone
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND, SiteContact
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead, SiteContact
 
 _PRIORITY_ORDER = {"best": 0, "good": 1, "fallback": 2}
 
@@ -40,7 +40,9 @@ def format_contacts_block(lead: EnrichedLead) -> str:
         role = lead.best_contact_role if lead.best_contact_role != NOT_FOUND else ""
         name = lead.best_contact_name if lead.best_contact_name != NOT_FOUND else ""
         phone = lead.best_contact_phone if lead.best_contact_phone != NOT_FOUND else ""
-        email = lead.best_contact_email_or_form if lead.best_contact_email_or_form != NOT_FOUND else ""
+        email = (
+            lead.best_contact_email_or_form if lead.best_contact_email_or_form != NOT_FOUND else ""
+        )
 
         parts: list[str] = []
         if role or name:

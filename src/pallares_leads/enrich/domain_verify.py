@@ -8,6 +8,7 @@ import httpx
 from pallares_leads.enrich.website_discover import is_skipped_domain
 from pallares_leads.schemas import EnrichedLead
 from pallares_leads.utils.http_retry import request_with_retry
+from pallares_leads.utils.safe_url import is_private_or_local_host, is_safe_http_url
 
 if TYPE_CHECKING:
     from pallares_leads.db.store import LeadStore
@@ -93,8 +94,20 @@ def verify_website_url(
         _cache_set(host, False, store)
         return False
 
+    if is_private_or_local_host(host):
+        logger.info("Website rejected (private/local host): %s", base)
+        _cache_set(host, False, store)
+        return False
+
+    if not is_safe_http_url(base):
+        logger.info("Website rejected (unsafe URL): %s", base)
+        _cache_set(host, False, store)
+        return False
+
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=_BROWSER_HEADERS) as client:
+        with httpx.Client(
+            timeout=timeout, follow_redirects=True, headers=_BROWSER_HEADERS
+        ) as client:
             response = request_with_retry(
                 lambda: client.head(base),
                 label=f"HEAD {host}",
@@ -200,7 +213,9 @@ def scrub_unverified_website(
         if enriched.contact_source_url and enriched.contact_source_url.startswith("http"):
             if not verify_website_url(enriched.contact_source_url, store=store):
                 enriched.contact_source_url = (
-                    enriched.evidence_urls[0] if enriched.evidence_urls else enriched.contact_source_url
+                    enriched.evidence_urls[0]
+                    if enriched.evidence_urls
+                    else enriched.contact_source_url
                 )
 
     return enriched

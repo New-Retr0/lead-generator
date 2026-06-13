@@ -23,7 +23,10 @@ def test_verify_rejects_nxdomain(mock_client_cls: MagicMock) -> None:
     mock_client_cls.assert_not_called()
 
 
-@patch("pallares_leads.enrich.domain_verify.verify_website_url", side_effect=lambda url, **_: ".shop" not in url)
+@patch(
+    "pallares_leads.enrich.domain_verify.verify_website_url",
+    side_effect=lambda url, **_: ".shop" not in url,
+)
 def test_pick_verified_skips_bad_guesses(_mock_verify: MagicMock) -> None:
     picked = pick_verified_website_url(
         [

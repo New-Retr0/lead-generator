@@ -22,7 +22,11 @@ data/raw/*.jsonl
 data/snapshots/**/*
 data/output/*.csv
 data/pallares.db
+data/.pipeline.lock
 data/evals/
+data/runs/
+dashboard/node_modules/
+dashboard/.next/
 !.gitkeep
 
 # Stray credential files (if saved outside secrets/)
@@ -32,3 +36,5 @@ service-acct-eml.txt
 service-account-email.txt
 .firecrawl/
 .cursor/
+data/*.db
+data/jobs/

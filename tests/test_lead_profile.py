@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from pallares_leads.enrich.contact_requirements import (
-    EnrichmentRules,
     clear_enrichment_rules_cache,
     get_enrichment_rules,
 )
@@ -83,7 +82,9 @@ def test_fast_path_for_shell_with_google_phone(config_dir: Path) -> None:
 def test_fast_path_skipped_without_phone(config_dir: Path) -> None:
     profile = classify_lead(_gas(phone=None))
     rules = get_enrichment_rules("gas_station", config_dir)
-    playbook = merge_playbooks(profile, static=static_playbook_for(profile), learned=None, mgmt=None, rules=rules)
+    playbook = merge_playbooks(
+        profile, static=static_playbook_for(profile), learned=None, mgmt=None, rules=rules
+    )
     use, reason = should_use_profile_fast_path(_gas(phone=None), profile, playbook, rules)
     assert use is False
     assert "phone" in reason.lower()

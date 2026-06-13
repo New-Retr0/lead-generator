@@ -39,33 +39,62 @@ def store(tmp_path: Path) -> LeadStore:
 
 
 def test_should_skip_unknown_lead(store: LeadStore) -> None:
-    assert store.should_skip("places/new", skip_known=True, force_refresh=False, refresh_after_days=None) is False
+    assert (
+        store.should_skip(
+            "places/new", skip_known=True, force_refresh=False, refresh_after_days=None
+        )
+        is False
+    )
 
 
 def test_should_skip_after_enrichment(store: LeadStore) -> None:
-    store.upsert_enriched(_enriched(), market_key="reedley", category_key="gas_station", run_id="r1")
-    assert store.should_skip("places/abc", skip_known=True, force_refresh=False, refresh_after_days=None) is True
+    store.upsert_enriched(
+        _enriched(), market_key="reedley", category_key="gas_station", run_id="r1"
+    )
+    assert (
+        store.should_skip(
+            "places/abc", skip_known=True, force_refresh=False, refresh_after_days=None
+        )
+        is True
+    )
 
 
 def test_force_refresh_bypasses_skip(store: LeadStore) -> None:
-    store.upsert_enriched(_enriched(), market_key="reedley", category_key="gas_station", run_id="r1")
-    assert store.should_skip("places/abc", skip_known=True, force_refresh=True, refresh_after_days=None) is False
+    store.upsert_enriched(
+        _enriched(), market_key="reedley", category_key="gas_station", run_id="r1"
+    )
+    assert (
+        store.should_skip(
+            "places/abc", skip_known=True, force_refresh=True, refresh_after_days=None
+        )
+        is False
+    )
 
 
 def test_refresh_after_days(store: LeadStore) -> None:
-    store.upsert_enriched(_enriched(), market_key="reedley", category_key="gas_station", run_id="r1")
+    store.upsert_enriched(
+        _enriched(), market_key="reedley", category_key="gas_station", run_id="r1"
+    )
     old = (datetime.now(tz=UTC) - timedelta(days=60)).isoformat()
     store._conn.execute(
         "UPDATE leads SET last_enriched_at = ? WHERE place_id = ?",
         (old, "places/abc"),
     )
     store._conn.commit()
-    assert store.should_skip("places/abc", skip_known=True, force_refresh=False, refresh_after_days=30) is False
-    assert store.should_skip("places/abc", skip_known=True, force_refresh=False, refresh_after_days=90) is True
+    assert (
+        store.should_skip("places/abc", skip_known=True, force_refresh=False, refresh_after_days=30)
+        is False
+    )
+    assert (
+        store.should_skip("places/abc", skip_known=True, force_refresh=False, refresh_after_days=90)
+        is True
+    )
 
 
 def test_filter_new_leads(store: LeadStore) -> None:
-    store.upsert_enriched(_enriched("places/a"), market_key="reedley", category_key="gas_station", run_id="r1")
+    store.upsert_enriched(
+        _enriched("places/a"), market_key="reedley", category_key="gas_station", run_id="r1"
+    )
     leads = [_raw("places/a"), _raw("places/b")]
     kept, skipped = store.filter_new_leads(
         leads, skip_known=True, force_refresh=False, refresh_after_days=None
@@ -77,7 +106,12 @@ def test_filter_new_leads(store: LeadStore) -> None:
 
 def test_touch_discovered_does_not_block_enrichment(store: LeadStore) -> None:
     store.touch_discovered(_raw(), market_key="reedley", category_key="gas_station", run_id="r1")
-    assert store.should_skip("places/abc", skip_known=True, force_refresh=False, refresh_after_days=None) is False
+    assert (
+        store.should_skip(
+            "places/abc", skip_known=True, force_refresh=False, refresh_after_days=None
+        )
+        is False
+    )
 
 
 def test_run_log(store: LeadStore) -> None:
@@ -98,7 +132,6 @@ def test_record_and_get_playbook(store: LeadStore) -> None:
         playbook_update={
             "trust_google_phone": True,
             "skip_firecrawl": True,
-            "skip_agent": True,
         },
         place_id="places/shell-1",
     )
@@ -118,3 +151,30 @@ def test_record_and_get_playbook(store: LeadStore) -> None:
     data = store.get_playbook("gas_station:corporate_locator:shell")
     assert data["success_count"] == 2
     assert store.count_profiles() == 1
+
+
+def test_concurrent_record_cost_events(tmp_path: Path) -> None:
+    import threading
+
+    store = LeadStore(tmp_path / "concurrent.db")
+    try:
+        expected = 8 * 25
+
+        def worker() -> None:
+            for _ in range(25):
+                store.record_cost_event(
+                    provider="firecrawl",
+                    operation="scrape",
+                    units=1,
+                    usd=0.005,
+                )
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        store.commit_cost_events()
+        assert store.total_firecrawl_credits() == expected
+    finally:
+        store.close()

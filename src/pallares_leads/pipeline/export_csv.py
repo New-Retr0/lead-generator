@@ -4,7 +4,16 @@ import csv
 from datetime import date
 from pathlib import Path
 
-from pallares_leads.schemas import Confidence, EnrichedLead, InvestigationStatus, SalesExportRow, SiteContact
+from pallares_leads.schemas import (
+    Confidence,
+    EnrichedLead,
+    InvestigationStatus,
+    SalesExportRow,
+    SiteContact,
+)
+
+
+from pallares_leads.utils.safe_url import sanitize_csv_cell
 
 
 def export_csv(leads: list[EnrichedLead], output_path: Path) -> Path:
@@ -18,7 +27,7 @@ def export_csv(leads: list[EnrichedLead], output_path: Path) -> Path:
         for row in rows:
             dumped = row.model_dump()
             dumped["_place_id"] = dumped.pop("place_id")
-            writer.writerow(dumped)
+            writer.writerow({k: sanitize_csv_cell(str(v)) if v is not None else v for k, v in dumped.items()})
 
     return output_path
 
@@ -51,9 +60,14 @@ def load_enriched_from_csv(csv_path: Path) -> list[EnrichedLead]:
                     if not line:
                         continue
                     parts = [p.strip() for p in line.split("—")]
-                    if len(parts) >= 2 and parts[-1].replace("-", "").replace("(", "").replace(")", "").isdigit():
+                    if (
+                        len(parts) >= 2
+                        and parts[-1].replace("-", "").replace("(", "").replace(")", "").isdigit()
+                    ):
                         site_contacts.append(
-                            SiteContact(label=parts[0], phone=parts[-1], name=" — ".join(parts[1:-1]) or "")
+                            SiteContact(
+                                label=parts[0], phone=parts[-1], name=" — ".join(parts[1:-1]) or ""
+                            )
                         )
                     elif len(parts) == 2:
                         site_contacts.append(SiteContact(label=parts[0], phone=parts[1]))

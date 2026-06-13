@@ -1,0 +1,48 @@
+# Government portal registry — URLs and adapter keys only; orchestration lives in Python.
+states:
+  ca:
+    sos_business_search:
+      adapter: ca_bizfile
+      url: https://bizfileonline.sos.ca.gov/search/business
+
+counties:
+  fresno_ca:
+    state: ca
+    recorder:
+      adapter: tyler_eagle
+      url: https://fresnocountyca-web.tylerhost.net/web/
+    parcel_portal:
+      adapter: parcelquest
+      url: https://assr.parcelquest.com/impl/FREAssr
+      owner_names_online: false  # CA RTC 408.3(d): Fresno hides owner names online
+    fbn_lookup:
+      adapter: county_fbn
+      url: https://fbnlookup.co.fresno.ca.us/
+
+  tulare_ca:
+    state: ca
+    recorder:
+      adapter: tyler_eagle
+      url: https://tularecounty.ca.gov/government/assessor-recorder/
+    parcel_portal:
+      adapter: parcelquest
+      url: https://assr.parcelquest.com/impl/TULAssr
+      owner_names_online: limited
+      free_search_cap: 25
+  # Stubs: no portals configured — owner-chain recorder/parcel stages skip gracefully.
+  los_angeles_ca:
+    state: ca
+  orange_ca:
+    state: ca
+  clark_nv:
+    state: nv
+  bernalillo_nm:
+    state: nm
+  jackson_mo:
+    state: mo
+
+city_portals:
+  fresno_ca:
+    business_license:
+      adapter: city_business_license
+      url: https://www.fresno.gov/finance/business-license-and-tax-certificate/

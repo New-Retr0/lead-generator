@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead
 
 SKIP_DOMAINS = (
     "google.com",
@@ -75,7 +75,9 @@ def website_link_url(lead: EnrichedLead) -> str:
     if not base:
         return ""
 
-    if lead.contact_source_url not in ("", NOT_FOUND) and lead.contact_source_url.startswith("http"):
+    if lead.contact_source_url not in ("", NOT_FOUND) and lead.contact_source_url.startswith(
+        "http"
+    ):
         return lead.contact_source_url
 
     for url in lead.evidence_urls:
@@ -89,7 +91,9 @@ def website_link_url(lead: EnrichedLead) -> str:
 
 def primary_evidence_url(lead: EnrichedLead) -> str:
     """Best evidence / contact page URL for sales follow-up."""
-    if lead.contact_source_url not in ("", NOT_FOUND) and not is_skipped_domain(lead.contact_source_url):
+    if lead.contact_source_url not in ("", NOT_FOUND) and not is_skipped_domain(
+        lead.contact_source_url
+    ):
         return lead.contact_source_url
 
     for url in lead.evidence_urls:

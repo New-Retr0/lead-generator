@@ -5,14 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from pallares_leads.enrich.contact_requirements import clear_enrichment_rules_cache, get_enrichment_rules
+from pallares_leads.enrich.contact_requirements import (
+    clear_enrichment_rules_cache,
+    get_enrichment_rules,
+)
 from pallares_leads.enrich.lead_profile import (
     classify_lead,
     merge_playbooks,
     should_use_profile_fast_path,
     static_playbook_for,
 )
-from pallares_leads.pipeline.enrichment import STAGE_ORDER
 from pallares_leads.schemas import RawLead
 
 
@@ -24,12 +26,6 @@ def _clear_cache() -> None:
 @pytest.fixture
 def config_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "config"
-
-
-def test_stage_order_documents_pipeline() -> None:
-    assert "profile_fast_path" in STAGE_ORDER
-    assert STAGE_ORDER.index("agent_gate") < STAGE_ORDER.index("agent")
-    assert STAGE_ORDER[-1] == "final"
 
 
 def test_golden_shell_franchise_fast_path(config_dir: Path) -> None:

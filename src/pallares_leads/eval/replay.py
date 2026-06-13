@@ -9,7 +9,6 @@ from typing import Any
 from pallares_leads.db.store import LeadStore
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.eval.compare import compare_to_prior, write_compare
-from pallares_leads.eval.judge import judge_lead_report
 from pallares_leads.eval.trace import LeadEvalTrace, write_lead_report
 from pallares_leads.pipeline.export_csv import export_csv
 from pallares_leads.pipeline.export_sheets import export_sheets, sheets_configured
@@ -97,42 +96,18 @@ def _write_summary(
     reports: list[dict[str, Any]],
     batch_summaries: list[dict[str, Any]],
 ) -> None:
-    agent_ran = sum(1 for report in reports if report.get("agent_actually_ran"))
     credits = sum(int(report.get("credits_est_total") or 0) for report in reports)
-    verdicts: dict[str, int] = {}
-    llm_agent: dict[str, int] = {}
-    sales_ready = 0
-    gate_correct = 0
-    judged = 0
     heuristic_sales_ready = 0
     for report in reports:
-        verdict = (report.get("quality") or {}).get("agent_necessity_verdict", "unknown")
-        verdicts[verdict] = verdicts.get(verdict, 0) + 1
         q = report.get("quality") or {}
         if int(q.get("contact_score") or 0) >= 2 and int(q.get("copy_score") or 0) >= 2:
             heuristic_sales_ready += 1
-        judge = report.get("llm_judge") or {}
-        if judge:
-            judged += 1
-            if judge.get("sales_ready"):
-                sales_ready += 1
-            if judge.get("agent_gate_correct"):
-                gate_correct += 1
-            necessity = judge.get("agent_necessity", "unknown")
-            llm_agent[necessity] = llm_agent.get(necessity, 0) + 1
 
     payload = {
         "run_id": run_id,
         "timestamp": datetime.now(tz=UTC).isoformat(),
         "lead_count": len(reports),
-        "agent_ran_count": agent_ran,
-        "agent_rate": round(agent_ran / len(reports), 3) if reports else 0,
         "credits_est_total": credits,
-        "agent_necessity_verdicts": verdicts,
-        "llm_judge_count": judged,
-        "llm_sales_ready_count": sales_ready,
-        "llm_agent_gate_correct_count": gate_correct,
-        "llm_agent_necessity_verdicts": llm_agent,
         "heuristic_sales_ready_count": heuristic_sales_ready,
         "heuristic_sales_ready_rate": (
             round(heuristic_sales_ready / len(reports), 3) if reports else 0
@@ -149,69 +124,42 @@ def write_findings_md(path: Path, summary: dict[str, Any], reports: list[dict[st
         "",
         f"**Run ID:** `{summary.get('run_id', '')}`",
         f"**Leads evaluated:** {summary.get('lead_count', 0)}",
-        f"**Agent ran:** {summary.get('agent_ran_count', 0)} "
-        f"({summary.get('agent_rate', 0) * 100:.1f}%)",
         f"**Estimated Firecrawl credits:** {summary.get('credits_est_total', 0)}",
+        f"**Heuristic sales-ready:** {summary.get('heuristic_sales_ready_count', 0)} "
+        f"({summary.get('heuristic_sales_ready_rate', 0) * 100:.1f}%)",
         "",
-        "## Agent necessity verdicts",
+        "## Per-category notes",
         "",
     ]
-    for verdict, count in sorted((summary.get("agent_necessity_verdicts") or {}).items()):
-        lines.append(f"- **{verdict}:** {count}")
-
-    if summary.get("llm_judge_count"):
-        lines.extend(
-            [
-                "",
-                "## LLM judge (AI Gateway)",
-                "",
-                f"- **Judged:** {summary.get('llm_judge_count', 0)} leads",
-                f"- **Sales-ready:** {summary.get('llm_sales_ready_count', 0)}",
-                f"- **Agent gate correct:** {summary.get('llm_agent_gate_correct_count', 0)}",
-                "",
-                "### LLM agent necessity",
-                "",
-            ]
-        )
-        for verdict, count in sorted((summary.get("llm_agent_necessity_verdicts") or {}).items()):
-            lines.append(f"- **{verdict}:** {count}")
-
-    lines.extend(["", "## Per-category notes", ""])
     by_type: dict[str, list[dict[str, Any]]] = {}
     for report in reports:
         by_type.setdefault(report.get("property_type", "unknown"), []).append(report)
 
     for property_type in sorted(by_type):
         batch = by_type[property_type]
-        agent_count = sum(1 for report in batch if report.get("agent_actually_ran"))
-        lines.append(f"### {property_type} ({len(batch)} leads, {agent_count} Agent runs)")
+        lines.append(f"### {property_type} ({len(batch)} leads)")
         for report in batch:
             name = report.get("business_name", "")
-            gate = report.get("agent_gate_reason", "")
-            verdict = (report.get("quality") or {}).get("agent_necessity_verdict", "")
+            gate = report.get("tier2_gate_reason", "")
             gaps = ", ".join(report.get("gaps_vs_ideal") or []) or "none"
-            judge = report.get("llm_judge") or {}
-            judge_note = ""
-            if judge:
-                judge_note = (
-                    f"; LLM: sales_ready={judge.get('sales_ready')}, "
-                    f"agent={judge.get('agent_necessity')}, "
-                    f"hint={judge.get('optimization_hint', '')[:80]}"
-                )
-            lines.append(f"- **{name}** — gate: {gate}; verdict: {verdict}; gaps: {gaps}{judge_note}")
+            q = report.get("quality") or {}
+            lines.append(
+                f"- **{name}** — tier2: {gate}; "
+                f"contact={q.get('contact_score', 0)} copy={q.get('copy_score', 0)}; gaps: {gaps}"
+            )
         lines.append("")
 
     lines.extend(
         [
             "## Optimization backlog",
             "",
-            "Review leads where LLM judge flagged `agent=required` but Agent did not run.",
-            "Tune `enrichment` rules in config/categories.yaml — not hardcoded category lists in Python.",
+            "Tune `enrichment` rules in config/categories.yaml — "
+            "not hardcoded category lists in Python.",
             "",
             "- **min_contact_bar:** form < email < phone < labeled_phone",
-            "- **require_property_manager_clue:** for multi-tenant retail (strip_mall, shopping_center)",
+            "- **require_property_manager_clue:** "
+            "for multi-tenant retail (strip_mall, shopping_center)",
             "- **always_investigate:** run Firecrawl even when Google listing looks complete",
-            "- **All categories:** AI Gateway handles copy; Agent is for contact discovery only",
             "",
         ]
     )
@@ -229,9 +177,8 @@ def run_eval_replay(
     batch_offset: int = 0,
     batch_limit: int | None = None,
     db_only: bool = False,
-    use_llm_judge: bool = True,
     learn_profiles: bool = True,
-) -> Path:
+) -> tuple[Path, dict[str, Any]]:
     if not settings.firecrawl_api_key:
         raise ValueError("FIRECRAWL_API_KEY is required for eval replay")
 
@@ -240,7 +187,6 @@ def run_eval_replay(
     leads_dir = eval_dir / "leads"
     batches_dir = eval_dir / "batches"
     compare_dir = eval_dir / "compare"
-    judge_dir = eval_dir / "judge"
     output_dir = eval_dir / "output"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
@@ -308,34 +254,6 @@ def run_eval_replay(
                 )
                 write_compare(compare_dir / f"{raw.place_id}_diff.json", diff)
 
-                if use_llm_judge:
-                    raw_input = {
-                        "main_phone": raw.main_phone,
-                        "website": raw.website,
-                        "city": raw.city,
-                        "formatted_address": raw.formatted_address,
-                    }
-                    judge = judge_lead_report(
-                        report_dict,
-                        settings,
-                        prior_diff=diff,
-                        raw_input=raw_input,
-                        config_dir=settings.config_dir,
-                    )
-                    if judge:
-                        report.llm_judge = judge.model_dump()
-                        report_dict = report.to_dict()
-                        judge_dir.mkdir(parents=True, exist_ok=True)
-                        (judge_dir / f"{raw.place_id}.json").write_text(
-                            json.dumps(report.llm_judge, indent=2),
-                            encoding="utf-8",
-                        )
-                        logger.info(
-                            "  LLM judge: sales_ready=%s agent=%s",
-                            judge.sales_ready,
-                            judge.agent_necessity,
-                        )
-
                 batch_enriched.append(enriched)
                 batch_reports.append(report_dict)
                 write_lead_report(report, leads_dir / f"{raw.place_id}.json")
@@ -355,12 +273,10 @@ def run_eval_replay(
             all_enriched.extend(batch_enriched)
             all_reports.extend(batch_reports)
 
-            agent_in_batch = sum(1 for report in batch_reports if report.get("agent_actually_ran"))
             batch_summary = {
                 "batch": batch_idx,
                 "label": _category_label(batch),
                 "lead_count": len(batch),
-                "agent_ran": agent_in_batch,
                 "credits_est": sum(int(r.get("credits_est_total") or 0) for r in batch_reports),
                 "leads": [r.get("place_id") for r in batch_reports],
             }
@@ -379,7 +295,9 @@ def run_eval_replay(
         )
 
     summary_path = eval_dir / "summary.json"
-    _write_summary(summary_path, run_id=run_id, reports=all_reports, batch_summaries=batch_summaries)
+    _write_summary(
+        summary_path, run_id=run_id, reports=all_reports, batch_summaries=batch_summaries
+    )
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     write_findings_md(eval_dir / "FINDINGS.md", summary, all_reports)
 

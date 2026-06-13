@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pallares_leads.enrich.google_gaps import GoogleGaps, is_corporate_locator_url
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.schemas import EnrichedLead, RawLead
+from pallares_leads.schemas import RawLead
 
 
 def _raw(**overrides) -> RawLead:

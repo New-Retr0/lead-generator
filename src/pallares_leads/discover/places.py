@@ -2,25 +2,32 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from pallares_leads.config_loader import CategoryConfig, MarketConfig
+from pallares_leads.costs import load_pricing, usd_for
 from pallares_leads.schemas import RawLead
 from pallares_leads.settings import Settings
 from pallares_leads.utils.normalize import normalize_phone, normalize_website, parse_city_state_zip
 
+if TYPE_CHECKING:
+    from pallares_leads.db.store import LeadStore
+
 logger = logging.getLogger(__name__)
 
 # Pro + Enterprise fields only — phone/website require Enterprise SKU (required for leads).
-SEARCH_FIELD_MASK = (
+_PLACE_FIELDS = (
     "places.id,places.displayName,places.formattedAddress,places.location,"
     "places.types,places.primaryType,places.googleMapsUri,places.businessStatus,"
-    "places.nationalPhoneNumber,places.websiteUri,nextPageToken"
+    "places.nationalPhoneNumber,places.websiteUri"
 )
 
-NEARBY_FIELD_MASK = SEARCH_FIELD_MASK
+SEARCH_FIELD_MASK = f"{_PLACE_FIELDS},nextPageToken"
+
+# Nearby Search rejects nextPageToken in the field mask (no pagination support).
+NEARBY_FIELD_MASK = _PLACE_FIELDS
 
 MAX_PAGES = 3  # Text Search (New) caps at 60 results total (3 × 20)
 PAGE_DELAY_S = 0.2
@@ -29,11 +36,41 @@ PAGE_DELAY_S = 0.2
 class PlacesClient:
     BASE_URL = "https://places.googleapis.com/v1"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        store: LeadStore | None = None,
+        run_id: str | None = None,
+    ) -> None:
         if not settings.google_places_api_key:
             raise ValueError("GOOGLE_PLACES_API_KEY is required for discovery")
         self._api_key = settings.google_places_api_key
         self._settings = settings
+        self._store = store
+        self._run_id = run_id
+        self.request_count = 0
+
+    def _record_request(self, operation: str) -> None:
+        self.request_count += 1
+        if not self._store:
+            return
+        pricing = load_pricing(self._settings.config_dir)
+        cost_usd = usd_for(
+            pricing,
+            provider="google_places",
+            operation=operation,
+            units=1,
+            unit_type="requests",
+        )
+        self._store.record_cost_event(
+            provider="google_places",
+            operation=operation,
+            units=1,
+            unit_type="requests",
+            usd=cost_usd,
+            run_id=self._run_id,
+        )
 
     def _headers(self, field_mask: str) -> dict[str, str]:
         return {
@@ -109,6 +146,7 @@ class PlacesClient:
                 json=body,
             )
             response.raise_for_status()
+            self._record_request("text_search")
             return response.json()
 
     def search_nearby(
@@ -143,6 +181,7 @@ class PlacesClient:
                 json=body,
             )
             response.raise_for_status()
+            self._record_request("nearby_search")
             return response.json()
 
     @staticmethod
@@ -278,7 +317,7 @@ class PlacesClient:
 
         for query in queries:
             page_token: str | None = None
-            for page in range(MAX_PAGES):
+            for _page in range(MAX_PAGES):
                 try:
                     payload = self.search_text(
                         query,
@@ -315,12 +354,16 @@ class PlacesClient:
         if limit and len(leads) > limit:
             leads = leads[:limit]
 
+        if self._store and self.request_count:
+            self._store.commit_cost_events()
+
         logger.info(
-            "Discovered %d unique places for %s / %s in %s, %s",
+            "Discovered %d unique places for %s / %s in %s, %s (%d Places API request(s))",
             len(leads),
             market_key,
             property_type,
             city,
             state,
+            self.request_count,
         )
         return leads

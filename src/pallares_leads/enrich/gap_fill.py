@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from pallares_leads.enrich.apply import apply_baseline_fields, apply_investigation
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
-from pallares_leads.enrich.google_gaps import GoogleGaps, gap_summary, is_corporate_locator_url
+from pallares_leads.enrich.google_gaps import GoogleGaps, is_corporate_locator_url
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.schemas import EnrichedLead, InvestigationStatus, NOT_FOUND, RawLead
-from pallares_leads.settings import Settings
+from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead
 
 logger = logging.getLogger(__name__)
 

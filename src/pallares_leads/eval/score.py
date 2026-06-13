@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from pallares_leads.enrich.contact_requirements import get_enrichment_rules, is_callable_phone
+from pallares_leads.enrich.contact_requirements import is_callable_phone
 from pallares_leads.enrich.contacts_format import primary_phone
 from pallares_leads.enrich.sales_copy import is_generic_copy
 from pallares_leads.eval.trace import LeadEvalReport
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead
 
 
 def contact_score(enriched: EnrichedLead) -> int:
@@ -55,33 +55,10 @@ def source_diversity(enriched: EnrichedLead) -> int:
     return 0
 
 
-def agent_necessity_verdict(report: LeadEvalReport, enriched: EnrichedLead) -> str:
-    if not report.agent_actually_ran:
-        if contact_score(enriched) >= 2 and copy_score(enriched) >= 2:
-            return "unnecessary"
-        if contact_score(enriched) >= 2:
-            return "avoidable"
-        return "avoidable"
-
-    agent_stage = next((s for s in report.stages if s.stage == "agent" and s.ran), None)
-    if agent_stage is None:
-        return "avoidable"
-
-    outputs = agent_stage.outputs
-    added_phone = outputs.get("added_phone", False)
-    added_broker = outputs.get("added_broker_source", False)
-    if added_phone or added_broker:
-        return "required"
-    if contact_score(enriched) >= 3 and copy_score(enriched) >= 2:
-        return "unnecessary"
-    return "avoidable"
-
-
-def score_lead_report(report: LeadEvalReport, enriched: EnrichedLead) -> dict[str, int | str]:
+def score_lead_report(report: LeadEvalReport, enriched: EnrichedLead) -> dict[str, int]:
     return {
         "contact_score": contact_score(enriched),
         "copy_score": copy_score(enriched),
         "exterior_score": exterior_score(enriched),
         "source_diversity": source_diversity(enriched),
-        "agent_necessity_verdict": agent_necessity_verdict(report, enriched),
     }

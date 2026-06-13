@@ -9,7 +9,7 @@ from pallares_leads.enrich.contact_requirements import (
     investigation_meets_bar,
 )
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND, RawLead
+from pallares_leads.schemas import EnrichedLead, RawLead
 
 # Franchise / locator pages — Google often returns these instead of a local site
 CORPORATE_LOCATOR_DOMAINS = (
@@ -66,7 +66,9 @@ class GoogleGaps:
             missing_contact=not has_contact,
         )
 
-    def needs_firecrawl_investigation(self, property_type: str, *, config_dir: Path | None = None) -> bool:
+    def needs_firecrawl_investigation(
+        self, property_type: str, *, config_dir: Path | None = None
+    ) -> bool:
         rules = get_enrichment_rules(property_type, config_dir)
         if rules.always_investigate:
             return True

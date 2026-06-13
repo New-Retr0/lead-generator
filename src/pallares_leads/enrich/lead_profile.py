@@ -11,7 +11,7 @@ from pallares_leads.enrich.contact_requirements import (
     is_callable_phone,
 )
 from pallares_leads.enrich.google_gaps import is_corporate_locator_url
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND, RawLead
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead, RawLead
 from pallares_leads.utils.normalize import slugify
 
 SiteKind = str  # corporate_locator | local_site | no_site
@@ -61,11 +61,19 @@ _BRAND_DEFS: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
     # Bank
     ("chase", re.compile(r"\bchase\b", re.I), ("chase.com",)),
     ("wells_fargo", re.compile(r"\bwells\s*fargo\b", re.I), ("wellsfargo.com",)),
-    ("bank_of_america", re.compile(r"\bbank\s*of\s*america\b|\bbofa\b", re.I), ("bankofamerica.com",)),
+    (
+        "bank_of_america",
+        re.compile(r"\bbank\s*of\s*america\b|\bbofa\b", re.I),
+        ("bankofamerica.com",),
+    ),
     # Medical systems (often anchor medical plazas)
     ("adventist_health", re.compile(r"\badventist\s*health\b", re.I), ("adventisthealth.org",)),
     ("kaiser", re.compile(r"\bkaiser\b", re.I), ("kaiserpermanente.org",)),
-    ("omni_family_health", re.compile(r"\bomni\s*family\s*health\b", re.I), ("omnifamilyhealth.org",)),
+    (
+        "omni_family_health",
+        re.compile(r"\bomni\s*family\s*health\b", re.I),
+        ("omnifamilyhealth.org",),
+    ),
 )
 
 # Franchise location profiles: corporate locator + Google phone is usually enough
@@ -78,23 +86,27 @@ _STATIC_TRUST_PATTERNS: tuple[str, ...] = (
 )
 
 # Categories where enrichment learns per management company (cross-property reuse)
-MULTI_TENANT_PROPERTY_TYPES = frozenset({
-    "strip_mall",
-    "shopping_center",
-    "medical_plaza",
-    "property_manager",
-})
+MULTI_TENANT_PROPERTY_TYPES = frozenset(
+    {
+        "strip_mall",
+        "shopping_center",
+        "medical_plaza",
+        "property_manager",
+    }
+)
 
-_SKIP_DOMAINS = frozenset({
-    "google.com",
-    "facebook.com",
-    "instagram.com",
-    "yelp.com",
-    "linkedin.com",
-    "twitter.com",
-    "x.com",
-    "mapquest.com",
-})
+_SKIP_DOMAINS = frozenset(
+    {
+        "google.com",
+        "facebook.com",
+        "instagram.com",
+        "yelp.com",
+        "linkedin.com",
+        "twitter.com",
+        "x.com",
+        "mapquest.com",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -124,7 +136,6 @@ class EnrichmentPlaybook:
 
     trust_google_phone: bool = False
     skip_firecrawl: bool = False
-    skip_agent: bool = False
     contact_role_label: str = "Store / Location"
     typical_source_tool: str = ""
     winning_tier: str = ""
@@ -136,7 +147,6 @@ class EnrichmentPlaybook:
         return {
             "trust_google_phone": self.trust_google_phone,
             "skip_firecrawl": self.skip_firecrawl,
-            "skip_agent": self.skip_agent,
             "contact_role_label": self.contact_role_label,
             "typical_source_tool": self.typical_source_tool,
             "winning_tier": self.winning_tier,
@@ -152,7 +162,6 @@ class EnrichmentPlaybook:
         return cls(
             trust_google_phone=bool(data.get("trust_google_phone")),
             skip_firecrawl=bool(data.get("skip_firecrawl")),
-            skip_agent=bool(data.get("skip_agent", True)),
             contact_role_label=str(data.get("contact_role_label") or "Store / Location"),
             typical_source_tool=str(data.get("typical_source_tool") or ""),
             winning_tier=str(data.get("winning_tier") or ""),
@@ -214,7 +223,13 @@ def detect_brand(business_name: str, website: str | None) -> str:
     if site and is_corporate_locator_url(site):
         host = urlparse(site).netloc.lower().removeprefix("www.")
         root = host.split(".")[0] if host else "corporate"
-        return root if root not in ("find", "locator", "maps") else host.split(".")[1] if "." in host else "corporate"
+        return (
+            root
+            if root not in ("find", "locator", "maps")
+            else host.split(".")[1]
+            if "." in host
+            else "corporate"
+        )
     return "independent"
 
 
@@ -243,7 +258,6 @@ def static_playbook_for(profile: LeadProfile) -> EnrichmentPlaybook | None:
             return EnrichmentPlaybook(
                 trust_google_phone=True,
                 skip_firecrawl=True,
-                skip_agent=True,
                 contact_role_label="Store / Location",
                 winning_tier="places_only",
             )
@@ -268,7 +282,6 @@ def merge_playbooks(
         for key in (
             "trust_google_phone",
             "skip_firecrawl",
-            "skip_agent",
             "contact_role_label",
             "typical_source_tool",
             "winning_tier",
@@ -277,20 +290,28 @@ def merge_playbooks(
             if learned_data.get(key):
                 merged[key] = learned_data[key]
         merged["success_count"] = learned_data["success_count"]
-        merged["sample_place_id"] = learned_data.get("sample_place_id") or merged.get("sample_place_id", "")
+        merged["sample_place_id"] = learned_data.get("sample_place_id") or merged.get(
+            "sample_place_id", ""
+        )
         base = EnrichmentPlaybook.from_dict(merged)
     if mgmt and mgmt.success_count > 0:
-        base.skip_agent = base.skip_agent or mgmt.skip_agent
         if mgmt.typical_source_tool:
             base.typical_source_tool = mgmt.typical_source_tool
         if mgmt.winning_tier:
             base.winning_tier = mgmt.winning_tier
         if mgmt.contact_role_label and mgmt.contact_role_label != "Store / Location":
             base.contact_role_label = mgmt.contact_role_label
-    if rules.franchise_fast_path and profile.is_franchise_pattern and profile.site_kind == "corporate_locator":
+        if mgmt.skip_firecrawl:
+            base.skip_firecrawl = True
+        if mgmt.trust_google_phone:
+            base.trust_google_phone = True
+    if (
+        rules.franchise_fast_path
+        and profile.is_franchise_pattern
+        and profile.site_kind == "corporate_locator"
+    ):
         base.trust_google_phone = True
         base.skip_firecrawl = True
-        base.skip_agent = True
     return base
 
 
@@ -328,8 +349,8 @@ def _winning_tier_from_source(source_tool: str) -> str:
         return "places_only"
     if "search" in source_tool:
         return "search"
-    if "agent" in source_tool:
-        return "agent"
+    if "owner_chain" in source_tool:
+        return "owner_chain"
     if "scrape_json" in source_tool:
         return "scrape_json"
     if "scrape" in source_tool:
@@ -343,7 +364,6 @@ def learn_playbook_from_outcome(
     enriched: EnrichedLead,
     *,
     rules: EnrichmentRules,
-    agent_ran: bool,
     firecrawl_skipped: bool,
 ) -> EnrichmentPlaybook:
     """Derive playbook updates from a completed enrichment."""
@@ -361,13 +381,11 @@ def learn_playbook_from_outcome(
 
     if met and phone_from_places and profile.is_franchise_pattern:
         playbook.trust_google_phone = True
-        playbook.skip_firecrawl = firecrawl_skipped or not agent_ran
-        playbook.skip_agent = not agent_ran
+        playbook.skip_firecrawl = firecrawl_skipped
         playbook.typical_source_tool = enriched.source_tool
         if enriched.best_contact_role not in ("", NOT_FOUND):
             playbook.contact_role_label = enriched.best_contact_role
-    elif met and not agent_ran:
-        playbook.skip_agent = True
+    elif met:
         playbook.typical_source_tool = enriched.source_tool
 
     return playbook
@@ -377,7 +395,6 @@ def learn_management_playbook(
     enriched: EnrichedLead,
     *,
     rules: EnrichmentRules,
-    agent_ran: bool,
 ) -> tuple[str, EnrichmentPlaybook] | None:
     """Build a management-company playbook when multi-tenant enrichment succeeds."""
     if enriched.property_type not in MULTI_TENANT_PROPERTY_TYPES:
@@ -395,7 +412,6 @@ def learn_management_playbook(
     if role in ("", NOT_FOUND):
         role = "Property Manager / Leasing"
     return key, EnrichmentPlaybook(
-        skip_agent=not agent_ran,
         contact_role_label=role,
         typical_source_tool=enriched.source_tool,
         winning_tier=_winning_tier_from_source(enriched.source_tool),

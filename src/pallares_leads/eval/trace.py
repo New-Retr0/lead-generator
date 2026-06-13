@@ -29,14 +29,12 @@ class LeadEvalReport:
     run_id: str
     timestamp: str
     stages: list[StageRecord] = field(default_factory=list)
-    agent_actually_ran: bool = False
-    agent_gate_reason: str = ""
+    tier2_gate_reason: str = ""
     final_source_tool: str = ""
     export_preview: dict[str, Any] = field(default_factory=dict)
     gaps_vs_ideal: list[str] = field(default_factory=list)
     quality: dict[str, Any] = field(default_factory=dict)
     credits_est_total: int = 0
-    llm_judge: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,14 +56,12 @@ class LeadEvalReport:
                 }
                 for s in self.stages
             ],
-            "agent_actually_ran": self.agent_actually_ran,
-            "agent_gate_reason": self.agent_gate_reason,
+            "tier2_gate_reason": self.tier2_gate_reason,
             "final_source_tool": self.final_source_tool,
             "export_preview": self.export_preview,
             "gaps_vs_ideal": self.gaps_vs_ideal,
             "quality": self.quality,
             "credits_est_total": self.credits_est_total,
-            "llm_judge": self.llm_judge,
         }
 
 
@@ -76,8 +72,7 @@ class LeadEvalTrace:
         self.raw = raw
         self.run_id = run_id
         self.stages: list[StageRecord] = []
-        self.agent_actually_ran = False
-        self.agent_gate_reason = ""
+        self.tier2_gate_reason = ""
         self.gateway_ran = False
 
     def record(
@@ -91,8 +86,8 @@ class LeadEvalTrace:
         outputs: dict[str, Any] | None = None,
         quality: dict[str, Any] | None = None,
     ) -> None:
-        if stage == "agent" and ran:
-            self.agent_actually_ran = True
+        if stage == "tier2_gate":
+            self.tier2_gate_reason = reason
         if stage == "gateway" and ran:
             self.gateway_ran = True
         self.stages.append(
@@ -108,11 +103,11 @@ class LeadEvalTrace:
         )
 
     def finalize(self, enriched: EnrichedLead, *, config_dir: Path | None = None) -> LeadEvalReport:
-        from pallares_leads.enrich.contacts_format import format_contacts_block, primary_phone
         from pallares_leads.enrich.contact_requirements import (
             get_enrichment_rules,
             sales_gaps_vs_ideal,
         )
+        from pallares_leads.enrich.contacts_format import format_contacts_block, primary_phone
         from pallares_leads.eval.score import score_lead_report
 
         export_preview = {
@@ -134,8 +129,7 @@ class LeadEvalTrace:
             run_id=self.run_id,
             timestamp=datetime.now(tz=UTC).isoformat(),
             stages=list(self.stages),
-            agent_actually_ran=self.agent_actually_ran,
-            agent_gate_reason=self.agent_gate_reason,
+            tier2_gate_reason=self.tier2_gate_reason,
             final_source_tool=enriched.source_tool,
             export_preview=export_preview,
             credits_est_total=credits_total,

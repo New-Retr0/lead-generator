@@ -5,21 +5,23 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from pallares_leads.enrich.ai_gateway_client import (
+    gateway_chat_completion,
+    gateway_configured,
+)
 from pallares_leads.enrich.contact_requirements import get_enrichment_rules
 from pallares_leads.enrich.lead_profile import detect_brand
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.schemas import EnrichedLead, RawLead, SiteContact
+from pallares_leads.schemas import EnrichedLead, RawLead
 from pallares_leads.settings import Settings
 
 if TYPE_CHECKING:
+    from pallares_leads.db.store import LeadStore
     from pallares_leads.eval.trace import LeadEvalTrace
 
 logger = logging.getLogger(__name__)
-
-AI_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions"
 
 GENERIC_COPY_PATTERNS = (
     re.compile(r"high foot traffic", re.I),
@@ -44,6 +46,8 @@ _SERVICE_HOOKS = re.compile(
     re.I,
 )
 
+PROMPT_VERSION = "sales_copy_v1"
+
 SYSTEM_PROMPT = (
     "You write cold-call notes for PALLARES — a national B2B exterior-services broker "
     "(pallares.us). Pallares manages commercial pressure washing from quote through "
@@ -64,7 +68,28 @@ class SalesCopyResult(BaseModel):
     talking_points: str = ""
 
 
-def is_generic_copy(why_call: str, talking_points: str, *, city: str = "", business_name: str = "") -> bool:
+def _sales_copy_response_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sales_copy",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "why_call": {"type": "string"},
+                    "talking_points": {"type": "string"},
+                },
+                "required": ["why_call", "talking_points"],
+                "additionalProperties": False,
+            },
+            "strict": False,
+        },
+    }
+
+
+def is_generic_copy(
+    why_call: str, talking_points: str, *, city: str = "", business_name: str = ""
+) -> bool:
     combined = f"{why_call}\n{talking_points}".strip()
     if not combined:
         return False
@@ -92,14 +117,6 @@ def needs_sales_copy(enriched: EnrichedLead) -> bool:
     return is_generic_copy(why, points, city=enriched.city, business_name=enriched.business_name)
 
 
-def gateway_configured(settings: Settings) -> bool:
-    return bool(
-        settings.ai_gateway_enabled
-        and settings.ai_gateway_api_key
-        and settings.ai_gateway_model
-    )
-
-
 def parse_json_from_llm(content: str) -> dict[str, Any] | None:
     text = content.strip()
     if text.startswith("```"):
@@ -122,46 +139,6 @@ def parse_json_from_llm(content: str) -> dict[str, Any] | None:
             except json.JSONDecodeError:
                 return None
     return None
-
-
-def gateway_chat_completion(
-    settings: Settings,
-    *,
-    system_prompt: str,
-    user_content: str,
-    timeout: float = 60.0,
-) -> str | None:
-    if not gateway_configured(settings):
-        return None
-
-    body = {
-        "model": settings.ai_gateway_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-    }
-
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(
-            AI_GATEWAY_URL,
-            headers={
-                "Authorization": f"Bearer {settings.ai_gateway_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        if response.status_code >= 400:
-            logger.warning(
-                "AI Gateway request failed: HTTP %s %s",
-                response.status_code,
-                response.text[:300],
-            )
-            return None
-
-        payload: dict[str, Any] = response.json()
-        content = payload.get("choices", [{}])[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
 
 
 def build_research_context(
@@ -234,19 +211,35 @@ def _truncate_context(context: dict[str, Any], max_chars: int) -> dict[str, Any]
     return trimmed
 
 
-def generate_sales_copy(context: dict[str, Any], settings: Settings) -> SalesCopyResult | None:
+def generate_sales_copy(
+    context: dict[str, Any],
+    settings: Settings,
+    *,
+    store: LeadStore | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
+    place_id: str | None = None,
+) -> SalesCopyResult | None:
     if not gateway_configured(settings):
         return None
 
     context = _truncate_context(context, settings.ai_gateway_max_context_chars)
     try:
-        content = gateway_chat_completion(
+        completion = gateway_chat_completion(
             settings,
             system_prompt=SYSTEM_PROMPT,
             user_content=json.dumps(context, ensure_ascii=False),
+            store=store,
+            run_id=run_id,
+            request_id=request_id,
+            place_id=place_id,
+            operation="sales_copy",
+            response_format=_sales_copy_response_format(),
+            prompt_version=PROMPT_VERSION,
         )
-        if not content:
+        if not completion or not completion.content:
             return None
+        content = completion.content
 
         parsed = parse_json_from_llm(content)
         if not parsed:
@@ -256,7 +249,7 @@ def generate_sales_copy(context: dict[str, Any], settings: Settings) -> SalesCop
             why_call=str(parsed.get("why_call") or "").strip(),
             talking_points=str(parsed.get("talking_points") or "").strip(),
         )
-    except (httpx.HTTPError, KeyError, IndexError) as exc:
+    except (KeyError, IndexError) as exc:
         logger.warning("AI Gateway sales copy error: %s", exc)
         return None
 
@@ -269,27 +262,29 @@ def maybe_enrich_sales_copy(
     settings: Settings,
     *,
     trace: LeadEvalTrace | None = None,
+    store: LeadStore | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
 ) -> EnrichedLead:
     if not gateway_configured(settings):
         if trace:
             trace.record("gateway", ran=False, reason="AI Gateway not configured")
         return enriched
 
-    if enriched.source_tool.endswith("firecrawl_agent"):
-        if enriched.why_this_is_a_good_fit and enriched.sales_talking_points:
-            if not is_generic_copy(
-                enriched.why_this_is_a_good_fit,
-                enriched.sales_talking_points,
-                city=enriched.city,
-                business_name=enriched.business_name,
-            ):
-                if trace:
-                    trace.record(
-                        "gateway",
-                        ran=False,
-                        reason="rich non-generic Agent copy kept",
-                    )
-                return enriched
+    if enriched.why_this_is_a_good_fit and enriched.sales_talking_points:
+        if not is_generic_copy(
+            enriched.why_this_is_a_good_fit,
+            enriched.sales_talking_points,
+            city=enriched.city,
+            business_name=enriched.business_name,
+        ):
+            if trace:
+                trace.record(
+                    "gateway",
+                    ran=False,
+                    reason="rich non-generic scrape copy kept",
+                )
+            return enriched
 
     if not needs_sales_copy(enriched):
         if trace:
@@ -297,7 +292,14 @@ def maybe_enrich_sales_copy(
         return enriched
 
     context = build_research_context(enriched, raw, investigation, pdf_snippets)
-    result = generate_sales_copy(context, settings)
+    result = generate_sales_copy(
+        context,
+        settings,
+        store=store,
+        run_id=run_id,
+        request_id=request_id,
+        place_id=enriched.place_id,
+    )
     if not result or not (result.why_call or result.talking_points):
         if trace:
             trace.record("gateway", ran=False, reason="Gateway returned empty result")
@@ -309,7 +311,10 @@ def maybe_enrich_sales_copy(
         enriched.sales_talking_points = result.talking_points
 
     rules = get_enrichment_rules(enriched.property_type, settings.config_dir)
-    if rules.suggest_recurring and detect_brand(enriched.business_name, enriched.website) != "independent":
+    if (
+        rules.suggest_recurring
+        and detect_brand(enriched.business_name, enriched.website) != "independent"
+    ):
         recurring = (
             "• Pallares offers recurring multi-location maintenance programs with bundle pricing"
         )

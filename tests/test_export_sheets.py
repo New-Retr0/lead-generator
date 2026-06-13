@@ -71,17 +71,39 @@ def test_sales_export_includes_talking_points() -> None:
         lead_category="Shopping Center",
         why_this_is_a_good_fit="High-traffic retail hub on main corridor.",
         sales_talking_points="• Near downtown Reedley\n• Mixed tenant mix with food anchors",
+        lead_score=70,
         date_found=date(2026, 5, 22),
     )
     row = SalesExportRow.from_enriched(lead)
     assert row.why_call == "High-traffic retail hub on main corridor."
     assert "downtown Reedley" in row.talking_points
     assert SHEETS_HEADERS.index("Talking Points") == SHEETS_HEADERS.index("Why Call") + 1
+    assert SHEETS_HEADERS.index("Score") == SHEETS_HEADERS.index("Confidence") + 1
+
+
+def test_sales_export_prepends_why_now_to_why_call() -> None:
+    lead = EnrichedLead(
+        place_id="ChIJwhy",
+        business_name="Reedley Plaza",
+        formatted_address="100 Main St, Reedley, CA 93654",
+        city="Reedley",
+        state="CA",
+        property_type="strip_mall",
+        lead_category="Strip Mall",
+        why_now="Property changed hands recently; new owners invest in curb appeal.",
+        why_this_is_a_good_fit="Strong fit for exterior cleaning.",
+        lead_score=65,
+        date_found=date(2026, 5, 22),
+    )
+    row = SalesExportRow.from_enriched(lead)
+    assert row.why_call.startswith("Property changed hands recently")
+    assert "Strong fit for exterior cleaning." in row.why_call
 
 
 def test_sales_export_has_only_slim_columns() -> None:
     headers = SalesExportRow.csv_headers()
-    assert len(headers) == 17
+    assert len(headers) == 18
+    assert "score" in headers
     assert headers[-1] == "_place_id"
     assert "contact" not in headers
     assert "role" not in headers

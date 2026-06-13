@@ -1,0 +1,60 @@
+license_lookups:
+  CA:
+    agency: California DRE
+    record_url: "https://www2.dre.ca.gov/publicasp/pplinfo.asp"
+    search_url: "https://www.dre.ca.gov/consumers/publiclicenselookup.html"
+    serp_site: "www2.dre.ca.gov"
+    pm_license_required: true
+    adapter: dre_ca
+  TX:
+    agency: TREC
+    search_url: "https://www.trec.texas.gov/apps/license-holder-search/"
+    serp_site: "trec.texas.gov"
+    pm_license_required: true
+    adapter: generic
+  FL:
+    agency: FL DBPR
+    search_url: "https://www.myfloridalicense.com/wl11.asp"
+    serp_site: "myfloridalicense.com"
+    pm_license_required: true
+    adapter: generic
+  AZ:
+    agency: AZ ADRE
+    search_url: "https://services.azre.gov/publicdatabase/"
+    serp_site: "azre.gov"
+    pm_license_required: true
+    adapter: generic
+  NV:
+    agency: NV RED
+    search_url: "https://red.prod.secure.nv.gov/Lookup/LicenseLookup.aspx"
+    serp_site: "red.prod.secure.nv.gov"
+    pm_license_required: true
+    adapter: generic
+  WA:
+    agency: WA DOL
+    search_url: "https://professions.dol.wa.gov/s/license-lookup"
+    serp_site: "professions.dol.wa.gov"
+    pm_license_required: true
+    adapter: generic
+  OR:
+    agency: OR REA
+    search_url: "https://orea.elicense.irondata.com/Lookup/LicenseLookup.aspx"
+    serp_site: "orea.elicense.irondata.com"
+    pm_license_required: true
+    adapter: generic
+  CO:
+    agency: CO DORA
+    search_url: "https://apps2.colorado.gov/dora/licensing/lookup/licenselookup.aspx"
+    serp_site: "colorado.gov"
+    pm_license_required: true
+    adapter: generic
+  UT:
+    agency: UT DOPL
+    search_url: "https://secure.utah.gov/llv/search/index.html"
+    serp_site: "secure.utah.gov"
+    pm_license_required: true
+    adapter: generic
+  ID:
+    agency: ID DOPL
+    pm_license_required: false
+    adapter: none

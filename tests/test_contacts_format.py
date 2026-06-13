@@ -17,7 +17,9 @@ def test_format_contacts_block_lists_labeled_contacts() -> None:
         property_type="gas_station",
         lead_category="Gas Station",
         site_contacts=[
-            SiteContact(label="Store Manager", name="Jane Doe", phone="(559) 638-0100", priority="best"),
+            SiteContact(
+                label="Store Manager", name="Jane Doe", phone="(559) 638-0100", priority="best"
+            ),
             SiteContact(label="Main line", phone="(559) 638-0200", priority="fallback"),
         ],
     )

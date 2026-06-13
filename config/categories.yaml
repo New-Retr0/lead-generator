@@ -9,7 +9,10 @@ enrichment_defaults:
   min_contact_bar: phone
   require_property_manager_clue: false
   always_investigate: false
-  allow_agent: false
+  allow_owner_chain: false
+  # Cross-check BBB for principals/owners (deterministic parse, ~3 credits)
+  # whenever no verified person has been found yet.
+  registry_lookup: bbb
 
 categories:
   gas_station:
@@ -52,7 +55,7 @@ categories:
       min_contact_bar: labeled_phone
       require_property_manager_clue: true
       always_investigate: true
-      allow_agent: true
+      allow_owner_chain: true
 
   shopping_center:
     label: Shopping Center
@@ -67,7 +70,7 @@ categories:
       min_contact_bar: labeled_phone
       require_property_manager_clue: true
       always_investigate: true
-      allow_agent: true
+      allow_owner_chain: true
 
   grocery:
     label: Grocery-Anchored Center
@@ -97,7 +100,7 @@ categories:
       - urgent care clinic
     enrichment:
       min_contact_bar: labeled_phone
-      allow_agent: true
+      allow_owner_chain: true
 
   pharmacy:
     label: Pharmacy
@@ -132,6 +135,8 @@ categories:
       - industrial park
       - warehouse commercial
       - light industrial building
+    enrichment:
+      allow_owner_chain: true
 
   big_box:
     label: Big Box Retail
@@ -146,6 +151,7 @@ categories:
       - department store
     enrichment:
       suggest_recurring: true
+      allow_owner_chain: true
 
   auto_dealer:
     label: Auto Dealership
@@ -160,6 +166,7 @@ categories:
       - auto mall
     enrichment:
       min_contact_bar: phone
+      allow_owner_chain: true
 
   dollar_store:
     label: Dollar / Discount Store
@@ -193,6 +200,88 @@ categories:
       - parking garage
       - parking lot commercial
       - park and ride lot
+    enrichment:
+      allow_owner_chain: true
+
+  parking_small:
+    label: Small Parking Lot
+    property_type: parking_small
+    source: overpass
+    queries: []
+    overpass_filter: '["amenity"="parking"]["parking"="surface"]'
+    area_min_m2: 500
+    area_max_m2: 4000
+    enrichment:
+      min_contact_bar: phone
+      allow_owner_chain: true
+
+  parking_large_private:
+    label: Large Private Parking Lot
+    property_type: parking_large_private
+    source: overpass
+    queries: []
+    overpass_filter: '["amenity"="parking"]["parking"="surface"]'
+    area_min_m2: 8000
+    prefer_private_access: true
+    enrichment:
+      min_contact_bar: phone
+      allow_owner_chain: true
+
+  hotel:
+    label: Hotel / Motel
+    property_type: hotel
+    included_type: hotel
+    nearby_types:
+      - hotel
+      - lodging
+    queries:
+      - hotel
+      - motel
+    enrichment:
+      suggest_recurring: true
+      allow_owner_chain: true
+
+  thrift_store:
+    label: Thrift / Discount Retail
+    property_type: thrift_store
+    queries:
+      - thrift store
+      - goodwill store
+      - habitat restore
+    enrichment:
+      suggest_recurring: true
+
+  community_facility:
+    label: Community Facility
+    property_type: community_facility
+    queries:
+      - community center
+      - homeless shelter
+      - senior center
+    enrichment:
+      min_contact_bar: phone
+
+  amusement_facility:
+    label: Amusement / Entertainment Venue
+    property_type: amusement_facility
+    included_type: amusement_center
+    nearby_types:
+      - amusement_center
+      - movie_theater
+    queries:
+      - amusement park
+      - entertainment venue
+      - bowling alley
+
+  public_agency:
+    label: Public Agency / Municipal
+    property_type: public_agency
+    queries:
+      - city public works department
+      - parks and recreation department
+      - municipal facilities maintenance
+    enrichment:
+      min_contact_bar: phone
 
   hoa:
     label: HOA / Homeowners Association Office
@@ -212,3 +301,27 @@ categories:
     enrichment:
       min_contact_bar: labeled_phone
       always_investigate: true
+      registry_lookup:
+        - bbb
+        - state_license
+        - linkedin_serp
+
+  vendor_pressure_washing:
+    label: "Vendor: Pressure Washing"
+    property_type: vendor_pressure_washing
+    # No reliable Places Table A type — text search only.
+    queries:
+      - commercial pressure washing company
+      - pressure washing service
+      - power washing company
+    enrichment:
+      min_contact_bar: phone
+      always_investigate: true
+      allow_owner_chain: false
+      registry_lookup: bbb
+      insurance_keywords:
+        - fully insured
+        - licensed and insured
+        - bonded and insured
+        - general liability
+        - insured

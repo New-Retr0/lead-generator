@@ -1,5 +1,10 @@
+from pallares_leads.pipeline.dedupe import (
+    dedupe_by_fingerprint,
+    dedupe_by_place_id,
+    dedupe_by_union,
+    dedupe_leads,
+)
 from pallares_leads.schemas import RawLead
-from pallares_leads.pipeline.dedupe import dedupe_by_fingerprint, dedupe_by_place_id, dedupe_leads
 
 
 def test_dedupe_by_place_id():
@@ -12,7 +17,11 @@ def test_dedupe_by_place_id():
         lead_category="Gas Station",
     )
     a = RawLead(place_id="places/abc", **base)
-    b = RawLead(place_id="places/abc", business_name="Duplicate", **{k: v for k, v in base.items() if k != "business_name"})
+    b = RawLead(
+        place_id="places/abc",
+        business_name="Duplicate",
+        **{k: v for k, v in base.items() if k != "business_name"},
+    )
     c = RawLead(place_id="places/xyz", **base)
 
     result = dedupe_by_place_id([a, b, c])
@@ -55,3 +64,30 @@ def test_dedupe_leads_combines_both():
     kept, skipped = dedupe_leads([a, b, c])
     assert len(kept) == 1
     assert skipped == 2
+
+
+def test_dedupe_by_union_merges_shared_phone_with_name_overlap() -> None:
+    base = dict(
+        formatted_address="100 Main St, Reedley, CA",
+        city="Reedley",
+        state="CA",
+        property_type="strip_mall",
+        lead_category="Strip Mall",
+        main_phone="(559) 555-0100",
+    )
+    a = RawLead(
+        place_id="places/a",
+        business_name="Valley Plaza Management",
+        website="https://valleyplaza.example",
+        **base,
+    )
+    b = RawLead(
+        place_id="places/b",
+        business_name="Valley Plaza Mgmt LLC",
+        **base,
+    )
+
+    kept, unions = dedupe_by_union([a, b])
+    assert len(kept) == 1
+    assert unions == 1
+    assert "places/b" in kept[0].alternate_place_ids
