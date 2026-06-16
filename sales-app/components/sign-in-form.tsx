@@ -16,8 +16,7 @@ function friendlyAuthError(message: string): string {
 
 export function SignInForm() {
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [phase, setPhase] = useState<"email" | "sent">("email");
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -39,26 +38,7 @@ export function SignInForm() {
       setError(friendlyAuthError(err.message));
       return;
     }
-    setPhase("sent");
-  }
-
-  async function verifyCode(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    const supabase = createClient();
-    const normalized = email.trim().toLowerCase();
-    const { error: err } = await supabase.auth.verifyOtp({
-      email: normalized,
-      token: code.trim(),
-      type: "email",
-    });
-    setLoading(false);
-    if (err) {
-      setError(friendlyAuthError(err.message));
-      return;
-    }
-    window.location.href = "/crm";
+    setSent(true);
   }
 
   return (
@@ -70,12 +50,12 @@ export function SignInForm() {
         <div className="space-y-1">
           <CardTitle className="text-2xl tracking-tight">PALLARES Sales</CardTitle>
           <CardDescription>
-            Registered reps only — enter your email for a magic link or 6-digit code.
+            Registered reps only — enter your email and we&apos;ll send a sign-in link.
           </CardDescription>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {phase === "email" && (
+        {!sent ? (
           <form onSubmit={sendMagicLink} className="space-y-3">
             <Input
               type="email"
@@ -90,40 +70,22 @@ export function SignInForm() {
               {loading ? "Sending…" : "Send magic link"}
             </Button>
           </form>
-        )}
-        {phase === "sent" && (
-          <p className="text-center text-sm text-muted-foreground">
-            Check your email for the sign-in link. You can close this tab after clicking it,
-            or enter the 6-digit code below.
-          </p>
-        )}
-        {phase === "sent" && (
-          <form onSubmit={verifyCode} className="space-y-3">
-            <Input
-              inputMode="numeric"
-              placeholder="6-digit code"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              maxLength={6}
-              className="h-11 text-center text-lg tracking-[0.3em]"
-            />
-            <Button type="submit" variant="secondary" className="h-11 w-full" disabled={loading}>
-              {loading ? "Verifying…" : "Verify code"}
-            </Button>
-          </form>
-        )}
-        {phase === "sent" && (
-          <button
-            type="button"
-            className="mx-auto block text-sm text-muted-foreground underline-offset-4 hover:underline"
-            onClick={() => {
-              setPhase("email");
-              setCode("");
-              setError(null);
-            }}
-          >
-            Use a different email
-          </button>
+        ) : (
+          <>
+            <p className="text-center text-sm text-muted-foreground">
+              Check your email and click the sign-in link. You can close this tab after you&apos;re in.
+            </p>
+            <button
+              type="button"
+              className="mx-auto block text-sm text-muted-foreground underline-offset-4 hover:underline"
+              onClick={() => {
+                setSent(false);
+                setError(null);
+              }}
+            >
+              Use a different email
+            </button>
+          </>
         )}
         {error && (
           <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-center text-sm text-destructive">

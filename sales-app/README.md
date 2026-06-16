@@ -32,7 +32,7 @@ Open http://localhost:3000 — unauthenticated users redirect to `/login`.
 
 - Signups disabled in Supabase; reps must be invited first.
 - Invite: `python scripts/invite_user.py rep@example.com` (from repo root with `.env` loaded).
-- Login: magic link or 6-digit OTP on `/login`.
+- Login: magic link on `/sign-in`.
 
 ## Deploy (Vercel)
 
