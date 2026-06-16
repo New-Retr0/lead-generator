@@ -65,14 +65,16 @@ def test_load_jurisdictions_has_ca_counties() -> None:
     assert registry.counties["fresno_ca"].parcel_portal.owner_names_online is False
 
 
-def test_owner_chain_applies_sos_contacts(tmp_path) -> None:
+def test_owner_chain_applies_sos_contacts(store: LeadStore) -> None:
+    from helpers import ensure_lead
+
     settings = Settings(
         browser_use_enabled=True,
         browser_use_api_key="test-key",
         config_dir=Settings().config_dir,
     )
-    store = LeadStore(tmp_path / "test.db")
     raw = _raw_lead()
+    ensure_lead(store, raw.place_id, business_name=raw.business_name)
     enriched = EnrichedLead.model_validate(raw.model_dump())
     enriched.best_contact_phone = NOT_FOUND
     rules = get_enrichment_rules("strip_mall", settings.config_dir)
@@ -106,17 +108,19 @@ def test_owner_chain_applies_sos_contacts(tmp_path) -> None:
     record = store.get_owner_record(raw.place_id)
     assert record is not None
     assert record["owner_name"] == "Reedley Plaza LLC"
-    store.close()
 
 
-def test_owner_chain_reuses_entity_record(tmp_path) -> None:
+def test_owner_chain_reuses_entity_record(store: LeadStore) -> None:
+    from helpers import ensure_lead
+
     settings = Settings(
         browser_use_enabled=True,
         browser_use_api_key="test-key",
         config_dir=Settings().config_dir,
     )
-    store = LeadStore(tmp_path / "test.db")
     raw = _raw_lead(place_id="ChIJother")
+    ensure_lead(store, raw.place_id, business_name=raw.business_name)
+    ensure_lead(store, "ChIJseed", business_name="Reedley Plaza LLC")
     enriched = EnrichedLead.model_validate(raw.model_dump())
     enriched.best_contact_phone = NOT_FOUND
     rules = get_enrichment_rules("strip_mall", settings.config_dir)
@@ -143,7 +147,6 @@ def test_owner_chain_reuses_entity_record(tmp_path) -> None:
 
     mock_browser.sos_entity_lookup.assert_not_called()
     assert result.contact_improved or result.enriched.best_contact_name == "Jane Owner"
-    store.close()
 
 
 def test_owner_chain_skips_when_contact_bar_met() -> None:
@@ -168,14 +171,16 @@ def test_owner_chain_skips_when_contact_bar_met() -> None:
     mock_browser.sos_entity_lookup.assert_not_called()
 
 
-def test_owner_chain_loopnet_broker_contact(tmp_path) -> None:
+def test_owner_chain_loopnet_broker_contact(store: LeadStore) -> None:
+    from helpers import ensure_lead
+
     settings = Settings(
         browser_use_enabled=True,
         browser_use_api_key="test-key",
         config_dir=Settings().config_dir,
     )
-    store = LeadStore(tmp_path / "test.db")
     raw = _raw_lead(business_name="Downtown Parking Lot", property_type="parking")
+    ensure_lead(store, raw.place_id, business_name=raw.business_name)
     enriched = EnrichedLead.model_validate(raw.model_dump())
     enriched.best_contact_phone = NOT_FOUND
     rules = get_enrichment_rules("parking", settings.config_dir)
@@ -203,7 +208,6 @@ def test_owner_chain_loopnet_broker_contact(tmp_path) -> None:
     assert result.loopnet_used is True
     assert result.enriched.best_contact_phone == "(559) 555-0100"
     assert result.enriched.best_contact_type == "cre broker"
-    store.close()
 
 
 def test_contact_hierarchy_prefers_property_owner_over_leasing() -> None:

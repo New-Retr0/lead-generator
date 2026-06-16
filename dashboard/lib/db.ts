@@ -79,32 +79,37 @@ function parseFirecrawlSnapshotBalance(
   snapshotJson: unknown,
   remaining: number | null,
   used: number | null,
-): { remaining: number | null; used: number | null } {
-  if (remaining != null) {
-    return { remaining, used };
-  }
+): { remaining: number | null; used: number | null; plan: number | null } {
   const payload = snapshotPayload(snapshotJson);
-  if (!payload) {
-    return { remaining: null, used: null };
-  }
-  try {
-    const data =
-      payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
-        ? (payload.data as Record<string, unknown>)
-        : payload;
-    const remRaw = data.remainingCredits ?? data.remaining_credits;
-    const planRaw = data.planCredits ?? data.plan_credits;
-    let usedRaw = data.usedCredits ?? data.used_credits;
-    if (usedRaw == null && remRaw != null && planRaw != null) {
-      usedRaw = Number(planRaw) - Number(remRaw);
+  let plan: number | null = null;
+  let snapRemaining: number | null = null;
+  let snapUsed: number | null = null;
+
+  if (payload) {
+    try {
+      const data =
+        payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+          ? (payload.data as Record<string, unknown>)
+          : payload;
+      const planRaw = data.planCredits ?? data.plan_credits;
+      plan = planRaw != null ? Number(planRaw) : null;
+      const remRaw = data.remainingCredits ?? data.remaining_credits;
+      snapRemaining = remRaw != null ? Number(remRaw) : null;
+      let usedRaw = data.usedCredits ?? data.used_credits;
+      if (usedRaw == null && snapRemaining != null && plan != null) {
+        usedRaw = plan - snapRemaining;
+      }
+      snapUsed = usedRaw != null ? Number(usedRaw) : null;
+    } catch {
+      // fall through with DB columns only
     }
-    return {
-      remaining: remRaw != null ? Number(remRaw) : null,
-      used: usedRaw != null ? Number(usedRaw) : null,
-    };
-  } catch {
-    return { remaining: null, used: null };
   }
+
+  return {
+    remaining: remaining ?? snapRemaining,
+    used: used ?? snapUsed,
+    plan,
+  };
 }
 
 export async function getCreditBalances(): Promise<ProviderBalance[]> {
@@ -129,11 +134,13 @@ export async function getCreditBalances(): Promise<ProviderBalance[]> {
         : {
             remaining: row.remaining_credits as number | null,
             used: row.used_credits as number | null,
+            plan: null,
           };
     return {
       provider: String(row.provider),
       remaining: parsed.remaining,
       used: parsed.used,
+      plan: parsed.plan,
       unitLabel: balanceUnitLabel(String(row.provider)),
       snapshotAt: toIsoOrNull(row.created_at),
     };

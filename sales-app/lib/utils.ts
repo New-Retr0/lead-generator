@@ -29,6 +29,81 @@ export function formatProvider(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider.replace(/_/g, " ");
 }
 
+export function formatCredits(value: number): string {
+  return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+export function formatFirecrawlBalanceSub(
+  balance:
+    | { remaining: number | null; used: number | null; plan: number | null }
+    | undefined,
+  pipelineCredits: number,
+): string {
+  if (!balance || balance.remaining == null) {
+    if (pipelineCredits > 0) {
+      return `${formatCredits(pipelineCredits)} tracked by pipeline this month`;
+    }
+    return "Run health check for live balance";
+  }
+
+  const parts: string[] = [];
+  if (balance.used != null) {
+    if (balance.plan != null) {
+      parts.push(
+        `${formatCredits(balance.used)} / ${formatCredits(balance.plan)} used this billing period`,
+      );
+    } else {
+      parts.push(`${formatCredits(balance.used)} used this billing period`);
+    }
+  }
+  if (pipelineCredits > 0) {
+    parts.push(`${formatCredits(pipelineCredits)} tracked by pipeline`);
+  }
+  return parts.join(" · ");
+}
+
+export function formatFirecrawlLiveBalance(
+  balance:
+    | { remaining: number | null; used: number | null; plan: number | null }
+    | undefined,
+): string {
+  if (!balance || balance.remaining == null) {
+    return "Run health check for live balance";
+  }
+
+  const parts = [`${formatCredits(balance.remaining)} remaining`];
+  if (balance.used != null) {
+    if (balance.plan != null) {
+      parts.push(`${formatCredits(balance.used)} / ${formatCredits(balance.plan)} used`);
+    } else {
+      parts.push(`${formatCredits(balance.used)} used`);
+    }
+  }
+  return parts.join(" · ");
+}
+
+export function formatOverviewSpendSub(
+  usdByProvider: { provider: string; usd: number }[],
+): string {
+  const shorts: Record<string, string> = {
+    firecrawl: "FC",
+    google_places: "Google",
+    browser_use: "BU",
+    ai_gateway: "AI",
+  };
+
+  const top = [...usdByProvider]
+    .filter((row) => row.usd > 0)
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 3)
+    .map((row) => {
+      const label = shorts[row.provider] ?? formatProvider(row.provider);
+      return `${label} ${formatUsd(row.usd)}`;
+    });
+
+  return top.length > 0 ? top.join(" · ") : "All providers";
+}
+
 export function formatCostUnits(
   provider: string,
   units: number,

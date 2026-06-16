@@ -54,7 +54,9 @@ export function StatCard({
             <AnimatedNumber value={value} format={format} />
           </p>
           {sub ? (
-            <p className="mt-2 truncate text-xs text-muted-foreground">{sub}</p>
+            <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+              {sub}
+            </p>
           ) : null}
         </div>
         <div

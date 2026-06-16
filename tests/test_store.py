@@ -31,13 +31,6 @@ def _enriched(place_id: str = "places/abc") -> EnrichedLead:
     )
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> LeadStore:
-    db = LeadStore(tmp_path / "test.db")
-    yield db
-    db.close()
-
-
 def test_should_skip_unknown_lead(store: LeadStore) -> None:
     assert (
         store.should_skip(
@@ -153,28 +146,24 @@ def test_record_and_get_playbook(store: LeadStore) -> None:
     assert store.count_profiles() == 1
 
 
-def test_concurrent_record_cost_events(tmp_path: Path) -> None:
+def test_concurrent_record_cost_events(store: LeadStore) -> None:
     import threading
 
-    store = LeadStore(tmp_path / "concurrent.db")
-    try:
-        expected = 8 * 25
+    expected = 8 * 25
 
-        def worker() -> None:
-            for _ in range(25):
-                store.record_cost_event(
-                    provider="firecrawl",
-                    operation="scrape",
-                    units=1,
-                    usd=0.005,
-                )
+    def worker() -> None:
+        for _ in range(25):
+            store.record_cost_event(
+                provider="firecrawl",
+                operation="scrape",
+                units=1,
+                usd=0.005,
+            )
 
-        threads = [threading.Thread(target=worker) for _ in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        store.commit_cost_events()
-        assert store.total_firecrawl_credits() == expected
-    finally:
-        store.close()
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    store.commit_cost_events()
+    assert store.total_firecrawl_credits() == expected

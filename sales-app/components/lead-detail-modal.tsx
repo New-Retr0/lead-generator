@@ -459,19 +459,32 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
 function LeadDetailContent({ placeId }: { placeId: string }) {
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- new placeId fetch
     setLoading(true);
+    setError("");
 
     const run = async () => {
       try {
         const res = await fetch(`/api/leads/${encodeURIComponent(placeId)}`);
-        const data = (await res.json()) as { lead?: LeadDetail };
-        if (!cancelled) setLead(data.lead ?? null);
-      } catch {
-        if (!cancelled) setLead(null);
+        const data = (await res.json()) as { lead?: LeadDetail; error?: string };
+        if (!cancelled) {
+          if (!res.ok) {
+            setLead(null);
+            setError(data.error ?? `Failed to load lead (${res.status})`);
+          } else {
+            setLead(data.lead ?? null);
+            if (!data.lead) setError("Lead not found in database.");
+          }
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setLead(null);
+          setError(e instanceof Error ? e.message : "Failed to load lead");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -521,7 +534,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
       <div className="p-6">
         <DialogTitle className="text-lg">Lead not found</DialogTitle>
         <DialogDescription className="mt-2">
-          No record for this place id in the database.
+          {error || "No record for this place id in the database."}
         </DialogDescription>
       </div>
     );

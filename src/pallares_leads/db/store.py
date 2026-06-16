@@ -126,7 +126,13 @@ class LeadStore:
         if refresh_after_days is None:
             return True
 
-        last_enriched = datetime.fromisoformat(row["last_enriched_at"])
+        last_raw = row["last_enriched_at"]
+        if isinstance(last_raw, datetime):
+            last_enriched = last_raw if last_raw.tzinfo else last_raw.replace(tzinfo=UTC)
+        else:
+            last_enriched = datetime.fromisoformat(str(last_raw))
+            if last_enriched.tzinfo is None:
+                last_enriched = last_enriched.replace(tzinfo=UTC)
         cutoff = _utc_now() - timedelta(days=refresh_after_days)
         return last_enriched >= cutoff
 

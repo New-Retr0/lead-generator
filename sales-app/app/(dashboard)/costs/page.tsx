@@ -37,6 +37,8 @@ import type { CostSeries } from "@/lib/types";
 import {
   balanceLabel,
   formatCostUnits,
+  formatCredits,
+  formatFirecrawlLiveBalance,
   formatProvider,
   formatUsd,
 } from "@/lib/utils";
@@ -114,13 +116,10 @@ export default function CostsPage() {
         </StaggerItem>
         <StaggerItem>
           <StatCard
-            label={`Firecrawl credits (${days}d)`}
+            label={`Pipeline Firecrawl (${days}d)`}
             value={totals.firecrawlCredits}
-            sub={
-              firecrawlBalance?.remaining != null
-                ? `${firecrawlBalance.remaining.toFixed(0)} remaining`
-                : "Run health check for balance"
-            }
+            format={(n) => formatCredits(n)}
+            sub={formatFirecrawlLiveBalance(firecrawlBalance ?? undefined)}
             icon={Coins}
             tone="warning"
           />

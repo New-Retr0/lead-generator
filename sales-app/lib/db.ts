@@ -1,4 +1,6 @@
+import * as supabaseReads from "./db-supabase";
 import { dbAvailable, getSql } from "./pg";
+import { useSupabaseReads } from "./use-supabase-reads";
 import type {
   CostSeries,
   CrmStatus,
@@ -79,35 +81,41 @@ function parseFirecrawlSnapshotBalance(
   snapshotJson: unknown,
   remaining: number | null,
   used: number | null,
-): { remaining: number | null; used: number | null } {
-  if (remaining != null) {
-    return { remaining, used };
-  }
+): { remaining: number | null; used: number | null; plan: number | null } {
   const payload = snapshotPayload(snapshotJson);
-  if (!payload) {
-    return { remaining: null, used: null };
-  }
-  try {
-    const data =
-      payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
-        ? (payload.data as Record<string, unknown>)
-        : payload;
-    const remRaw = data.remainingCredits ?? data.remaining_credits;
-    const planRaw = data.planCredits ?? data.plan_credits;
-    let usedRaw = data.usedCredits ?? data.used_credits;
-    if (usedRaw == null && remRaw != null && planRaw != null) {
-      usedRaw = Number(planRaw) - Number(remRaw);
+  let plan: number | null = null;
+  let snapRemaining: number | null = null;
+  let snapUsed: number | null = null;
+
+  if (payload) {
+    try {
+      const data =
+        payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+          ? (payload.data as Record<string, unknown>)
+          : payload;
+      const planRaw = data.planCredits ?? data.plan_credits;
+      plan = planRaw != null ? Number(planRaw) : null;
+      const remRaw = data.remainingCredits ?? data.remaining_credits;
+      snapRemaining = remRaw != null ? Number(remRaw) : null;
+      let usedRaw = data.usedCredits ?? data.used_credits;
+      if (usedRaw == null && snapRemaining != null && plan != null) {
+        usedRaw = plan - snapRemaining;
+      }
+      snapUsed = usedRaw != null ? Number(usedRaw) : null;
+    } catch {
+      // fall through with DB columns only
     }
-    return {
-      remaining: remRaw != null ? Number(remRaw) : null,
-      used: usedRaw != null ? Number(usedRaw) : null,
-    };
-  } catch {
-    return { remaining: null, used: null };
   }
+
+  return {
+    remaining: remaining ?? snapRemaining,
+    used: used ?? snapUsed,
+    plan,
+  };
 }
 
 export async function getCreditBalances(): Promise<ProviderBalance[]> {
+  if (useSupabaseReads()) return supabaseReads.getCreditBalances();
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -129,11 +137,13 @@ export async function getCreditBalances(): Promise<ProviderBalance[]> {
         : {
             remaining: row.remaining_credits as number | null,
             used: row.used_credits as number | null,
+            plan: null,
           };
     return {
       provider: String(row.provider),
       remaining: parsed.remaining,
       used: parsed.used,
+      plan: parsed.plan,
       unitLabel: balanceUnitLabel(String(row.provider)),
       snapshotAt: toIsoOrNull(row.created_at),
     };
@@ -203,6 +213,7 @@ function primaryPhone(data: EnrichedJson): string | null {
 }
 
 export async function getOverview(): Promise<OverviewStats> {
+  if (useSupabaseReads()) return supabaseReads.getOverview();
   if (!dbAvailable()) return emptyOverview();
   const sql = getSql();
 
@@ -302,6 +313,7 @@ export async function listLeads(filters?: {
   dudsOnly?: boolean;
   limit?: number;
 }): Promise<LeadRow[]> {
+  if (useSupabaseReads()) return supabaseReads.listLeads(filters);
   if (!dbAvailable()) return [];
   const sql = getSql();
   const limit = filters?.limit ?? 500;
@@ -396,6 +408,7 @@ function normalizeListText(value: string | null): string | null {
 }
 
 export async function getRelatedLeads(placeId: string): Promise<RelatedLead[]> {
+  if (useSupabaseReads()) return supabaseReads.getRelatedLeads(placeId);
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -495,6 +508,7 @@ export async function getRelatedLeads(placeId: string): Promise<RelatedLead[]> {
 }
 
 export async function getSourceChecksForLead(placeId: string): Promise<SourceCheck[]> {
+  if (useSupabaseReads()) return supabaseReads.getSourceChecksForLead(placeId);
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -574,6 +588,7 @@ function parseCostMeta(raw: unknown): Record<string, unknown> {
 }
 
 export async function getLeadCosts(placeId: string): Promise<LeadCosts> {
+  if (useSupabaseReads()) return supabaseReads.getLeadCosts(placeId);
   if (!dbAvailable()) return emptyLeadCosts();
   const sql = getSql();
 
@@ -664,6 +679,7 @@ export async function getLeadCosts(placeId: string): Promise<LeadCosts> {
 }
 
 export async function getLeadDetail(placeId: string): Promise<LeadDetail | null> {
+  if (useSupabaseReads()) return supabaseReads.getLeadDetail(placeId);
   if (!dbAvailable()) return null;
   const sql = getSql();
 
@@ -771,6 +787,7 @@ function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
 }
 
 export async function getRunEvents(runId: string): Promise<RunEventRow[]> {
+  if (useSupabaseReads()) return supabaseReads.getRunEvents(runId);
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -796,6 +813,7 @@ function emptyRunCosts(): RunCosts {
 }
 
 export async function getRun(runId: string): Promise<RunRow | null> {
+  if (useSupabaseReads()) return supabaseReads.getRun(runId);
   if (!dbAvailable()) return null;
   const sql = getSql();
 
@@ -822,6 +840,7 @@ export async function getRun(runId: string): Promise<RunRow | null> {
 }
 
 export async function getRunCosts(runId: string): Promise<RunCosts> {
+  if (useSupabaseReads()) return supabaseReads.getRunCosts(runId);
   if (!dbAvailable()) return emptyRunCosts();
   const sql = getSql();
 
@@ -943,6 +962,7 @@ function toTimelineStage(row: RunEventRow): RunTimelineStage {
 }
 
 export async function getRunTimeline(runId: string): Promise<RunTimeline> {
+  if (useSupabaseReads()) return supabaseReads.getRunTimeline(runId);
   const events = await getRunEvents(runId);
   const runEvents: RunTimelineStage[] = [];
   const leadMap = new Map<string, RunTimelineLead>();
@@ -998,6 +1018,7 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
 }
 
 export async function getRunDetail(runId: string): Promise<RunDetail | null> {
+  if (useSupabaseReads()) return supabaseReads.getRunDetail(runId);
   const run = await getRun(runId);
   if (!run) return null;
   return {
@@ -1008,6 +1029,7 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
 }
 
 export async function listRuns(limit = 50): Promise<RunRow[]> {
+  if (useSupabaseReads()) return supabaseReads.listRuns(limit);
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -1048,6 +1070,7 @@ function parseSpecJson(raw: unknown): Record<string, unknown> {
 }
 
 export async function listRequests(limit = 50): Promise<RequestRow[]> {
+  if (useSupabaseReads()) return supabaseReads.listRequests(limit);
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -1072,6 +1095,7 @@ export async function listRequests(limit = 50): Promise<RequestRow[]> {
 }
 
 export async function getCostSeries(days = 30): Promise<CostSeries> {
+  if (useSupabaseReads()) return supabaseReads.getCostSeries(days);
   if (!dbAvailable()) {
     return { byDay: [], byProvider: [], byOperation: [], balances: [] };
   }
@@ -1160,6 +1184,7 @@ export async function listFilterOptions(): Promise<{
   markets: string[];
   categories: string[];
 }> {
+  if (useSupabaseReads()) return supabaseReads.listFilterOptions();
   if (!dbAvailable()) return { markets: [], categories: [] };
   const sql = getSql();
 

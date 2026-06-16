@@ -9,18 +9,14 @@ from pallares_leads.costs import load_pricing, usd_for
 from pallares_leads.db.store import SCHEMA_VERSION, LeadStore
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> LeadStore:
-    db = LeadStore(tmp_path / "test.db")
-    yield db
-    db.close()
-
-
 def test_schema_version_migrated(store: LeadStore) -> None:
     assert store.get_app_state("schema_version") == str(SCHEMA_VERSION)
 
 
 def test_record_cost_event_and_summary(store: LeadStore) -> None:
+    from helpers import ensure_lead
+
+    ensure_lead(store, "places/abc")
     store.record_cost_event(
         provider="firecrawl",
         operation="scrape",
@@ -86,11 +82,11 @@ def test_page_cache_ttl_expiry(store: LeadStore) -> None:
         credits_used=1,
     )
     old = (datetime.now(tz=UTC) - timedelta(days=30)).isoformat()
-    store._conn.execute(
+    store._local_cache._conn.execute(
         "UPDATE page_cache SET fetched_at = ? WHERE cache_key LIKE ?",
         (old, "markdown:%"),
     )
-    store._conn.commit()
+    store._local_cache._conn.commit()
     assert (
         store.get_page_cache(
             "https://example.com/about",

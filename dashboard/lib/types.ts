@@ -160,6 +160,7 @@ export type ProviderBalance = {
   provider: string;
   remaining: number | null;
   used: number | null;
+  plan: number | null;
   unitLabel: string;
   snapshotAt: string | null;
 };

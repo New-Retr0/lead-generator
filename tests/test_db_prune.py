@@ -8,13 +8,6 @@ from pallares_leads.db.store import LeadStore
 from pallares_leads.schemas import RawLead
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> LeadStore:
-    db_path = tmp_path / "test.db"
-    with LeadStore(db_path) as s:
-        yield s
-
-
 def test_prune_page_cache_expired(store: LeadStore, tmp_path: Path) -> None:
     store.set_page_cache(
         "https://example.com/old",
@@ -23,11 +16,11 @@ def test_prune_page_cache_expired(store: LeadStore, tmp_path: Path) -> None:
         credits_used=1,
     )
     old = (datetime.now(tz=UTC) - timedelta(days=30)).isoformat()
-    store._conn.execute(
+    store._local_cache._conn.execute(
         "UPDATE page_cache SET fetched_at = ?",
         (old,),
     )
-    store._conn.commit()
+    store._local_cache._conn.commit()
 
     stats = store.prune_stale_data(
         runs_dir=tmp_path / "runs",

@@ -6,6 +6,7 @@ import pytest
 
 from pallares_leads.db.store import LeadStore
 from pallares_leads.schemas import Confidence, EnrichedLead, InvestigationStatus, RawLead
+from helpers import ensure_lead
 
 
 def _enriched(place_id: str = "places/x") -> EnrichedLead:
@@ -27,13 +28,6 @@ def _enriched(place_id: str = "places/x") -> EnrichedLead:
     )
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> LeadStore:
-    db = LeadStore(tmp_path / "test.db")
-    yield db
-    db.close()
-
-
 def test_enriched_json_roundtrip(store: LeadStore) -> None:
     lead = _enriched("places/roundtrip")
     store.upsert_enriched(
@@ -49,6 +43,7 @@ def test_enriched_json_roundtrip(store: LeadStore) -> None:
 
 
 def test_run_events_and_report(store: LeadStore) -> None:
+    ensure_lead(store, "places/a")
     run_id = store.start_run(run_type="test", market_key="reedley", category_key="gas")
     store.record_run_event(
         run_id=run_id,
@@ -71,6 +66,7 @@ def test_domain_cache(store: LeadStore) -> None:
 
 
 def test_sales_feedback(store: LeadStore) -> None:
+    ensure_lead(store, "places/a")
     store.upsert_sales_feedback(
         "places/a",
         addressed=True,
@@ -79,4 +75,4 @@ def test_sales_feedback(store: LeadStore) -> None:
     )
     rows = store.list_sales_feedback()
     assert len(rows) == 1
-    assert rows[0]["addressed"] == 1
+    assert bool(rows[0]["addressed"]) is True

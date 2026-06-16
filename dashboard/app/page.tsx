@@ -33,7 +33,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { formatPct, formatProvider, formatUsd } from "@/lib/utils";
+import {
+  formatCredits,
+  formatFirecrawlBalanceSub,
+  formatOverviewSpendSub,
+  formatPct,
+  formatProvider,
+  formatUsd,
+} from "@/lib/utils";
 import type { CostDayRow, OverviewStats, RequestRow, RunRow } from "@/lib/types";
 
 export default function OverviewPage() {
@@ -93,6 +100,7 @@ export default function OverviewPage() {
   };
 
   const totalUsd = stats?.usdByProvider.reduce((s, p) => s + p.usd, 0) ?? 0;
+  const firecrawlBalance = stats?.balances.find((b) => b.provider === "firecrawl");
 
   return (
     <div className="space-y-6">
@@ -143,31 +151,23 @@ export default function OverviewPage() {
           </StaggerItem>
           <StaggerItem>
             <StatCard
-              label="Firecrawl credits"
-              value={
-                stats?.balances.find((b) => b.provider === "firecrawl")?.remaining ??
-                stats?.creditsThisMonth ??
-                0
-              }
-              sub={
-                stats?.balances.find((b) => b.provider === "firecrawl")?.remaining != null
-                  ? `${(stats?.creditsThisMonth ?? 0).toLocaleString()} spent by pipeline this month`
-                  : "Run health check for live balance"
-              }
+              label="Firecrawl remaining"
+              value={firecrawlBalance?.remaining ?? stats?.creditsThisMonth ?? 0}
+              format={(n) => formatCredits(n)}
+              sub={formatFirecrawlBalanceSub(
+                firecrawlBalance,
+                stats?.creditsThisMonth ?? 0,
+              )}
               icon={Coins}
               tone="warning"
             />
           </StaggerItem>
           <StaggerItem>
             <StatCard
-              label="Spend this month"
+              label="Pipeline spend (month)"
               value={totalUsd}
               format={(n) => formatUsd(n)}
-              sub={
-                stats && stats.browserUseUsdThisMonth + stats.aiGatewayUsdThisMonth > 0
-                  ? `BU ${formatUsd(stats.browserUseUsdThisMonth)} · AI ${formatUsd(stats.aiGatewayUsdThisMonth)}`
-                  : "All providers"
-              }
+              sub={formatOverviewSpendSub(stats?.usdByProvider ?? [])}
               icon={DollarSign}
             />
           </StaggerItem>
