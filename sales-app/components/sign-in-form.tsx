@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Droplets } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,13 @@ export function SignInForm() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") === "auth") {
+      setError("That sign-in link expired or was opened in a different app. Request a new link and open it in your browser.");
+    }
+  }, []);
 
   async function sendMagicLink(e: React.FormEvent) {
     e.preventDefault();
@@ -73,7 +80,8 @@ export function SignInForm() {
         ) : (
           <>
             <p className="text-center text-sm text-muted-foreground">
-              Check your email and click the sign-in link. You can close this tab after you&apos;re in.
+              Check your email and click the sign-in link on this device. If the link
+              opens in a different app, use &quot;Open in browser&quot; (Safari/Chrome).
             </p>
             <button
               type="button"
