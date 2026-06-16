@@ -121,11 +121,12 @@ def test_record_credit_snapshot(store: LeadStore) -> None:
 def test_record_cost_event_queues_on_persistent_operational_error(
     store: LeadStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import sqlite3
     from unittest.mock import MagicMock
 
+    import psycopg
+
     mock_conn = MagicMock()
-    mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+    mock_conn.execute.side_effect = psycopg.OperationalError("database is locked")
     monkeypatch.setattr(store, "_conn", mock_conn)
     monkeypatch.setattr("pallares_leads.db.store.time.sleep", lambda _s: None)
 

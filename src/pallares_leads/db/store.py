@@ -822,12 +822,12 @@ class LeadStore:
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT COALESCE(SUM(units), 0) FROM cost_events
+                SELECT COALESCE(SUM(units), 0) AS total FROM cost_events
                 WHERE run_id = ? AND provider = 'firecrawl'
                 """,
                 (run_id,),
             ).fetchone()
-        return int(row[0] if row else 0)
+        return int(row["total"] if row else 0)
 
     def total_firecrawl_credits(self) -> int:
         row = self._conn.execute(
