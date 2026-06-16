@@ -14,8 +14,11 @@ Required in `sales-app/.env.local`:
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
+SUPABASE_DB_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
 PROJECT_ROOT=..
 ```
+
+`SUPABASE_DB_URL` is server-only (API routes) — same direct Postgres connection as the operator dashboard. Never expose it as `NEXT_PUBLIC_*` on Vercel.
 
 `PROJECT_ROOT` points at the repo root so `/api/config` can read `config/*.yaml`.
 
@@ -40,6 +43,7 @@ Open http://localhost:3000 — unauthenticated users redirect to `/login`.
 vercel link    # project: pallares-sales
 vercel env add NEXT_PUBLIC_SUPABASE_URL
 vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY
+vercel env add SUPABASE_DB_URL
 vercel deploy --prod
 ```
 
