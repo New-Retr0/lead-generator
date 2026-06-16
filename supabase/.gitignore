@@ -2,6 +2,9 @@
 .branches
 .temp
 
+# Empty stubs from interrupted `supabase migration new` (real migrations use 20250616*)
+migrations/202606*.sql
+
 # dotenvx
 .env.keys
 .env.local
