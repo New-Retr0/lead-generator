@@ -112,7 +112,7 @@ export default async function OverviewPage() {
       <PageHeader description="PALLARES sales CRM — Central Valley exterior cleaning." />
 
       {error ? (
-        <Card className="glass">
+        <Card>
           <CardContent className="py-8 text-center">
             <p className="text-sm font-medium text-destructive">{error}</p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -141,7 +141,7 @@ export default async function OverviewPage() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="glass hover-lift lg:col-span-2">
+        <Card className="lg:col-span-2">
           <CardHeader className="flex-row items-center justify-between">
             <div>
               <CardTitle className="flex items-center gap-2 text-sm">
@@ -164,7 +164,7 @@ export default async function OverviewPage() {
           </CardContent>
         </Card>
 
-        <Card className="glass hover-lift">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm">Spend by provider</CardTitle>
             <CardDescription>This month</CardDescription>
@@ -200,7 +200,7 @@ export default async function OverviewPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="glass hover-lift">
+        <Card>
           <CardHeader className="flex-row items-center justify-between">
             <div>
               <CardTitle className="text-sm">Recent runs</CardTitle>
@@ -238,7 +238,7 @@ export default async function OverviewPage() {
           </CardContent>
         </Card>
 
-        <Card className="glass hover-lift">
+        <Card>
           <CardHeader className="flex-row items-center justify-between">
             <div>
               <CardTitle className="text-sm">Recent requests</CardTitle>

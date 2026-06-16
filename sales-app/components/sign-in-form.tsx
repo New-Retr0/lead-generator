@@ -23,7 +23,12 @@ export function SignInForm() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("error") === "auth") {
-      setError("That sign-in link expired or was opened in a different app. Request a new link and open it in your browser.");
+      const timeout = window.setTimeout(() => {
+        setError(
+          "That sign-in link expired or was opened in a different app. Request a new link and open it in your browser.",
+        );
+      }, 0);
+      return () => window.clearTimeout(timeout);
     }
   }, []);
 
@@ -49,7 +54,7 @@ export function SignInForm() {
   }
 
   return (
-    <Card className="w-full max-w-md border-border/60 bg-card/80 shadow-xl backdrop-blur-sm">
+    <Card className="w-full max-w-md shadow-lg">
       <CardHeader className="space-y-3 text-center">
         <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-[oklch(0.55_0.16_300)] text-primary-foreground shadow-lg">
           <Droplets className="size-6" />

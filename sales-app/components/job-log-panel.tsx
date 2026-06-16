@@ -7,7 +7,7 @@ import { JobTimeline } from "@/components/job-timeline";
 
 function TimelinePlaceholder() {
   return (
-    <div className="glass-strong glass-sheen rounded-2xl border border-dashed border-border/60 p-8 text-center">
+    <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center shadow-sm">
       <div className="mx-auto flex size-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary/80 to-[oklch(0.55_0.16_300)] text-white shadow-lg">
         <SquareTerminal className="size-5" strokeWidth={2.25} />
       </div>
@@ -57,7 +57,7 @@ function JobLogPanelActive({
 
   if (kind === null) {
     return (
-      <div className="glass-strong glass-sheen rounded-2xl border border-dashed border-border/60 p-8 text-center">
+      <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center shadow-sm">
         <div className="shimmer mx-auto h-12 w-12 rounded-xl" />
         <p className="mt-4 text-sm text-muted-foreground">Loading job…</p>
       </div>

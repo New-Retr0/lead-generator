@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Coins, DollarSign, PhoneCall, Users } from "lucide-react";
 import { Stagger, StaggerItem } from "@/components/animated";
 import { StatCard, type StatCardDetail } from "@/components/stat-card";
@@ -32,6 +33,8 @@ export function OverviewStatCards({
   spendSub: string;
   spendDetails: StatCardDetail[];
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   return (
     <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <StaggerItem className="h-full">
@@ -41,6 +44,8 @@ export function OverviewStatCards({
           sub={`${enrichedLeads} enriched`}
           details={totalLeadsDetails}
           expandable
+          expanded={detailsOpen}
+          onExpandedChange={setDetailsOpen}
           icon={Users}
         />
       </StaggerItem>
@@ -51,6 +56,8 @@ export function OverviewStatCards({
           sub={readyToCallSub}
           details={readyToCallDetails}
           expandable
+          expanded={detailsOpen}
+          onExpandedChange={setDetailsOpen}
           icon={PhoneCall}
           tone="success"
         />
@@ -63,6 +70,8 @@ export function OverviewStatCards({
           sub={firecrawlSub}
           details={firecrawlDetails}
           expandable
+          expanded={detailsOpen}
+          onExpandedChange={setDetailsOpen}
           icon={Coins}
           tone="warning"
         />
@@ -75,6 +84,8 @@ export function OverviewStatCards({
           sub={spendSub}
           details={spendDetails}
           expandable
+          expanded={detailsOpen}
+          onExpandedChange={setDetailsOpen}
           icon={DollarSign}
         />
       </StaggerItem>

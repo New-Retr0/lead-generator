@@ -25,7 +25,7 @@ export default async function RequestsPage() {
     <div className="space-y-6">
       <PageHeader description="Natural-language lead requests — read-only history." />
 
-      <Card className="glass">
+      <Card>
         <CardHeader>
           <CardTitle>Request history</CardTitle>
           <CardDescription>

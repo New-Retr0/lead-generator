@@ -147,7 +147,7 @@ export function CostsClient({
       </Stagger>
 
       {(data?.balances.length ?? 0) > 0 ? (
-        <Card className="glass">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm">Provider balances</CardTitle>
             <CardDescription>
@@ -191,7 +191,7 @@ export function CostsClient({
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="glass hover-lift">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm">USD per day by provider</CardTitle>
             <CardDescription>Stacked spend — Browser Use, AI Gateway, Places</CardDescription>
@@ -201,7 +201,7 @@ export function CostsClient({
           </CardContent>
         </Card>
 
-        <Card className="glass hover-lift">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm">Firecrawl credits per day</CardTitle>
             <CardDescription>Firecrawl credits from single-pass lead runs</CardDescription>
@@ -213,7 +213,7 @@ export function CostsClient({
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="glass">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm">By provider</CardTitle>
             <CardDescription>Unit-aware totals for the selected range</CardDescription>
@@ -253,7 +253,7 @@ export function CostsClient({
           </CardContent>
         </Card>
 
-        <Card className="glass">
+        <Card>
           <CardHeader>
             <CardTitle className="text-sm">Top operations</CardTitle>
             <CardDescription>Per-stage breakdown including owner-chain stages</CardDescription>
@@ -293,7 +293,7 @@ export function CostsClient({
         </Card>
       </div>
 
-      <Card className="glass border-dashed">
+      <Card className="border-dashed">
         <CardContent className="flex items-start gap-3 py-4 text-sm text-muted-foreground">
           <TrendingUp className="mt-0.5 size-4 shrink-0" />
           <p>

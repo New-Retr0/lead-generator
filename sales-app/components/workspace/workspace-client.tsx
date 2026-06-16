@@ -1,15 +1,20 @@
 "use client";
 
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useDeferredValue, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { useSearchParams } from "next/navigation";
-import { Phone, Search, SlidersHorizontal } from "lucide-react";
+import { CheckCircle2, Phone, RotateCcw, Search, SlidersHorizontal, X } from "lucide-react";
 import { toast } from "sonner";
 import { ScoreBadge, SalesStatusBadge, VerificationBadge } from "@/components/badges";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,15 +27,8 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { CRM_STATUSES, type CrmStatus, type LeadRow, type PipelineConfig } from "@/lib/types";
 
 const LeadDetailModal = dynamic(
@@ -39,18 +37,25 @@ const LeadDetailModal = dynamic(
 );
 
 const ALL = "__all__";
-type WorkspaceTab = "all" | "client" | "vendor" | "triage";
+export type WorkspaceTab = "all" | "client" | "vendor" | "triage";
 
 const STATUS_TONE: Record<CrmStatus, string> = {
-  New: "bg-sky-500/15 text-sky-500",
-  Contacted: "bg-blue-500/15 text-blue-400",
-  "Follow Up": "bg-amber-500/15 text-amber-500",
-  Interested: "bg-violet-500/15 text-violet-400",
-  "Quote Sent": "bg-fuchsia-500/15 text-fuchsia-400",
-  Won: "bg-emerald-500/15 text-emerald-500",
-  Lost: "bg-zinc-500/15 text-zinc-400",
-  "Bad Data": "bg-red-500/15 text-red-500",
+  New: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  Contacted: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
+  "Follow Up": "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  Interested: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
+  "Quote Sent": "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400",
+  Won: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+  Lost: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400",
+  "Bad Data": "bg-red-500/15 text-red-600 dark:text-red-400",
 };
+
+function normalizeTab(tab: string | null | undefined): WorkspaceTab {
+  if (tab === "client" || tab === "vendor" || tab === "triage" || tab === "all") {
+    return tab;
+  }
+  return "all";
+}
 
 function isTriageLead(lead: LeadRow): boolean {
   if ((lead.lead_score ?? 0) < 40) return true;
@@ -68,87 +73,123 @@ function triageReason(lead: LeadRow): string {
   return "Needs attention";
 }
 
-type LeadTableRowProps = {
+function formatPhoneHref(phone: string): string {
+  const digits = phone.replace(/[^\d+]/g, "");
+  return `tel:${digits}`;
+}
+
+type LeadListRowProps = {
   lead: LeadRow;
   tab: WorkspaceTab;
   selected: boolean;
   categoryLabel: string;
+  marketLabel: string;
   onSelect: (placeId: string, checked: boolean) => void;
   onOpenDetail: (placeId: string) => void;
   onSetStatus: (placeId: string, status: CrmStatus) => void;
   onSetAddressed: (placeId: string, addressed: boolean) => void;
 };
 
-const LeadTableRow = memo(function LeadTableRow({
+const LeadListRow = memo(function LeadListRow({
   lead,
   tab,
   selected,
   categoryLabel,
+  marketLabel,
   onSelect,
   onOpenDetail,
   onSetStatus,
   onSetAddressed,
-}: LeadTableRowProps) {
+}: LeadListRowProps) {
+  const detailLabel = tab === "triage" ? triageReason(lead) : lead.status;
+
   return (
-    <TableRow
-      className="cursor-pointer transition-colors hover:bg-accent/25"
-      data-done={lead.addressed ? "true" : undefined}
+    <div
+      className={cn(
+        "grid gap-3 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[2rem_minmax(18rem,1.7fr)_12.5rem_minmax(12rem,auto)_10rem_4rem] md:items-center",
+        selected && "bg-primary/5",
+        lead.addressed && "opacity-70",
+      )}
     >
-      <TableCell onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center md:justify-center">
         <Checkbox
           checked={selected}
           onCheckedChange={(v) => onSelect(lead.place_id, v === true)}
           aria-label={`Select ${lead.business_name}`}
         />
-      </TableCell>
-      <TableCell onClick={() => onOpenDetail(lead.place_id)}>
-        <p className="font-medium">{lead.business_name}</p>
-        <p className="text-xs text-muted-foreground">{lead.city ?? "—"}</p>
-      </TableCell>
-      <TableCell onClick={() => onOpenDetail(lead.place_id)}>
-        <Badge variant={lead.lead_type === "vendor" ? "secondary" : "outline"}>
-          {lead.lead_type === "vendor" ? "Vendor" : "Client"}
-        </Badge>
-      </TableCell>
-      <TableCell
-        className="whitespace-nowrap text-sm text-muted-foreground"
+      </div>
+
+      <button
+        type="button"
         onClick={() => onOpenDetail(lead.place_id)}
+        className="min-w-0 text-left"
       >
-        {lead.market_key ?? "—"}
-      </TableCell>
-      <TableCell onClick={() => onOpenDetail(lead.place_id)}>
-        <Badge variant="outline">{categoryLabel}</Badge>
-      </TableCell>
-      <TableCell className="text-center" onClick={() => onOpenDetail(lead.place_id)}>
-        <ScoreBadge score={lead.lead_score} />
-      </TableCell>
-      <TableCell onClick={() => onOpenDetail(lead.place_id)}>
-        <VerificationBadge level={lead.verification_level} />
-      </TableCell>
-      <TableCell onClick={() => onOpenDetail(lead.place_id)}>
+        <span className="block truncate text-sm font-semibold leading-5">
+          {lead.business_name}
+        </span>
+        <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <span>{lead.city ?? "No city"}</span>
+          <span aria-hidden>|</span>
+          <span>{marketLabel}</span>
+          <span aria-hidden>|</span>
+          <span className="max-w-full truncate">{categoryLabel}</span>
+          <Badge
+            variant={lead.lead_type === "vendor" ? "secondary" : "outline"}
+            className="h-5 px-1.5 text-[10px]"
+          >
+            {lead.lead_type === "vendor" ? "Vendor" : "Client"}
+          </Badge>
+        </span>
+      </button>
+
+      <div className="min-w-0">
         {lead.phone ? (
-          <span className="flex items-center gap-1.5 font-mono text-sm tabular-nums">
-            <Phone className="size-3 text-muted-foreground" />
-            {lead.phone}
-          </span>
+          <a
+            href={formatPhoneHref(lead.phone)}
+            className="inline-flex min-h-8 w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 font-mono text-sm tabular-nums text-foreground hover:border-primary/40 hover:bg-accent"
+          >
+            <Phone className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">{lead.phone}</span>
+          </a>
         ) : (
-          <span className="text-sm text-muted-foreground">—</span>
+          <button
+            type="button"
+            onClick={() => onOpenDetail(lead.place_id)}
+            className="inline-flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border px-2.5 text-sm text-muted-foreground"
+          >
+            <Phone className="size-3.5" />
+            No phone
+          </button>
         )}
-      </TableCell>
-      <TableCell onClick={() => onOpenDetail(lead.place_id)}>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onOpenDetail(lead.place_id)}
+        className="flex min-w-0 flex-wrap items-center gap-2 text-left"
+      >
+        <ScoreBadge score={lead.lead_score} />
+        <VerificationBadge level={lead.verification_level} />
         {tab === "triage" ? (
-          <Badge variant="outline">{triageReason(lead)}</Badge>
+          <Badge variant="outline" className="max-w-full truncate">
+            {detailLabel}
+          </Badge>
         ) : (
-          <SalesStatusBadge status={lead.status} />
+          <SalesStatusBadge status={detailLabel} />
         )}
-      </TableCell>
-      <TableCell onClick={(e) => e.stopPropagation()}>
+      </button>
+
+      <div>
         <Select
           value={lead.crm_status}
           onValueChange={(v) => void onSetStatus(lead.place_id, v as CrmStatus)}
         >
           <SelectTrigger
-            className={`h-8 w-36 border-0 text-xs font-medium ${STATUS_TONE[lead.crm_status] ?? ""}`}
+            size="sm"
+            className={cn(
+              "h-8 w-full min-w-36 border-0 text-xs font-medium",
+              STATUS_TONE[lead.crm_status],
+            )}
           >
             <SelectValue />
           </SelectTrigger>
@@ -160,28 +201,33 @@ const LeadTableRow = memo(function LeadTableRow({
             ))}
           </SelectContent>
         </Select>
-      </TableCell>
-      <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+      </div>
+
+      <div className="flex items-center gap-2 md:justify-center">
         <Checkbox
           checked={lead.addressed}
           onCheckedChange={(v) => void onSetAddressed(lead.place_id, v === true)}
           aria-label={`Mark ${lead.business_name} done`}
         />
-      </TableCell>
-    </TableRow>
+        <span className="text-xs text-muted-foreground md:hidden">Done</span>
+      </div>
+    </div>
   );
 });
 
 export function WorkspaceClient({
   initialLeads,
   config,
+  initialTab,
+  initialPlaceId,
 }: {
   initialLeads: LeadRow[];
   config: PipelineConfig;
+  initialTab?: WorkspaceTab;
+  initialPlaceId?: string | null;
 }) {
-  const searchParams = useSearchParams();
   const [leads, setLeads] = useState(initialLeads);
-  const [tab, setTab] = useState<WorkspaceTab>("all");
+  const [tab, setTab] = useState<WorkspaceTab>(() => normalizeTab(initialTab));
   const [market, setMarket] = useState(ALL);
   const [category, setCategory] = useState(ALL);
   const [salesStatus, setSalesStatus] = useState(ALL);
@@ -190,31 +236,18 @@ export function WorkspaceClient({
   const [hideDone, setHideDone] = useState(false);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(initialPlaceId ?? null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkStatus, setBulkStatus] = useState<CrmStatus>("Contacted");
-
-  useEffect(() => {
-    setLeads(initialLeads);
-  }, [initialLeads]);
-
-  useEffect(() => {
-    const tabParam = searchParams.get("tab");
-    if (
-      tabParam === "triage" ||
-      tabParam === "client" ||
-      tabParam === "vendor" ||
-      tabParam === "all"
-    ) {
-      setTab(tabParam);
-    }
-    const place = searchParams.get("place");
-    if (place) setDetailId(place);
-  }, [searchParams]);
 
   const categoryLabelMap = useMemo(
     () => new Map(config.categories.map((c) => [c.key, c.label])),
     [config.categories],
+  );
+
+  const marketLabelMap = useMemo(
+    () => new Map(config.markets.map((m) => [m.key, m.city])),
+    [config.markets],
   );
 
   const tabCounts = useMemo(
@@ -244,6 +277,8 @@ export function WorkspaceClient({
         (l) =>
           l.business_name.toLowerCase().includes(q) ||
           (l.city ?? "").toLowerCase().includes(q) ||
+          (l.market_key ?? "").toLowerCase().includes(q) ||
+          (l.category_key ?? "").toLowerCase().includes(q) ||
           (l.phone ?? "").includes(q),
       );
     }
@@ -263,6 +298,7 @@ export function WorkspaceClient({
   const visibleIds = useMemo(() => filtered.map((l) => l.place_id), [filtered]);
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  const hasSelection = selected.size > 0;
 
   const patchLead = useCallback(
     async (placeId: string, body: { status?: CrmStatus; addressed?: boolean }) => {
@@ -339,17 +375,18 @@ export function WorkspaceClient({
       prev.map((l) => (selected.has(l.place_id) ? { ...l, addressed } : l)),
     );
     const results = await Promise.all(ids.map((id) => patchLead(id, { addressed })));
-    if (results.every(Boolean))
+    if (results.every(Boolean)) {
       toast.success(`Marked ${ids.length} leads ${addressed ? "done" : "not done"}`);
+    }
     setSelected(new Set());
   };
 
   return (
     <div className="space-y-6">
-      <PageHeader description="Work callable leads in one place — filter, triage, set CRM status, and mark done as you go." />
+      <PageHeader description="Work callable leads in one place: filter, triage, set CRM status, and mark done as you go." />
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as WorkspaceTab)}>
-        <TabsList>
+        <TabsList className="flex h-auto flex-wrap">
           <TabsTrigger value="all">All ({tabCounts.all})</TabsTrigger>
           <TabsTrigger value="client">Clients ({tabCounts.client})</TabsTrigger>
           <TabsTrigger value="vendor">Vendors ({tabCounts.vendor})</TabsTrigger>
@@ -357,13 +394,13 @@ export function WorkspaceClient({
         </TabsList>
       </Tabs>
 
-      <Card className="glass sticky top-14 z-10">
+      <Card className="sticky top-14 z-10">
         <CardContent className="flex flex-wrap items-end gap-4 py-5">
-          <div className="relative min-w-52 flex-1">
+          <div className="relative min-w-56 flex-1">
             <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               className="pl-8"
-              placeholder="Search business, city, phone…"
+              placeholder="Search business, city, market, category, phone..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -371,7 +408,7 @@ export function WorkspaceClient({
           <div className="space-y-1.5">
             <Label className="text-xs text-muted-foreground">Market</Label>
             <Select value={market} onValueChange={setMarket}>
-              <SelectTrigger className="w-36">
+              <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -387,7 +424,7 @@ export function WorkspaceClient({
           <div className="space-y-1.5">
             <Label className="text-xs text-muted-foreground">Category</Label>
             <Select value={category} onValueChange={setCategory}>
-              <SelectTrigger className="w-44">
+              <SelectTrigger className="w-56">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -451,12 +488,37 @@ export function WorkspaceClient({
         </CardContent>
       </Card>
 
-      {selected.size > 0 ? (
-        <Card className="glass border-primary/30">
-          <CardContent className="flex flex-wrap items-center gap-3 py-3">
-            <span className="text-sm font-medium">{selected.size} selected</span>
-            <Select value={bulkStatus} onValueChange={(v) => setBulkStatus(v as CrmStatus)}>
-              <SelectTrigger className="h-8 w-36">
+      <Card className="overflow-hidden py-0">
+        <CardHeader className="gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <Checkbox
+              checked={allVisibleSelected}
+              onCheckedChange={(v) => toggleSelectAll(v === true)}
+              aria-label="Select all visible leads"
+            />
+            <div className="min-w-0">
+              <CardTitle className="text-sm">Leads</CardTitle>
+              <CardDescription>
+                {filtered.length.toLocaleString()} visible of {leads.length.toLocaleString()} leads
+              </CardDescription>
+            </div>
+          </div>
+
+          <div className="flex min-h-9 flex-wrap items-center gap-2">
+            <span
+              className={cn(
+                "min-w-24 text-sm font-medium",
+                hasSelection ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              {hasSelection ? `${selected.size} selected` : "No selection"}
+            </span>
+            <Select
+              value={bulkStatus}
+              disabled={!hasSelection}
+              onValueChange={(v) => setBulkStatus(v as CrmStatus)}
+            >
+              <SelectTrigger size="sm" className="h-8 w-36">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -467,78 +529,78 @@ export function WorkspaceClient({
                 ))}
               </SelectContent>
             </Select>
-            <Button size="sm" variant="secondary" onClick={() => void bulkSetStatus()}>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!hasSelection}
+              onClick={() => void bulkSetStatus()}
+            >
               Set status
             </Button>
-            <Button size="sm" variant="secondary" onClick={() => void bulkSetDone(true)}>
-              Mark done
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!hasSelection}
+              onClick={() => void bulkSetDone(true)}
+            >
+              <CheckCircle2 className="size-3.5" />
+              Done
             </Button>
-            <Button size="sm" variant="outline" onClick={() => void bulkSetDone(false)}>
-              Mark not done
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!hasSelection}
+              onClick={() => void bulkSetDone(false)}
+            >
+              <RotateCcw className="size-3.5" />
+              Not done
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!hasSelection}
+              onClick={() => setSelected(new Set())}
+            >
+              <X className="size-3.5" />
               Clear
             </Button>
-          </CardContent>
-        </Card>
-      ) : null}
+          </div>
+        </CardHeader>
 
-      <Card className="glass !overflow-visible px-4 py-0">
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader className="border-b border-border/50 bg-card [&_th]:bg-card">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-10">
-                  <Checkbox
-                    checked={allVisibleSelected}
-                    onCheckedChange={(v) => toggleSelectAll(v === true)}
-                    aria-label="Select all visible leads"
-                  />
-                </TableHead>
-                <TableHead>Business</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="whitespace-nowrap">Market</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead className="whitespace-nowrap text-center">Score</TableHead>
-                <TableHead className="whitespace-nowrap">Verification</TableHead>
-                <TableHead className="whitespace-nowrap">Phone</TableHead>
-                {tab === "triage" ? (
-                  <TableHead className="whitespace-nowrap">Why</TableHead>
-                ) : (
-                  <TableHead className="whitespace-nowrap">Sales</TableHead>
-                )}
-                <TableHead className="w-44 whitespace-nowrap">CRM Status</TableHead>
-                <TableHead className="w-16 whitespace-nowrap text-center">Done</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={11} className="h-32 text-center text-sm text-muted-foreground">
-                    No leads match these filters.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                filtered.map((lead) => (
-                  <LeadTableRow
-                    key={lead.place_id}
-                    lead={lead}
-                    tab={tab}
-                    selected={selected.has(lead.place_id)}
-                    categoryLabel={
-                      categoryLabelMap.get(lead.category_key ?? "") ??
-                      lead.category_key ??
-                      "—"
-                    }
-                    onSelect={toggleSelect}
-                    onOpenDetail={openDetail}
-                    onSetStatus={setStatus}
-                    onSetAddressed={setAddressed}
-                  />
-                ))
-              )}
-            </TableBody>
-          </Table>
+        <div className="hidden border-b border-border bg-muted/35 px-4 py-2 text-xs font-medium text-muted-foreground md:grid md:grid-cols-[2rem_minmax(18rem,1.7fr)_12.5rem_minmax(12rem,auto)_10rem_4rem]">
+          <span />
+          <span>Business</span>
+          <span>Phone</span>
+          <span>Score / verification</span>
+          <span>CRM status</span>
+          <span className="text-center">Done</span>
+        </div>
+
+        <div>
+          {filtered.length === 0 ? (
+            <div className="px-4 py-16 text-center text-sm text-muted-foreground">
+              No leads match these filters.
+            </div>
+          ) : (
+            filtered.map((lead) => (
+              <LeadListRow
+                key={lead.place_id}
+                lead={lead}
+                tab={tab}
+                selected={selected.has(lead.place_id)}
+                categoryLabel={
+                  categoryLabelMap.get(lead.category_key ?? "") ?? lead.category_key ?? "No category"
+                }
+                marketLabel={
+                  marketLabelMap.get(lead.market_key ?? "") ?? lead.market_key ?? "No market"
+                }
+                onSelect={toggleSelect}
+                onOpenDetail={openDetail}
+                onSetStatus={setStatus}
+                onSetAddressed={setAddressed}
+              />
+            ))
+          )}
         </div>
       </Card>
 

@@ -146,7 +146,7 @@ function LeadTimelineCard({
   return (
     <SlideIn>
       <Collapsible defaultOpen={defaultOpen}>
-        <div className="glass overflow-hidden rounded-xl">
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
           <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-accent/30">
             <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/85 to-[oklch(0.55_0.16_290)] text-white shadow-[0_4px_14px_-4px_oklch(0.5_0.19_262/0.6)]">
               <Building2 className="size-3.5" strokeWidth={2.25} />
@@ -210,7 +210,7 @@ function ProviderCostCard({
   return (
     <SlideIn delay={index * 0.06}>
       <Collapsible open={open} onOpenChange={setOpen}>
-        <div className="glass rounded-xl border border-border/50">
+        <div className="rounded-lg border border-border bg-card">
           <CollapsibleTrigger asChild>
             <button
               type="button"
@@ -311,7 +311,7 @@ function RunCostSummary({
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div
           className={cn(
-            "glass space-y-1 rounded-xl border border-border/50 p-4",
+            "space-y-1 rounded-lg border border-border bg-card p-4",
             running && "border-warning/40 shadow-[0_0_24px_-12px_oklch(0.78_0.16_75/0.8)]",
           )}
         >
@@ -333,7 +333,7 @@ function RunCostSummary({
             ) : null}
           </p>
         </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="space-y-1 rounded-lg border border-border bg-card p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Verified
           </p>
@@ -342,7 +342,7 @@ function RunCostSummary({
           </p>
           <p className="text-xs text-muted-foreground">API-reported spend</p>
         </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="space-y-1 rounded-lg border border-border bg-card p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Estimated
           </p>
@@ -352,7 +352,7 @@ function RunCostSummary({
           <p className="text-xs text-muted-foreground">Map/search credit fallbacks</p>
         </div>
         {costs.firecrawlCreditsEst > 0 ? (
-          <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+          <div className="space-y-1 rounded-lg border border-border bg-card p-4">
             <p className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               <Coins className="size-3" />
               Credits est.
@@ -422,10 +422,10 @@ function PersistedTimeline({
 
   return (
     <div className={cn(running && "live-ring rounded-2xl p-px")}>
-      <div className={cn("space-y-2", running && "glass-strong rounded-2xl p-3")}>
+      <div className={cn("space-y-2", running && "rounded-lg border border-border bg-card p-3")}>
         {running ? (
           <div className="grid grid-cols-3 gap-2">
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <Building2 className="size-3" />
                 Leads
@@ -435,7 +435,7 @@ function PersistedTimeline({
                 <span className="text-xs font-medium text-muted-foreground"> / {stats.total}</span>
               </p>
             </div>
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <Layers className="size-3" />
                 Stages
@@ -444,7 +444,7 @@ function PersistedTimeline({
                 <AnimatedNumber value={stats.stages} />
               </p>
             </div>
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <Coins className="size-3" />
                 Credits est.
@@ -457,7 +457,7 @@ function PersistedTimeline({
         ) : null}
 
         {timeline.runEvents.length > 0 ? (
-          <div className="glass space-y-0.5 rounded-xl px-1.5 py-1.5">
+          <div className="space-y-0.5 rounded-lg border border-border bg-card px-1.5 py-1.5">
             {timeline.runEvents.map((stage, i) => (
               <StageRow key={`run-${stage.stage}-${stage.created_at}-${i}`} stage={stage} />
             ))}
@@ -575,7 +575,7 @@ function RunDetailContent({
 
   return (
     <>
-      <div className="sticky top-0 z-10 border-b border-border/60 bg-card/95 px-6 py-4 backdrop-blur-xl supports-[backdrop-filter]:bg-card/80">
+      <div className="sticky top-0 z-10 border-b border-border bg-card px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -685,7 +685,7 @@ export function RunDetailModal({
     <Dialog open={Boolean(runId)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton
-        className="glass-strong top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"
+        className="top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden border border-border bg-card p-0 shadow-lg sm:max-w-6xl"
       >
         {runId ? (
           <RunDetailContent runId={runId} onRunFinished={onRunFinished} />

@@ -15,14 +15,12 @@ import {
 } from "./db-helpers";
 import type {
   CostSeries,
-  CrmStatus,
   LeadCostBilling,
   LeadCostByProvider,
   LeadCostEvent,
   LeadCosts,
   LeadDetail,
   LeadRow,
-  LeadType,
   OverviewStats,
   ProviderBalance,
   RelatedLead,
@@ -44,20 +42,6 @@ async function supabase() {
 
 function throwOnError(error: { message: string } | null, context: string): void {
   if (error) throw new Error(`${context}: ${error.message}`);
-}
-
-function emptyOverview(): OverviewStats {
-  return {
-    totalLeads: 0,
-    enrichedLeads: 0,
-    readyToCall: 0,
-    readyToCallRate: 0,
-    creditsThisMonth: 0,
-    browserUseUsdThisMonth: 0,
-    aiGatewayUsdThisMonth: 0,
-    usdByProvider: [],
-    balances: [],
-  };
 }
 
 function balanceUnitLabel(provider: string): string {

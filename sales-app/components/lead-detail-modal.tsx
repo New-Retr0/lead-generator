@@ -145,7 +145,7 @@ function PhoneContactCard({ group }: { group: PhoneGroup }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="glass rounded-xl border border-border/50 p-4">
+      <div className="rounded-lg border border-border bg-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -206,7 +206,7 @@ function EmailContactCard({ group }: { group: EmailGroup }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="glass rounded-xl border border-border/50 p-4">
+      <div className="rounded-lg border border-border bg-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -334,7 +334,7 @@ function ProviderCostGroup({ group }: { group: LeadCostByProvider }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="glass rounded-xl border border-border/50">
+      <div className="rounded-lg border border-border bg-card">
         <CollapsibleTrigger asChild>
           <button
             type="button"
@@ -392,7 +392,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
   return (
     <Section icon={DollarSign} title="Generation cost">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="space-y-1 rounded-lg border border-border bg-card p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Total recorded
           </p>
@@ -401,7 +401,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
             {costs.eventCount} tool call{costs.eventCount === 1 ? "" : "s"}
           </p>
         </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="space-y-1 rounded-lg border border-border bg-card p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Verified / API-reported
           </p>
@@ -412,7 +412,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
             Scrape credits, tokens, Browser Use passthrough
           </p>
         </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="space-y-1 rounded-lg border border-border bg-card p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Estimated fallback
           </p>
@@ -542,7 +542,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
   return (
     <>
-      <div className="sticky top-0 z-10 border-b border-border/60 bg-card/95 px-6 py-4 backdrop-blur-xl supports-[backdrop-filter]:bg-card/80">
+      <div className="sticky top-0 z-10 border-b border-border bg-card px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -622,7 +622,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                     {grouped.people.map((person) => (
                       <div
                         key={person.key}
-                        className="glass rounded-xl border border-border/50 p-4"
+                        className="rounded-lg border border-border bg-card p-4"
                       >
                         <div className="flex items-start gap-2">
                           <BadgeCheck className="mt-0.5 size-4 shrink-0 text-success" />
@@ -652,7 +652,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
             <div className="space-y-6 lg:col-span-4">
               {lead.why_good_fit ? (
                 <Section icon={Lightbulb} title="Why call">
-                  <div className="glass space-y-2 rounded-xl border border-border/50 p-4">
+                  <div className="space-y-2 rounded-lg border border-border bg-card p-4">
                     <Badge variant="outline" className="text-[10px]">
                       AI-written from verified facts
                     </Badge>
@@ -663,7 +663,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
               {lead.talking_points ? (
                 <Section icon={MessageCircle} title="Talking points">
-                  <div className="glass rounded-xl border border-border/50 p-4">
+                  <div className="rounded-lg border border-border bg-card p-4">
                     <p className="whitespace-pre-line text-sm leading-relaxed">
                       {lead.talking_points}
                     </p>
@@ -679,7 +679,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
               {grouped.registry ? (
                 <Section icon={User} title="BBB & registry">
-                  <div className="glass space-y-3 rounded-xl border border-border/50 p-4 text-sm">
+                  <div className="space-y-3 rounded-lg border border-border bg-card p-4 text-sm">
                     {grouped.registry.rating ? (
                       <div className="flex items-center gap-2">
                         <span className="text-muted-foreground">BBB Rating</span>
@@ -859,7 +859,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                     <a
                       key={rel.place_id}
                       href={`/leads?place=${encodeURIComponent(rel.place_id)}`}
-                      className="glass block rounded-xl border border-border/50 p-3 text-sm hover:bg-accent/40"
+                      className="block rounded-lg border border-border bg-card p-3 text-sm hover:bg-accent/40"
                     >
                       <div className="flex items-center gap-2">
                         <Badge variant="outline" className="text-[10px] capitalize">
@@ -893,7 +893,7 @@ export function LeadDetailModal({
     <Dialog open={Boolean(placeId)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton
-        className="glass-strong top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"
+        className="top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden border border-border bg-card p-0 shadow-lg sm:max-w-6xl"
       >
         {placeId ? <LeadDetailContent placeId={placeId} /> : null}
       </DialogContent>

@@ -41,7 +41,7 @@ export function RunsTableClient({ initialRuns }: { initialRuns: RunRow[] }) {
     <div className="space-y-6">
       <PageHeader description="Pipeline run history — read-only view of discovery and enrichment runs." />
 
-      <Card className="glass min-w-0">
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Run history</CardTitle>
           <CardDescription>

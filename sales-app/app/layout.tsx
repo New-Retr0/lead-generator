@@ -35,7 +35,6 @@ export default function RootLayout({
     >
       <body className="min-h-full" suppressHydrationWarning>
         <ThemeProvider>
-          <div className="ambient-tint pointer-events-none fixed inset-0 -z-10" aria-hidden />
           {children}
           <Toaster position="top-right" richColors />
         </ThemeProvider>

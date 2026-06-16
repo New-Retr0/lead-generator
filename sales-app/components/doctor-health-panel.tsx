@@ -248,7 +248,7 @@ export function DoctorHealthPanel({
 
   return (
     <div className={cn("rounded-2xl", running && "live-ring p-px")}>
-      <div className="glass-strong glass-sheen overflow-hidden rounded-2xl">
+      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
         <div className="relative border-b border-border/50 px-5 pb-4 pt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -298,7 +298,7 @@ export function DoctorHealthPanel({
 
           {!running && checks.length > 0 ? (
             <div className="mt-4 grid grid-cols-3 gap-2">
-              <div className="glass rounded-xl px-3 py-2">
+              <div className="rounded-lg border border-border bg-card px-3 py-2">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                   Passed
                 </p>
@@ -306,7 +306,7 @@ export function DoctorHealthPanel({
                   {checks.filter((c) => c.status === "ok").length}
                 </p>
               </div>
-              <div className="glass rounded-xl px-3 py-2">
+              <div className="rounded-lg border border-border bg-card px-3 py-2">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                   Warnings
                 </p>
@@ -319,7 +319,7 @@ export function DoctorHealthPanel({
                   {warnChecks}
                 </p>
               </div>
-              <div className="glass rounded-xl px-3 py-2">
+              <div className="rounded-lg border border-border bg-card px-3 py-2">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                   Issues
                 </p>

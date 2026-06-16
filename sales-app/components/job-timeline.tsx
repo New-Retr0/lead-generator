@@ -210,7 +210,7 @@ function LeadGroupCard({
   return (
     <SlideIn>
       <Collapsible defaultOpen={defaultOpen}>
-        <div className="glass overflow-hidden rounded-xl">
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
           <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-accent/30">
             <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/85 to-[oklch(0.55_0.16_290)] text-white shadow-[0_4px_14px_-4px_oklch(0.5_0.19_262/0.6)]">
               <Building2 className="size-3.5" strokeWidth={2.25} />
@@ -377,7 +377,7 @@ function JobTimelineStream({
 
   return (
     <div className={cn("rounded-2xl", running && "live-ring p-px")}>
-      <div className="glass-strong glass-sheen overflow-hidden rounded-2xl">
+      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
         {/* header */}
         <div className="relative border-b border-border/50 px-5 pb-4 pt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -433,7 +433,7 @@ function JobTimelineStream({
 
           {/* live counters */}
           <div className="mt-4 grid grid-cols-3 gap-2">
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 Leads
               </p>
@@ -445,7 +445,7 @@ function JobTimelineStream({
                 </span>
               </p>
             </div>
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <Coins className="size-3" />
                 Credits
@@ -454,7 +454,7 @@ function JobTimelineStream({
                 <Odometer value={totals.credits} climbSeconds={1.4} />
               </p>
             </div>
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <ShieldX className="size-3" />
                 Rejected
@@ -492,7 +492,7 @@ function JobTimelineStream({
                 <>
                   {runEvents.length > 0 ? (
                     <SlideIn>
-                      <div className="glass space-y-0.5 rounded-xl px-1.5 py-1.5">
+                      <div className="space-y-0.5 rounded-lg border border-border bg-card px-1.5 py-1.5">
                         {runEvents.map((evt, i) => (
                           <EventRow key={`run-${evt.ts}-${i}`} event={evt} />
                         ))}
