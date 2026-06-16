@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import sqlite3
 import threading
 import time
 import uuid
@@ -11,6 +10,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import psycopg
+
+from pallares_leads.db.local_cache import LocalCache
+from pallares_leads.db.pg import PgAdapter, connect, parse_json_field, to_db_timestamp
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead
 from pallares_leads.utils.normalize import normalize_entity_name
 
@@ -47,170 +50,6 @@ _COST_EVENT_INSERT_SQL = """
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS leads (
-    place_id TEXT PRIMARY KEY,
-    business_name TEXT NOT NULL,
-    market_key TEXT,
-    category_key TEXT,
-    city TEXT,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    last_enriched_at TEXT,
-    last_run_id TEXT,
-    enrichment_status TEXT,
-    confidence TEXT,
-    source_tool TEXT,
-    csv_path TEXT
-);
-
-CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    run_type TEXT NOT NULL,
-    market_key TEXT,
-    category_key TEXT,
-    campaign_key TEXT,
-    discovered_count INTEGER NOT NULL DEFAULT 0,
-    skipped_known_count INTEGER NOT NULL DEFAULT 0,
-    enriched_count INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'running'
-);
-
-CREATE INDEX IF NOT EXISTS idx_leads_last_enriched ON leads(last_enriched_at);
-CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at);
-
-CREATE TABLE IF NOT EXISTS enrichment_profiles (
-    profile_key TEXT PRIMARY KEY,
-    property_type TEXT NOT NULL,
-    site_kind TEXT NOT NULL,
-    brand TEXT NOT NULL,
-    playbook_json TEXT NOT NULL,
-    success_count INTEGER NOT NULL DEFAULT 0,
-    sample_place_id TEXT,
-    first_learned_at TEXT NOT NULL,
-    last_used_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_property_type ON enrichment_profiles(property_type);
-
-CREATE TABLE IF NOT EXISTS run_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL,
-    place_id TEXT NOT NULL,
-    stage TEXT NOT NULL,
-    ran INTEGER NOT NULL DEFAULT 0,
-    reason TEXT,
-    credits_est INTEGER NOT NULL DEFAULT 0,
-    duration_ms INTEGER,
-    meta_json TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id);
-CREATE INDEX IF NOT EXISTS idx_run_events_place_id ON run_events(place_id);
-
-CREATE TABLE IF NOT EXISTS domain_cache (
-    hostname TEXT PRIMARY KEY,
-    is_valid INTEGER NOT NULL,
-    checked_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sales_feedback (
-    place_id TEXT PRIMARY KEY,
-    addressed INTEGER NOT NULL DEFAULT 0,
-    feedback_notes TEXT,
-    sales_ready INTEGER,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS app_state (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS cost_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT,
-    request_id TEXT,
-    place_id TEXT,
-    provider TEXT NOT NULL,
-    operation TEXT NOT NULL,
-    units REAL NOT NULL DEFAULT 0,
-    unit_type TEXT NOT NULL DEFAULT 'credits',
-    usd REAL,
-    model TEXT,
-    meta_json TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_cost_events_run_id ON cost_events(run_id);
-CREATE INDEX IF NOT EXISTS idx_cost_events_request_id ON cost_events(request_id);
-CREATE INDEX IF NOT EXISTS idx_cost_events_provider ON cost_events(provider);
-
-CREATE TABLE IF NOT EXISTS credit_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider TEXT NOT NULL,
-    remaining_credits REAL,
-    used_credits REAL,
-    snapshot_json TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_credit_snapshots_provider ON credit_snapshots(provider);
-
-CREATE TABLE IF NOT EXISTS page_cache (
-    cache_key TEXT PRIMARY KEY,
-    url TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    content TEXT NOT NULL,
-    credits_used INTEGER NOT NULL DEFAULT 0,
-    fetched_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_page_cache_fetched_at ON page_cache(fetched_at);
-
-CREATE TABLE IF NOT EXISTS lead_requests (
-    request_id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    raw_prompt TEXT NOT NULL,
-    spec_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    leads_delivered INTEGER NOT NULL DEFAULT 0,
-    credits_spent INTEGER NOT NULL DEFAULT 0,
-    usd_spent REAL,
-    output_path TEXT
-);
-
-CREATE TABLE IF NOT EXISTS request_leads (
-    request_id TEXT NOT NULL,
-    place_id TEXT NOT NULL,
-    rank INTEGER NOT NULL,
-    score INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (request_id, place_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_request_leads_request ON request_leads(request_id);
-
-CREATE TABLE IF NOT EXISTS lead_facts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    place_id TEXT NOT NULL,
-    fact_kind TEXT NOT NULL,
-    value_json TEXT NOT NULL,
-    source_kind TEXT NOT NULL,
-    source_url TEXT,
-    method TEXT NOT NULL,
-    quote TEXT,
-    verification TEXT NOT NULL,
-    run_id TEXT,
-    observed_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_lead_facts_place ON lead_facts(place_id);
-"""
-
 
 def _utc_now() -> datetime:
     return datetime.now(tz=UTC)
@@ -221,19 +60,34 @@ def _iso(dt: datetime) -> str:
 
 
 class LeadStore:
-    """SQLite ledger for processed leads and run history."""
+    """Postgres ledger for processed leads and run history (Supabase)."""
 
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=60.0)
-        self._conn.row_factory = sqlite3.Row
+    def __init__(self, db_url: str | Path | None = None) -> None:
+        from pallares_leads.settings import get_settings
+
+        settings = get_settings()
+        if isinstance(db_url, Path):
+            raise ValueError(
+                "SQLite db_path is retired; pass SUPABASE_DB_URL or omit db_url."
+            )
+        url = str(db_url) if db_url else settings.supabase_db_url
+        if not url:
+            raise ValueError("SUPABASE_DB_URL is required")
+        self.db_url = url
+        self._conn: PgAdapter = connect(url)
+        self._local_cache = LocalCache(settings.local_cache_path)
         self._lock = threading.RLock()
         self._pending_cost_events: list[tuple[Any, ...]] = []
-        self._init_schema()
+        self._raw_conn = self._conn._conn  # noqa: SLF001 — for transactions
+
+    @property
+    def db_path(self) -> str:
+        """Backward compat for callers that passed settings.db_path."""
+        return self.db_url
 
     def close(self) -> None:
-        self._conn.close()
+        self._conn._conn.close()  # noqa: SLF001
+        self._local_cache.close()
 
     def __enter__(self) -> LeadStore:
         return self
@@ -241,158 +95,8 @@ class LeadStore:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def _init_schema(self) -> None:
-        with self._lock:
-            self._conn.executescript(_SCHEMA)
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA busy_timeout=60000")
-            self._migrate_schema()
-            self._conn.commit()
-
-    def _current_schema_version(self) -> int:
-        row = self._conn.execute(
-            "SELECT value FROM app_state WHERE key = 'schema_version'"
-        ).fetchone()
-        if row is None:
-            return 0
-        try:
-            return int(row["value"])
-        except (TypeError, ValueError):
-            return 0
-
-    def _set_schema_version(self, version: int) -> None:
-        now = _iso(_utc_now())
-        self._conn.execute(
-            """
-            INSERT INTO app_state (key, value, updated_at)
-            VALUES ('schema_version', ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-            """,
-            (str(version), now),
-        )
-
-    def _migrate_schema(self) -> None:
-        self._migrate_leads_columns()
-        self._migrate_owner_records()
-        self._migrate_sales_feedback_columns()
-        self._ensure_request_tables()
-        version = self._current_schema_version()
-        if version < SCHEMA_VERSION:
-            self._ensure_lead_indices()
-            self._ensure_audit_indices()
-            self._set_schema_version(SCHEMA_VERSION)
-
-    def _ensure_audit_indices(self) -> None:
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cost_events_place_id ON cost_events(place_id)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cost_events_created_at ON cost_events(created_at)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_leads_profile_key ON leads(profile_key)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_run_events_run_stage ON run_events(run_id, stage)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sales_feedback_status ON sales_feedback(status)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sales_feedback_updated_at ON sales_feedback(updated_at)"
-        )
-
     def wal_checkpoint(self, mode: str = "TRUNCATE") -> None:
-        with self._lock:
-            self._conn.execute(f"PRAGMA wal_checkpoint({mode})")
-
-    def _ensure_request_tables(self) -> None:
-        self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS lead_requests (
-                request_id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                raw_prompt TEXT NOT NULL,
-                spec_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                leads_delivered INTEGER NOT NULL DEFAULT 0,
-                credits_spent INTEGER NOT NULL DEFAULT 0,
-                usd_spent REAL,
-                output_path TEXT
-            );
-            CREATE TABLE IF NOT EXISTS request_leads (
-                request_id TEXT NOT NULL,
-                place_id TEXT NOT NULL,
-                rank INTEGER NOT NULL,
-                score INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (request_id, place_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_request_leads_request ON request_leads(request_id);
-            """
-        )
-
-    def _migrate_leads_columns(self) -> None:
-        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(leads)").fetchall()}
-        if "profile_key" not in cols:
-            self._conn.execute("ALTER TABLE leads ADD COLUMN profile_key TEXT")
-        if "enriched_json" not in cols:
-            self._conn.execute("ALTER TABLE leads ADD COLUMN enriched_json TEXT")
-        if "credits_total" not in cols:
-            self._conn.execute("ALTER TABLE leads ADD COLUMN credits_total INTEGER")
-        if "lead_score" not in cols:
-            self._conn.execute("ALTER TABLE leads ADD COLUMN lead_score INTEGER")
-        if "request_id" not in cols:
-            self._conn.execute("ALTER TABLE leads ADD COLUMN request_id TEXT")
-
-    def _migrate_sales_feedback_columns(self) -> None:
-        cols = {
-            row[1]
-            for row in self._conn.execute("PRAGMA table_info(sales_feedback)").fetchall()
-        }
-        if "status" not in cols:
-            self._conn.execute(
-                "ALTER TABLE sales_feedback ADD COLUMN status TEXT NOT NULL DEFAULT 'New'"
-            )
-        if "assigned_to" not in cols:
-            self._conn.execute("ALTER TABLE sales_feedback ADD COLUMN assigned_to TEXT")
-
-    def _migrate_owner_records(self) -> None:
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS owner_records (
-                place_id TEXT PRIMARY KEY,
-                apn TEXT,
-                owner_name TEXT NOT NULL,
-                owner_name_normalized TEXT NOT NULL,
-                owner_kind TEXT,
-                sos_entity_number TEXT,
-                registered_agent TEXT,
-                principals_json TEXT,
-                mailing_address TEXT,
-                broker_json TEXT,
-                source TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_owner_records_name "
-            "ON owner_records(owner_name_normalized)"
-        )
-
-    def _ensure_lead_indices(self) -> None:
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_leads_market_category "
-            "ON leads(market_key, category_key)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_leads_enrichment_status ON leads(enrichment_status)"
-        )
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_confidence ON leads(confidence)")
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_lead_score ON leads(lead_score)")
+        del mode  # Postgres has no WAL checkpoint equivalent for clients
 
     def has_lead(self, place_id: str) -> bool:
         row = self._conn.execute(
@@ -566,7 +270,7 @@ class LeadStore:
                     lead.source_tool,
                     csv_path,
                     profile_key,
-                    json.dumps(enriched_json),
+                    enriched_json,
                     credits_total,
                     score,
                     request_id,
@@ -735,7 +439,7 @@ class LeadStore:
         ).fetchone()
         if row is None:
             return None
-        data = json.loads(row["playbook_json"])
+        data = parse_json_field(row["playbook_json"])
         data["success_count"] = int(row["success_count"])
         data["sample_place_id"] = row["sample_place_id"] or data.get("sample_place_id", "")
         return data
@@ -796,7 +500,7 @@ class LeadStore:
                     property_type,
                     site_kind,
                     brand,
-                    json.dumps(merged),
+                    merged,
                     success_count,
                     place_id,
                     first_at,
@@ -816,7 +520,7 @@ class LeadStore:
         ).fetchone()
         if row is None or not row["enriched_json"]:
             return None
-        return EnrichedLead.model_validate(json.loads(row["enriched_json"]))
+        return EnrichedLead.model_validate(parse_json_field(row["enriched_json"]))
 
     def list_enriched_leads(
         self,
@@ -843,7 +547,7 @@ class LeadStore:
         leads: list[EnrichedLead] = []
         for row in rows:
             if row["enriched_json"]:
-                leads.append(EnrichedLead.model_validate(json.loads(row["enriched_json"])))
+                leads.append(EnrichedLead.model_validate(parse_json_field(row["enriched_json"])))
         return leads
 
     def list_profiles(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -860,7 +564,7 @@ class LeadStore:
         result: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            playbook = json.loads(item.pop("playbook_json"))
+            playbook = parse_json_field(item.pop("playbook_json"))
             item["playbook"] = playbook
             result.append(item)
         return result
@@ -896,11 +600,11 @@ class LeadStore:
                     run_id,
                     place_id,
                     stage,
-                    1 if ran else 0,
+                    ran,
                     reason,
                     credits_est,
                     duration_ms,
-                    json.dumps(meta or {}),
+                    meta or {},
                     _iso(_utc_now()),
                 ),
             )
@@ -934,7 +638,7 @@ class LeadStore:
             (
                 place_id,
                 fact_kind,
-                json.dumps(value, ensure_ascii=False),
+                value,
                 source_kind,
                 source_url,
                 method,
@@ -959,7 +663,7 @@ class LeadStore:
         for row in rows:
             fact = dict(row)
             try:
-                fact["value"] = json.loads(fact.pop("value_json"))
+                fact["value"] = parse_json_field(fact.pop("value_json"))
             except (TypeError, json.JSONDecodeError):
                 fact["value"] = {}
             facts.append(fact)
@@ -1000,7 +704,7 @@ class LeadStore:
         enriched: dict[str, Any] = {}
         if row["enriched_json"]:
             try:
-                enriched = json.loads(row["enriched_json"])
+                enriched = parse_json_field(row["enriched_json"])
             except json.JSONDecodeError:
                 enriched = {}
 
@@ -1075,7 +779,7 @@ class LeadStore:
                 """
                 SELECT place_id, business_name, city, enriched_json
                 FROM leads
-                WHERE place_id != ? AND enriched_json LIKE ?
+                WHERE place_id != ? AND enriched_json::text LIKE ?
                 LIMIT ?
                 """,
                 (place_id, f"%{domain}%", limit - len(related)),
@@ -1160,30 +864,10 @@ class LeadStore:
         }
 
     def get_domain_cache(self, hostname: str, *, ttl_hours: int = 24) -> bool | None:
-        row = self._conn.execute(
-            "SELECT is_valid, checked_at FROM domain_cache WHERE hostname = ?",
-            (hostname.lower(),),
-        ).fetchone()
-        if row is None:
-            return None
-        checked = datetime.fromisoformat(row["checked_at"])
-        if _utc_now() - checked > timedelta(hours=ttl_hours):
-            return None
-        return bool(row["is_valid"])
+        return self._local_cache.get_domain_cache(hostname, ttl_hours=ttl_hours)
 
     def set_domain_cache(self, hostname: str, is_valid: bool) -> None:
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO domain_cache (hostname, is_valid, checked_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(hostname) DO UPDATE SET
-                    is_valid = excluded.is_valid,
-                    checked_at = excluded.checked_at
-                """,
-                (hostname.lower(), 1 if is_valid else 0, _iso(_utc_now())),
-            )
-            self._conn.commit()
+        self._local_cache.set_domain_cache(hostname, is_valid)
 
     def upsert_sales_feedback(
         self,
@@ -1203,21 +887,21 @@ class LeadStore:
         now = _iso(_utc_now())
         normalized = normalize_crm_status(status)
         if existing:
-            addr = int(addressed) if addressed is not None else int(existing["addressed"])
+            addr = addressed if addressed is not None else bool(existing["addressed"])
             notes = (
                 feedback_notes if feedback_notes is not None else (existing["feedback_notes"] or "")
             )
             ready = (
-                int(sales_ready)
+                sales_ready
                 if sales_ready is not None
                 else (existing["sales_ready"] if existing["sales_ready"] is not None else None)
             )
             new_status = normalized or existing["status"] or "New"
             assignee = assigned_to if assigned_to is not None else existing["assigned_to"]
         else:
-            addr = int(addressed or False)
+            addr = bool(addressed or False)
             notes = feedback_notes or ""
-            ready = int(sales_ready) if sales_ready is not None else None
+            ready = sales_ready
             new_status = normalized or "New"
             assignee = assigned_to
 
@@ -1333,9 +1017,9 @@ class LeadStore:
                 owner_kind,
                 sos_entity_number,
                 registered_agent,
-                json.dumps(principals_json or []),
+                principals_json or [],
                 mailing_address,
-                json.dumps(broker_json or []),
+                broker_json or [],
                 source,
                 now,
                 now,
@@ -1351,8 +1035,8 @@ class LeadStore:
         if row is None:
             return None
         data = dict(row)
-        data["principals_json"] = json.loads(data.get("principals_json") or "[]")
-        data["broker_json"] = json.loads(data.get("broker_json") or "[]")
+        data["principals_json"] = parse_json_field(data.get("principals_json")) or []
+        data["broker_json"] = parse_json_field(data.get("broker_json")) or []
         return data
 
     def get_owner_record_by_name(self, owner_name: str) -> dict[str, Any] | None:
@@ -1369,8 +1053,8 @@ class LeadStore:
         if row is None:
             return None
         data = dict(row)
-        data["principals_json"] = json.loads(data.get("principals_json") or "[]")
-        data["broker_json"] = json.loads(data.get("broker_json") or "[]")
+        data["principals_json"] = parse_json_field(data.get("principals_json")) or []
+        data["broker_json"] = parse_json_field(data.get("broker_json")) or []
         return data
 
     def run_stage_count(self, run_id: str, stage: str) -> int:
@@ -1378,7 +1062,7 @@ class LeadStore:
             row = self._conn.execute(
                 """
                 SELECT COUNT(*) AS n FROM run_events
-                WHERE run_id = ? AND stage = ? AND ran = 1
+                WHERE run_id = ? AND stage = ? AND ran = true
                 """,
                 (run_id, stage),
             ).fetchone()
@@ -1390,15 +1074,15 @@ class LeadStore:
             return False
         key = f"run_cap:{run_id}:{stage}"
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
             try:
+                self._raw_conn.execute("BEGIN")
                 row = self._conn.execute(
-                    "SELECT value FROM app_state WHERE key = ?",
+                    "SELECT value FROM app_state WHERE key = ? FOR UPDATE",
                     (key,),
                 ).fetchone()
                 current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
                 if current >= max_count:
-                    self._conn.execute("ROLLBACK")
+                    self._raw_conn.rollback()
                     return False
                 now = _iso(_utc_now())
                 self._conn.execute(
@@ -1414,7 +1098,7 @@ class LeadStore:
                 self._conn.commit()
                 return True
             except Exception:
-                self._conn.rollback()
+                self._raw_conn.rollback()
                 raise
 
     def update_lead_csv_path(self, place_id: str, csv_path: str) -> None:
@@ -1449,7 +1133,7 @@ class LeadStore:
             unit_type,
             usd,
             model,
-            json.dumps(meta or {}),
+            meta or {},
             _iso(_utc_now()),
         )
         max_attempts = 8
@@ -1458,7 +1142,7 @@ class LeadStore:
                 with self._lock:
                     self._conn.execute(_COST_EVENT_INSERT_SQL, params)
                 return
-            except sqlite3.OperationalError as exc:
+            except psycopg.OperationalError as exc:
                 if attempt == max_attempts:
                     logger.warning("Queueing cost event after lock contention: %s", exc)
                     with self._lock:
@@ -1481,7 +1165,7 @@ class LeadStore:
                         self._conn.commit()
                     inserted = True
                     break
-                except sqlite3.OperationalError:
+                except psycopg.OperationalError:
                     time.sleep(min(0.25 * (2 ** (attempt - 1)), 8.0))
             if not inserted:
                 logger.error("Failed to flush queued cost event after retries")
@@ -1567,8 +1251,7 @@ class LeadStore:
 
     @staticmethod
     def _page_cache_key(url: str, content_type: str) -> str:
-        normalized = url.split("#")[0].rstrip("/").lower()
-        return f"{content_type}:{normalized}"
+        return LocalCache.page_cache_key(url, content_type)
 
     def get_page_cache(
         self,
@@ -1577,19 +1260,9 @@ class LeadStore:
         content_type: str = "markdown",
         ttl_days: int | None = None,
     ) -> dict[str, Any] | None:
-        cache_key = self._page_cache_key(url, content_type)
-        row = self._conn.execute(
-            "SELECT url, content_type, content, credits_used, fetched_at "
-            "FROM page_cache WHERE cache_key = ?",
-            (cache_key,),
-        ).fetchone()
-        if row is None:
-            return None
-        if ttl_days is not None:
-            fetched = datetime.fromisoformat(row["fetched_at"])
-            if _utc_now() - fetched > timedelta(days=ttl_days):
-                return None
-        return dict(row)
+        return self._local_cache.get_page_cache(
+            url, content_type=content_type, ttl_days=ttl_days
+        )
 
     def set_page_cache(
         self,
@@ -1599,24 +1272,12 @@ class LeadStore:
         content: str,
         credits_used: int = 0,
     ) -> None:
-        cache_key = self._page_cache_key(url, content_type)
-        now = _iso(_utc_now())
-        with self._lock:
-            self._conn.execute(
-                """
-            INSERT INTO page_cache (
-                cache_key, url, content_type, content, credits_used, fetched_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(cache_key) DO UPDATE SET
-                url = excluded.url,
-                content_type = excluded.content_type,
-                content = excluded.content,
-                credits_used = excluded.credits_used,
-                fetched_at = excluded.fetched_at
-            """,
-            (cache_key, url, content_type, content, credits_used, now),
-            )
-            self._conn.commit()
+        self._local_cache.set_page_cache(
+            url,
+            content_type=content_type,
+            content=content,
+            credits_used=credits_used,
+        )
 
     def prune_stale_data(
         self,
@@ -1635,19 +1296,9 @@ class LeadStore:
             "cost_events_deleted": 0,
         }
         cache_cutoff = _iso(_utc_now() - timedelta(days=page_cache_ttl_days))
-        if dry_run:
-            row = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM page_cache WHERE fetched_at < ?",
-                (cache_cutoff,),
-            ).fetchone()
-            stats["page_cache_deleted"] = int(row["n"]) if row else 0
-        else:
-            cur = self._conn.execute(
-                "DELETE FROM page_cache WHERE fetched_at < ?",
-                (cache_cutoff,),
-            )
-            stats["page_cache_deleted"] = cur.rowcount
-            self._conn.commit()
+        stats["page_cache_deleted"] = self._local_cache.prune_page_cache(
+            ttl_days=page_cache_ttl_days, dry_run=dry_run
+        )
 
         events_cutoff = _iso(_utc_now() - timedelta(days=keep_days))
         if dry_run:
@@ -1737,7 +1388,7 @@ class LeadStore:
                     provider,
                     remaining_credits,
                     used_credits,
-                    json.dumps(snapshot or {}),
+                    snapshot or {},
                     _iso(_utc_now()),
                 ),
             )
@@ -1751,7 +1402,7 @@ class LeadStore:
         spec: Any,
     ) -> None:
         spec_json = (
-            spec.model_dump(mode="json") if hasattr(spec, "model_dump") else json.dumps(spec)
+            spec.model_dump(mode="json") if hasattr(spec, "model_dump") else spec
         )
         self._conn.execute(
             """
@@ -1759,7 +1410,7 @@ class LeadStore:
                 request_id, created_at, raw_prompt, spec_json, status
             ) VALUES (?, ?, ?, ?, 'running')
             """,
-            (request_id, _iso(_utc_now()), raw_prompt, json.dumps(spec_json)),
+            (request_id, _iso(_utc_now()), raw_prompt, spec_json),
         )
         self._conn.commit()
 
@@ -1818,7 +1469,7 @@ class LeadStore:
         if row is None:
             return None
         data = dict(row)
-        data["spec"] = json.loads(data.pop("spec_json"))
+        data["spec"] = parse_json_field(data.pop("spec_json"))
         rows = self._conn.execute(
             """
             SELECT place_id, rank, score FROM request_leads

@@ -1,0 +1,327 @@
+# Search queries for Text Search (New). Optional Table A filters:
+#   included_type — single type for text search bias (see place-types Table A)
+#   nearby_types — list of types for Nearby Search supplement
+# Per-category enrichment rules (see enrich/contact_requirements.py).
+# min_contact_bar: form < email < phone < labeled_phone
+# require_property_manager_clue: ownership / PM company required for sales
+# always_investigate: run Firecrawl even when Google listing looks complete
+enrichment_defaults:
+  min_contact_bar: phone
+  require_property_manager_clue: false
+  always_investigate: false
+  allow_owner_chain: false
+  # Cross-check BBB for principals/owners (deterministic parse, ~3 credits)
+  # whenever no verified person has been found yet.
+  registry_lookup: bbb
+
+categories:
+  gas_station:
+    label: Gas Station
+    property_type: gas_station
+    included_type: gas_station
+    nearby_types:
+      - gas_station
+    queries:
+      - gas station
+      - fuel station
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
+
+  fast_food:
+    label: Fast Food Drive-Thru
+    property_type: fast_food
+    included_type: fast_food_restaurant
+    nearby_types:
+      - fast_food_restaurant
+      - restaurant
+    queries:
+      - fast food drive thru
+      - quick service restaurant
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
+
+  strip_mall:
+    label: Strip Mall / Retail Plaza
+    property_type: strip_mall
+    included_type: shopping_mall
+    nearby_types:
+      - shopping_mall
+    queries:
+      - strip mall
+      - retail plaza
+    enrichment:
+      min_contact_bar: labeled_phone
+      require_property_manager_clue: true
+      always_investigate: true
+      allow_owner_chain: true
+
+  shopping_center:
+    label: Shopping Center
+    property_type: shopping_center
+    included_type: shopping_mall
+    nearby_types:
+      - shopping_mall
+    queries:
+      - shopping center
+      - retail shopping center
+    enrichment:
+      min_contact_bar: labeled_phone
+      require_property_manager_clue: true
+      always_investigate: true
+      allow_owner_chain: true
+
+  grocery:
+    label: Grocery-Anchored Center
+    property_type: grocery
+    included_type: grocery_store
+    nearby_types:
+      - grocery_store
+      - supermarket
+    queries:
+      - grocery store
+      - supermarket
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
+
+  medical_plaza:
+    label: Medical Plaza
+    property_type: medical_plaza
+    included_type: doctor
+    nearby_types:
+      - doctor
+      - hospital
+      - medical_lab
+    queries:
+      - medical plaza
+      - medical office building
+      - urgent care clinic
+    enrichment:
+      min_contact_bar: labeled_phone
+      allow_owner_chain: true
+
+  pharmacy:
+    label: Pharmacy
+    property_type: pharmacy
+    included_type: pharmacy
+    nearby_types:
+      - pharmacy
+      - drugstore
+    queries:
+      - pharmacy
+      - drugstore
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
+
+  bank:
+    label: Bank / Financial Branch
+    property_type: bank
+    included_type: bank
+    nearby_types:
+      - bank
+    queries:
+      - bank branch
+      - credit union
+    enrichment:
+      franchise_fast_path: true
+
+  industrial:
+    label: Industrial / Warehouse Storefront
+    property_type: industrial
+    queries:
+      - industrial park
+      - warehouse commercial
+      - light industrial building
+    enrichment:
+      allow_owner_chain: true
+
+  big_box:
+    label: Big Box Retail
+    property_type: big_box
+    included_type: department_store
+    nearby_types:
+      - department_store
+      - home_improvement_store
+    queries:
+      - big box retail
+      - home depot style store
+      - department store
+    enrichment:
+      suggest_recurring: true
+      allow_owner_chain: true
+
+  auto_dealer:
+    label: Auto Dealership
+    property_type: auto_dealer
+    included_type: car_dealer
+    nearby_types:
+      - car_dealer
+      - car_repair
+    queries:
+      - car dealership
+      - auto dealer
+      - auto mall
+    enrichment:
+      min_contact_bar: phone
+      allow_owner_chain: true
+
+  dollar_store:
+    label: Dollar / Discount Store
+    property_type: dollar_store
+    included_type: store
+    nearby_types:
+      - store
+      - department_store
+    queries:
+      - dollar store
+      - discount store
+      - dollar general
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
+
+  restaurant:
+    label: Sit-Down Restaurant
+    property_type: restaurant
+    included_type: restaurant
+    nearby_types:
+      - restaurant
+    queries:
+      - restaurant
+      - family restaurant
+
+  parking:
+    label: Parking Structure / Lot
+    property_type: parking
+    queries:
+      - parking garage
+      - parking lot commercial
+      - park and ride lot
+    enrichment:
+      allow_owner_chain: true
+
+  parking_small:
+    label: Small Parking Lot
+    property_type: parking_small
+    source: overpass
+    queries: []
+    overpass_filter: '["amenity"="parking"]["parking"="surface"]'
+    area_min_m2: 500
+    area_max_m2: 4000
+    enrichment:
+      min_contact_bar: phone
+      allow_owner_chain: true
+
+  parking_large_private:
+    label: Large Private Parking Lot
+    property_type: parking_large_private
+    source: overpass
+    queries: []
+    overpass_filter: '["amenity"="parking"]["parking"="surface"]'
+    area_min_m2: 8000
+    prefer_private_access: true
+    enrichment:
+      min_contact_bar: phone
+      allow_owner_chain: true
+
+  hotel:
+    label: Hotel / Motel
+    property_type: hotel
+    included_type: hotel
+    nearby_types:
+      - hotel
+      - lodging
+    queries:
+      - hotel
+      - motel
+    enrichment:
+      suggest_recurring: true
+      allow_owner_chain: true
+
+  thrift_store:
+    label: Thrift / Discount Retail
+    property_type: thrift_store
+    queries:
+      - thrift store
+      - goodwill store
+      - habitat restore
+    enrichment:
+      suggest_recurring: true
+
+  community_facility:
+    label: Community Facility
+    property_type: community_facility
+    queries:
+      - community center
+      - homeless shelter
+      - senior center
+    enrichment:
+      min_contact_bar: phone
+
+  amusement_facility:
+    label: Amusement / Entertainment Venue
+    property_type: amusement_facility
+    included_type: amusement_center
+    nearby_types:
+      - amusement_center
+      - movie_theater
+    queries:
+      - amusement park
+      - entertainment venue
+      - bowling alley
+
+  public_agency:
+    label: Public Agency / Municipal
+    property_type: public_agency
+    queries:
+      - city public works department
+      - parks and recreation department
+      - municipal facilities maintenance
+    enrichment:
+      min_contact_bar: phone
+
+  hoa:
+    label: HOA / Homeowners Association Office
+    property_type: hoa
+    queries:
+      - homeowners association office
+      - HOA management office
+
+  property_manager:
+    label: Commercial Property Manager
+    property_type: property_manager
+    # No reliable Table A type — text search only (run at county level via campaign.yaml)
+    queries:
+      - commercial property management
+      - property management company
+      - commercial real estate management
+    enrichment:
+      min_contact_bar: labeled_phone
+      always_investigate: true
+      registry_lookup:
+        - bbb
+        - state_license
+        - linkedin_serp
+
+  vendor_pressure_washing:
+    label: "Vendor: Pressure Washing"
+    property_type: vendor_pressure_washing
+    # No reliable Places Table A type — text search only.
+    queries:
+      - commercial pressure washing company
+      - pressure washing service
+      - power washing company
+    enrichment:
+      min_contact_bar: phone
+      always_investigate: true
+      allow_owner_chain: false
+      registry_lookup: bbb
+      insurance_keywords:
+        - fully insured
+        - licensed and insured
+        - bonded and insured
+        - general liability
+        - insured

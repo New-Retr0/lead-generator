@@ -2,9 +2,9 @@
 
 Repeatable commercial property lead runs for **PALLARES** exterior cleaning brokerage. Each place is **discovered and enriched in one pass** — there is no separate enrichment pipeline or re-enrich CLI.
 
-**Stack (per place, single pass):** Google Places / Overpass → Firecrawl → Browser Use Cloud (owner chain) → AI Gateway (sales copy) → SQLite → CSV + Google Sheets.
+**Stack (per place, single pass):** Google Places / Overpass → Firecrawl → Browser Use Cloud (owner chain) → AI Gateway (sales copy) → **Supabase Postgres**.
 
-Processed leads live in **SQLite** (`data/pallares.db`). Re-runs skip known leads; `page_cache` and `owner_records` reuse prior work to save credits.
+Canonical data lives in **Supabase** (`pallares-leads` project). Re-runs skip known leads; `page_cache` / `domain_cache` stay in local `data/local_cache.db` to save DB space.
 
 ## Setup
 
@@ -14,8 +14,9 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev,ownerchain]"
 copy .env.example .env
-# Fill in .env — see .env.example for all keys
-# Put the Google service account JSON in secrets/google-service-account.json
+# Fill in .env — SUPABASE_URL, SUPABASE_DB_URL, API keys
+supabase link   # once
+supabase db push
 ```
 
 Optional owner-chain tier:
@@ -40,9 +41,6 @@ pallares-leads run --market reedley --category strip_mall
 # Natural-language lead request (DB-first, then single-pass gap fill)
 pallares-leads request "5 strip mall leads in reedley" --dry-run
 pallares-leads request "3 leads in reedley along CA-99" --yes
-
-# Export selected leads to Sheets
-pallares-leads sync-sheets --from-db --place-ids id1,id2
 
 # Smoke sample, campaign, discover-only (no per-place processing)
 pallares-leads smoke-sample

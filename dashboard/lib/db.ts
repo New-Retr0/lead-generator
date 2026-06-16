@@ -1,5 +1,4 @@
-import Database from "better-sqlite3";
-import { existsSync } from "fs";
+import { dbAvailable, getSql } from "./pg";
 import type {
   CostSeries,
   CrmStatus,
@@ -24,29 +23,18 @@ import type {
   SiteContact,
   SourceCheck,
 } from "./types";
-import { dbPath } from "./paths";
 
-let _db: Database.Database | null = null;
-let _missing = false;
+export { dbAvailable };
 
-export function dbAvailable(): boolean {
-  return existsSync(dbPath());
+function toIso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return value;
+  return String(value);
 }
 
-export function getDb(): Database.Database {
-  if (_missing) {
-    throw new Error("Database not found. Run pallares-leads first.");
-  }
-  if (!_db) {
-    const resolved = dbPath();
-    if (!existsSync(resolved)) {
-      _missing = true;
-      throw new Error("Database not found. Run pallares-leads first.");
-    }
-    _db = new Database(resolved, { readonly: true });
-    _db.pragma("busy_timeout = 60000");
-  }
-  return _db;
+function toIsoOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  return toIso(value);
 }
 
 function emptyOverview(): OverviewStats {
@@ -69,19 +57,37 @@ function balanceUnitLabel(provider: string): string {
   return "units";
 }
 
+function snapshotPayload(snapshotJson: unknown): Record<string, unknown> | null {
+  if (snapshotJson == null) return null;
+  if (typeof snapshotJson === "object" && !Array.isArray(snapshotJson)) {
+    return snapshotJson as Record<string, unknown>;
+  }
+  if (typeof snapshotJson === "string") {
+    try {
+      const parsed = JSON.parse(snapshotJson) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function parseFirecrawlSnapshotBalance(
-  snapshotJson: string | null,
+  snapshotJson: unknown,
   remaining: number | null,
   used: number | null,
 ): { remaining: number | null; used: number | null } {
   if (remaining != null) {
     return { remaining, used };
   }
-  if (!snapshotJson) {
+  const payload = snapshotPayload(snapshotJson);
+  if (!payload) {
     return { remaining: null, used: null };
   }
   try {
-    const payload = JSON.parse(snapshotJson) as Record<string, unknown>;
     const data =
       payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
         ? (payload.data as Record<string, unknown>)
@@ -101,59 +107,37 @@ function parseFirecrawlSnapshotBalance(
   }
 }
 
-export function getCreditBalances(): ProviderBalance[] {
+export async function getCreditBalances(): Promise<ProviderBalance[]> {
   if (!dbAvailable()) return [];
-  const db = getDb();
-  if (!tableExists(db, "credit_snapshots")) return [];
+  const sql = getSql();
 
-  const rows = db
-    .prepare(
-      `SELECT provider, remaining_credits, used_credits, snapshot_json, created_at
-       FROM credit_snapshots cs
-       WHERE created_at = (
-         SELECT MAX(created_at)
-         FROM credit_snapshots
-         WHERE provider = cs.provider
-       )
-       ORDER BY provider`,
-    )
-    .all() as {
-    provider: string;
-    remaining_credits: number | null;
-    used_credits: number | null;
-    snapshot_json: string | null;
-    created_at: string;
-  }[];
+  const rows = await sql`
+    SELECT DISTINCT ON (provider)
+      provider, remaining_credits, used_credits, snapshot_json, created_at
+    FROM credit_snapshots
+    ORDER BY provider, created_at DESC
+  `;
 
   return rows.map((row) => {
     const parsed =
       row.provider === "firecrawl"
         ? parseFirecrawlSnapshotBalance(
             row.snapshot_json,
-            row.remaining_credits,
-            row.used_credits,
+            row.remaining_credits as number | null,
+            row.used_credits as number | null,
           )
-        : { remaining: row.remaining_credits, used: row.used_credits };
+        : {
+            remaining: row.remaining_credits as number | null,
+            used: row.used_credits as number | null,
+          };
     return {
-      provider: row.provider,
+      provider: String(row.provider),
       remaining: parsed.remaining,
       used: parsed.used,
-      unitLabel: balanceUnitLabel(row.provider),
-      snapshotAt: row.created_at,
+      unitLabel: balanceUnitLabel(String(row.provider)),
+      snapshotAt: toIsoOrNull(row.created_at),
     };
   });
-}
-
-function tableExists(db: Database.Database, name: string): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(name);
-  return Boolean(row);
-}
-
-function hasColumn(db: Database.Database, table: string, column: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-  return rows.some((r) => r.name === column);
 }
 
 type EnrichedJson = {
@@ -165,6 +149,21 @@ type EnrichedJson = {
   best_contact_email_or_form?: string;
   facts?: unknown[];
 };
+
+function parseEnrichedJson(raw: unknown): EnrichedJson {
+  if (raw == null) return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as EnrichedJson;
+  }
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as EnrichedJson;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
 
 function isReadyToCall(data: EnrichedJson): boolean {
   const hasOutreach = (data.site_contacts ?? []).some(
@@ -203,30 +202,23 @@ function primaryPhone(data: EnrichedJson): string | null {
   return null;
 }
 
-export function getOverview(): OverviewStats {
+export async function getOverview(): Promise<OverviewStats> {
   if (!dbAvailable()) return emptyOverview();
-  const db = getDb();
-  const totalLeads = (
-    db.prepare("SELECT COUNT(*) AS n FROM leads").get() as { n: number }
-  ).n;
-  const enrichedQuery = hasColumn(db, "leads", "enriched_json")
-    ? "SELECT COUNT(*) AS n FROM leads WHERE enriched_json IS NOT NULL"
-    : "SELECT COUNT(*) AS n FROM leads WHERE last_enriched_at IS NOT NULL";
-  const enrichedLeads = (db.prepare(enrichedQuery).get() as { n: number }).n;
+  const sql = getSql();
+
+  const totalRow = await sql`SELECT COUNT(*)::int AS n FROM leads`;
+  const totalLeads = totalRow[0]?.n as number;
+
+  const enrichedRow =
+    await sql`SELECT COUNT(*)::int AS n FROM leads WHERE enriched_json IS NOT NULL`;
+  const enrichedLeads = enrichedRow[0]?.n as number;
 
   let readyToCall = 0;
-  if (hasColumn(db, "leads", "enriched_json")) {
-    const rows = db
-      .prepare("SELECT enriched_json FROM leads WHERE enriched_json IS NOT NULL")
-      .all() as { enriched_json: string }[];
-    for (const row of rows) {
-      try {
-        const data = JSON.parse(row.enriched_json) as EnrichedJson;
-        if (isReadyToCall(data)) readyToCall += 1;
-      } catch {
-        // skip malformed
-      }
-    }
+  const enrichedRows =
+    await sql`SELECT enriched_json FROM leads WHERE enriched_json IS NOT NULL`;
+  for (const row of enrichedRows) {
+    const data = parseEnrichedJson(row.enriched_json);
+    if (isReadyToCall(data)) readyToCall += 1;
   }
 
   const monthStart = new Date();
@@ -234,78 +226,58 @@ export function getOverview(): OverviewStats {
   monthStart.setHours(0, 0, 0, 0);
   const monthIso = monthStart.toISOString();
 
-  let creditsThisMonth = 0;
-  let browserUseUsdThisMonth = 0;
-  let aiGatewayUsdThisMonth = 0;
-  let usdByProvider: OverviewStats["usdByProvider"] = [];
-  if (tableExists(db, "cost_events")) {
-    const creditsRow = db
-      .prepare(
-        `SELECT COALESCE(SUM(units), 0) AS credits
-         FROM cost_events
-         WHERE provider = 'firecrawl'
-           AND created_at >= ?`,
-      )
-      .get(monthIso) as { credits: number };
-    creditsThisMonth = creditsRow.credits;
+  const creditsRow = await sql`
+    SELECT COALESCE(SUM(units), 0)::float AS credits
+    FROM cost_events
+    WHERE provider = 'firecrawl' AND created_at >= ${monthIso}
+  `;
+  const creditsThisMonth = Number(creditsRow[0]?.credits ?? 0);
 
-    const browserUseRow = db
-      .prepare(
-        `SELECT COALESCE(SUM(usd), 0) AS usd
-         FROM cost_events
-         WHERE provider = 'browser_use'
-           AND created_at >= ?`,
-      )
-      .get(monthIso) as { usd: number };
-    browserUseUsdThisMonth = browserUseRow.usd;
+  const browserUseRow = await sql`
+    SELECT COALESCE(SUM(usd), 0)::float AS usd
+    FROM cost_events
+    WHERE provider = 'browser_use' AND created_at >= ${monthIso}
+  `;
+  const browserUseUsdThisMonth = Number(browserUseRow[0]?.usd ?? 0);
 
-    const aiGatewayRow = db
-      .prepare(
-        `SELECT COALESCE(SUM(usd), 0) AS usd
-         FROM cost_events
-         WHERE provider = 'ai_gateway'
-           AND created_at >= ?`,
-      )
-      .get(monthIso) as { usd: number };
-    aiGatewayUsdThisMonth = aiGatewayRow.usd;
+  const aiGatewayRow = await sql`
+    SELECT COALESCE(SUM(usd), 0)::float AS usd
+    FROM cost_events
+    WHERE provider = 'ai_gateway' AND created_at >= ${monthIso}
+  `;
+  const aiGatewayUsdThisMonth = Number(aiGatewayRow[0]?.usd ?? 0);
 
-    const providerRows = db
-      .prepare(
-        `SELECT provider,
-                unit_type,
-                COALESCE(SUM(usd), 0) AS usd,
-                COALESCE(SUM(units), 0) AS units,
-                COUNT(*) AS count
-         FROM cost_events
-         WHERE created_at >= ?
-         GROUP BY provider, unit_type
-         ORDER BY usd DESC`,
-      )
-      .all(monthIso) as {
-      provider: string;
-      unit_type: string;
-      usd: number;
-      units: number;
-      count: number;
-    }[];
+  const providerRows = await sql`
+    SELECT provider,
+           unit_type,
+           COALESCE(SUM(usd), 0)::float AS usd,
+           COALESCE(SUM(units), 0)::float AS units,
+           COUNT(*)::int AS count
+    FROM cost_events
+    WHERE created_at >= ${monthIso}
+    GROUP BY provider, unit_type
+    ORDER BY usd DESC
+  `;
 
-    const merged = new Map<string, OverviewStats["usdByProvider"][number]>();
-    for (const row of providerRows) {
-      const existing = merged.get(row.provider);
-      if (existing) {
-        existing.usd += row.usd;
-        existing.units += row.units;
-      } else {
-        merged.set(row.provider, {
-          provider: row.provider,
-          usd: row.usd,
-          units: row.units,
-          unitType: row.unit_type,
-        });
-      }
+  const merged = new Map<string, OverviewStats["usdByProvider"][number]>();
+  for (const row of providerRows) {
+    const provider = String(row.provider);
+    const existing = merged.get(provider);
+    const usd = Number(row.usd);
+    const units = Number(row.units);
+    if (existing) {
+      existing.usd += usd;
+      existing.units += units;
+    } else {
+      merged.set(provider, {
+        provider,
+        usd,
+        units,
+        unitType: String(row.unit_type),
+      });
     }
-    usdByProvider = [...merged.values()].sort((a, b) => b.usd - a.usd);
   }
+  const usdByProvider = [...merged.values()].sort((a, b) => b.usd - a.usd);
 
   return {
     totalLeads,
@@ -316,11 +288,11 @@ export function getOverview(): OverviewStats {
     browserUseUsdThisMonth,
     aiGatewayUsdThisMonth,
     usdByProvider,
-    balances: getCreditBalances(),
+    balances: await getCreditBalances(),
   };
 }
 
-export function listLeads(filters?: {
+export async function listLeads(filters?: {
   market?: string;
   category?: string;
   status?: string;
@@ -329,83 +301,46 @@ export function listLeads(filters?: {
   minScore?: number;
   dudsOnly?: boolean;
   limit?: number;
-}): LeadRow[] {
+}): Promise<LeadRow[]> {
   if (!dbAvailable()) return [];
-  const db = getDb();
-  const clauses: string[] = [];
-  if (tableExists(db, "leads") && hasColumn(db, "leads", "enriched_json")) {
-    clauses.push("enriched_json IS NOT NULL");
-  } else if (tableExists(db, "leads")) {
-    clauses.push("last_enriched_at IS NOT NULL");
-  } else {
-    return [];
-  }
-  const params: (string | number)[] = [];
-
-  if (filters?.market) {
-    clauses.push("market_key = ?");
-    params.push(filters.market);
-  }
-  if (filters?.category) {
-    clauses.push("category_key = ?");
-    params.push(filters.category);
-  }
-  if (filters?.minScore !== undefined && hasColumn(db, "leads", "lead_score")) {
-    clauses.push("COALESCE(lead_score, 0) >= ?");
-    params.push(filters.minScore);
-  }
-  if (filters?.dudsOnly) {
-    const dudParts: string[] = [
-      "enrichment_status = 'needs_manual'",
-      "confidence = 'Low'",
-      "enrichment_status = 'unverified'",
-    ];
-    if (hasColumn(db, "leads", "lead_score")) {
-      dudParts.unshift("COALESCE(lead_score, 0) < 40");
-    }
-    clauses.push(`(${dudParts.join(" OR ")})`);
-  }
-
+  const sql = getSql();
   const limit = filters?.limit ?? 500;
-  const hasEnrichedJson = hasColumn(db, "leads", "enriched_json");
-  const hasLeadScore = hasColumn(db, "leads", "lead_score");
-  const hasSalesFeedback = tableExists(db, "sales_feedback");
-  const hasCrmStatus =
-    hasSalesFeedback && hasColumn(db, "sales_feedback", "status");
-  const crmJoin = hasCrmStatus
-    ? "LEFT JOIN sales_feedback sf ON sf.place_id = leads.place_id"
-    : "";
-  const crmStatusCol = hasCrmStatus ? ", COALESCE(sf.status, 'New') AS crm_status" : ", 'New' AS crm_status";
-  const enrichedCol = hasEnrichedJson ? ", enriched_json" : "";
-  const orderScore = hasLeadScore ? "COALESCE(lead_score, 0) DESC," : "";
-  const sql = `
-    SELECT place_id, business_name, market_key, category_key, city,
-           last_enriched_at, enrichment_status, confidence
-           ${hasLeadScore ? ", lead_score" : ""}${enrichedCol}${crmStatusCol}
-    FROM leads
-    ${crmJoin}
-    WHERE ${clauses.join(" AND ")}
-    ORDER BY ${orderScore} last_enriched_at DESC
-    LIMIT ?
-  `;
-  params.push(limit);
 
-  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
+  const rows = await sql`
+    SELECT leads.place_id, leads.business_name, leads.market_key, leads.category_key, leads.city,
+           leads.last_enriched_at, leads.enrichment_status, leads.confidence,
+           leads.lead_score, leads.enriched_json,
+           COALESCE(sf.status, 'New') AS crm_status
+    FROM leads
+    LEFT JOIN sales_feedback sf ON sf.place_id = leads.place_id
+    WHERE leads.enriched_json IS NOT NULL
+    ${filters?.market ? sql`AND leads.market_key = ${filters.market}` : sql``}
+    ${filters?.category ? sql`AND leads.category_key = ${filters.category}` : sql``}
+    ${
+      filters?.minScore !== undefined
+        ? sql`AND COALESCE(leads.lead_score, 0) >= ${filters.minScore}`
+        : sql``
+    }
+    ${
+      filters?.dudsOnly
+        ? sql`AND (
+            COALESCE(leads.lead_score, 0) < 40
+            OR leads.enrichment_status = 'needs_manual'
+            OR leads.confidence = 'Low'
+            OR leads.enrichment_status = 'unverified'
+          )`
+        : sql``
+    }
+    ORDER BY COALESCE(leads.lead_score, 0) DESC, leads.last_enriched_at DESC
+    LIMIT ${limit}
+  `;
 
   const leads: LeadRow[] = [];
   for (const row of rows) {
-    let data: EnrichedJson = {};
-    const enrichedJson = row.enriched_json as string | undefined;
-    if (enrichedJson) {
-      try {
-        data = JSON.parse(enrichedJson) as EnrichedJson;
-      } catch {
-        data = {};
-      }
-    }
+    const data = parseEnrichedJson(row.enriched_json);
     const status = salesStatus(data);
     if (filters?.status && status !== filters.status) continue;
-    const crmStatus = (row.crm_status as string) ?? "New";
+    const crmStatus = String(row.crm_status ?? "New");
     if (filters?.crmStatus && crmStatus !== filters.crmStatus) continue;
     const leadType: LeadType = (row.category_key as string | null)?.startsWith("vendor_")
       ? "vendor"
@@ -417,14 +352,12 @@ export function listLeads(filters?: {
       market_key: (row.market_key as string | null) ?? null,
       category_key: (row.category_key as string | null) ?? null,
       city: (row.city as string | null) ?? null,
-      last_enriched_at: (row.last_enriched_at as string | null) ?? null,
+      last_enriched_at: toIsoOrNull(row.last_enriched_at),
       enrichment_status: (row.enrichment_status as string | null) ?? null,
       confidence: (row.confidence as string | null) ?? null,
       verification_level:
-        typeof data.verification_level === "string"
-          ? data.verification_level
-          : null,
-      lead_score: hasLeadScore ? ((row.lead_score as number | null) ?? null) : null,
+        typeof data.verification_level === "string" ? data.verification_level : null,
+      lead_score: (row.lead_score as number | null) ?? null,
       status,
       crm_status: crmStatus as CrmStatus,
       lead_type: leadType,
@@ -462,86 +395,74 @@ function normalizeListText(value: string | null): string | null {
   return parts.length > 0 ? parts.join("\n") : value;
 }
 
-export function getRelatedLeads(placeId: string): RelatedLead[] {
+export async function getRelatedLeads(placeId: string): Promise<RelatedLead[]> {
   if (!dbAvailable()) return [];
-  const db = getDb();
-  const row = db
-    .prepare("SELECT enriched_json, profile_key FROM leads WHERE place_id = ?")
-    .get(placeId) as { enriched_json?: string; profile_key?: string } | undefined;
+  const sql = getSql();
+
+  const leadRows = await sql`
+    SELECT enriched_json, profile_key FROM leads WHERE place_id = ${placeId}
+  `;
+  const row = leadRows[0];
   if (!row) return [];
 
   let domain = "";
-  if (row.enriched_json) {
+  const enrichedData = parseEnrichedJson(row.enriched_json) as { website?: string };
+  const website = enrichedData.website ?? "";
+  if (website) {
     try {
-      const data = JSON.parse(row.enriched_json) as { website?: string };
-      const website = data.website ?? "";
-      if (website) {
-        try {
-          domain = new URL(website).hostname.replace(/^www\./, "");
-        } catch {
-          domain = "";
-        }
-      }
+      domain = new URL(website).hostname.replace(/^www\./, "");
     } catch {
-      /* ignore */
+      domain = "";
     }
   }
 
   const related: RelatedLead[] = [];
   const seen = new Set<string>([placeId]);
 
-  const owner = db
-    .prepare(
-      "SELECT owner_name_normalized, owner_name FROM owner_records WHERE place_id = ?",
-    )
-    .get(placeId) as
-    | { owner_name_normalized?: string; owner_name?: string }
-    | undefined;
+  const ownerRows = await sql`
+    SELECT owner_name_normalized, owner_name FROM owner_records WHERE place_id = ${placeId}
+  `;
+  const owner = ownerRows[0];
 
   if (owner?.owner_name_normalized) {
-    const rows = db
-      .prepare(
-        `SELECT l.place_id, l.business_name, l.city, o.owner_name
-         FROM owner_records o JOIN leads l ON l.place_id = o.place_id
-         WHERE o.owner_name_normalized = ? AND o.place_id != ? LIMIT 10`,
-      )
-      .all(owner.owner_name_normalized, placeId) as {
-      place_id: string;
-      business_name: string;
-      city: string | null;
-      owner_name: string;
-    }[];
-    for (const r of rows) {
-      if (seen.has(r.place_id)) continue;
-      seen.add(r.place_id);
+    const sameOwnerRows = await sql`
+      SELECT l.place_id, l.business_name, l.city, o.owner_name
+      FROM owner_records o
+      JOIN leads l ON l.place_id = o.place_id
+      WHERE o.owner_name_normalized = ${owner.owner_name_normalized}
+        AND o.place_id != ${placeId}
+      LIMIT 10
+    `;
+    for (const r of sameOwnerRows) {
+      const pid = String(r.place_id);
+      if (seen.has(pid)) continue;
+      seen.add(pid);
       related.push({
-        place_id: r.place_id,
-        business_name: r.business_name,
-        city: r.city,
+        place_id: pid,
+        business_name: String(r.business_name),
+        city: (r.city as string | null) ?? null,
         relation: "same_owner",
-        detail: r.owner_name,
+        detail: String(r.owner_name),
       });
     }
   }
 
-  const profileKey = row.profile_key ?? "";
+  const profileKey = (row.profile_key as string | null) ?? "";
   if (profileKey.startsWith("mgmt:")) {
-    const rows = db
-      .prepare(
-        "SELECT place_id, business_name, city FROM leads WHERE profile_key = ? AND place_id != ? LIMIT 10",
-      )
-      .all(profileKey, placeId) as {
-      place_id: string;
-      business_name: string;
-      city: string | null;
-    }[];
-    for (const r of rows) {
-      if (seen.has(r.place_id)) continue;
-      seen.add(r.place_id);
+    const mgrRows = await sql`
+      SELECT place_id, business_name, city
+      FROM leads
+      WHERE profile_key = ${profileKey} AND place_id != ${placeId}
+      LIMIT 10
+    `;
+    for (const r of mgrRows) {
+      const pid = String(r.place_id);
+      if (seen.has(pid)) continue;
+      seen.add(pid);
       related.push({
-        place_id: r.place_id,
-        business_name: r.business_name,
-        city: r.city,
+        place_id: pid,
+        business_name: String(r.business_name),
+        city: (r.city as string | null) ?? null,
         relation: "same_manager",
         detail: profileKey,
       });
@@ -549,22 +470,21 @@ export function getRelatedLeads(placeId: string): RelatedLead[] {
   }
 
   if (domain) {
-    const rows = db
-      .prepare(
-        "SELECT place_id, business_name, city FROM leads WHERE place_id != ? AND enriched_json LIKE ? LIMIT 10",
-      )
-      .all(placeId, `%${domain}%`) as {
-      place_id: string;
-      business_name: string;
-      city: string | null;
-    }[];
-    for (const r of rows) {
-      if (seen.has(r.place_id)) continue;
-      seen.add(r.place_id);
+    const domainPattern = `%${domain}%`;
+    const domainRows = await sql`
+      SELECT place_id, business_name, city
+      FROM leads
+      WHERE place_id != ${placeId} AND enriched_json::text LIKE ${domainPattern}
+      LIMIT 10
+    `;
+    for (const r of domainRows) {
+      const pid = String(r.place_id);
+      if (seen.has(pid)) continue;
+      seen.add(pid);
       related.push({
-        place_id: r.place_id,
-        business_name: r.business_name,
-        city: r.city,
+        place_id: pid,
+        business_name: String(r.business_name),
+        city: (r.city as string | null) ?? null,
         relation: "same_domain",
         detail: domain,
       });
@@ -574,26 +494,24 @@ export function getRelatedLeads(placeId: string): RelatedLead[] {
   return related.slice(0, 10);
 }
 
-export function getSourceChecksForLead(placeId: string): SourceCheck[] {
+export async function getSourceChecksForLead(placeId: string): Promise<SourceCheck[]> {
   if (!dbAvailable()) return [];
-  const db = getDb();
-  if (!tableExists(db, "run_events")) return [];
+  const sql = getSql();
 
-  const rows = db
-    .prepare(
-      `SELECT stage, ran, reason FROM run_events
-       WHERE place_id = ? AND stage LIKE 'source_check:%'
-       ORDER BY created_at DESC LIMIT 30`,
-    )
-    .all(placeId) as { stage: string; ran: number; reason: string | null }[];
+  const rows = await sql`
+    SELECT stage, ran, reason FROM run_events
+    WHERE place_id = ${placeId} AND stage LIKE 'source_check:%'
+    ORDER BY created_at DESC
+    LIMIT 30
+  `;
 
   const seen = new Set<string>();
   const checks: SourceCheck[] = [];
   for (const row of rows) {
-    const sourceKey = row.stage.replace("source_check:", "");
+    const sourceKey = String(row.stage).replace("source_check:", "");
     if (seen.has(sourceKey)) continue;
     seen.add(sourceKey);
-    const reason = row.reason ?? "";
+    const reason = row.reason != null ? String(row.reason) : "";
     let status = "skipped";
     if (reason.startsWith("checked")) status = "checked";
     else if (reason.startsWith("login_wall")) status = "login_wall";
@@ -638,54 +556,40 @@ function classifyCostBilling(
 }
 
 function parseCostMeta(raw: unknown): Record<string, unknown> {
-  if (typeof raw !== "string" || !raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
+  if (raw == null) return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
   }
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
-export function getLeadCosts(placeId: string): LeadCosts {
+export async function getLeadCosts(placeId: string): Promise<LeadCosts> {
   if (!dbAvailable()) return emptyLeadCosts();
-  const db = getDb();
-  if (!tableExists(db, "cost_events")) return emptyLeadCosts();
+  const sql = getSql();
 
-  const rows = db
-    .prepare(
-      `SELECT id, run_id, request_id, provider, operation, units, unit_type,
-              usd, model, meta_json, created_at
-       FROM cost_events
-       WHERE place_id = ?
-       ORDER BY created_at ASC, id ASC`,
-    )
-    .all(placeId) as {
-    id: number;
-    run_id: string | null;
-    request_id: string | null;
-    provider: string;
-    operation: string;
-    units: number;
-    unit_type: string;
-    usd: number | null;
-    model: string | null;
-    meta_json: string | null;
-    created_at: string;
-  }[];
+  const rows = await sql`
+    SELECT id, run_id, request_id, provider, operation, units, unit_type,
+           usd, model, meta_json, created_at
+    FROM cost_events
+    WHERE place_id = ${placeId}
+    ORDER BY created_at ASC, id ASC
+  `;
 
-  let firecrawlCreditsEst = 0;
-  if (tableExists(db, "run_events")) {
-    const creditsRow = db
-      .prepare(
-        `SELECT COALESCE(SUM(credits_est), 0) AS total
-         FROM run_events WHERE place_id = ?`,
-      )
-      .get(placeId) as { total: number } | undefined;
-    firecrawlCreditsEst = creditsRow?.total ?? 0;
-  }
+  const creditsRows = await sql`
+    SELECT COALESCE(SUM(credits_est), 0)::int AS total
+    FROM run_events WHERE place_id = ${placeId}
+  `;
+  const firecrawlCreditsEst = Number(creditsRows[0]?.total ?? 0);
 
   if (rows.length === 0) {
     return { ...emptyLeadCosts(), firecrawlCreditsEst };
@@ -699,20 +603,22 @@ export function getLeadCosts(placeId: string): LeadCosts {
 
   for (const row of rows) {
     const meta = parseCostMeta(row.meta_json);
-    const usd = row.usd ?? 0;
-    const billing = classifyCostBilling(row.provider, row.operation, meta);
+    const usd = row.usd != null ? Number(row.usd) : 0;
+    const provider = String(row.provider);
+    const operation = String(row.operation);
+    const billing = classifyCostBilling(provider, operation, meta);
     const event: LeadCostEvent = {
-      id: row.id,
-      runId: row.run_id,
-      requestId: row.request_id,
-      provider: row.provider,
-      operation: row.operation,
-      units: row.units,
-      unitType: row.unit_type,
+      id: Number(row.id),
+      runId: row.run_id != null ? String(row.run_id) : null,
+      requestId: row.request_id != null ? String(row.request_id) : null,
+      provider,
+      operation,
+      units: Number(row.units),
+      unitType: String(row.unit_type),
       usd,
-      model: row.model,
+      model: row.model != null ? String(row.model) : null,
       meta,
-      createdAt: row.created_at,
+      createdAt: toIso(row.created_at),
       billing,
     };
     events.push(event);
@@ -720,20 +626,20 @@ export function getLeadCosts(placeId: string): LeadCosts {
     if (billing === "verified") verifiedUsd += usd;
     else estimatedUsd += usd;
 
-    const bucket = providerBuckets.get(row.provider);
+    const bucket = providerBuckets.get(provider);
     if (bucket) {
       bucket.usdTotal += usd;
-      bucket.unitsTotal += row.units;
+      bucket.unitsTotal += Number(row.units);
       bucket.eventCount += 1;
       if (billing === "verified") bucket.verifiedUsd += usd;
       else bucket.estimatedUsd += usd;
       bucket.events.push(event);
     } else {
-      providerBuckets.set(row.provider, {
-        provider: row.provider,
+      providerBuckets.set(provider, {
+        provider,
         usdTotal: usd,
-        unitsTotal: row.units,
-        unitType: row.unit_type,
+        unitsTotal: Number(row.units),
+        unitType: String(row.unit_type),
         eventCount: 1,
         verifiedUsd: billing === "verified" ? usd : 0,
         estimatedUsd: billing === "estimated" ? usd : 0,
@@ -757,28 +663,20 @@ export function getLeadCosts(placeId: string): LeadCosts {
   };
 }
 
-export function getLeadDetail(placeId: string): LeadDetail | null {
+export async function getLeadDetail(placeId: string): Promise<LeadDetail | null> {
   if (!dbAvailable()) return null;
-  const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM leads WHERE place_id = ?")
-    .get(placeId) as Record<string, unknown> | undefined;
+  const sql = getSql();
+
+  const leadRows = await sql`SELECT * FROM leads WHERE place_id = ${placeId}`;
+  const row = leadRows[0];
   if (!row) return null;
 
-  let data: Record<string, unknown> = {};
-  if (typeof row.enriched_json === "string") {
-    try {
-      data = JSON.parse(row.enriched_json) as Record<string, unknown>;
-    } catch {
-      data = {};
-    }
-  }
+  const data = parseEnrichedJson(row.enriched_json) as Record<string, unknown>;
   const enriched = data as EnrichedJson;
 
   const rawContacts = Array.isArray(data.site_contacts)
     ? (data.site_contacts as Record<string, unknown>[])
     : [];
-  // Python SiteContact fields: label, name, phone, email, priority, source_url, verification, quote
   const siteContacts: SiteContact[] = rawContacts.map((c) => ({
     name: presentOrNull(c.name),
     role: presentOrNull(c.role) ?? presentOrNull(c.label),
@@ -793,32 +691,25 @@ export function getLeadDetail(placeId: string): LeadDetail | null {
     .map((part) => (typeof part === "string" ? part.trim() : ""))
     .filter(Boolean);
 
-  let crmStatus: CrmStatus = "New";
-  if (tableExists(db, "sales_feedback") && hasColumn(db, "sales_feedback", "status")) {
-    const fb = db
-      .prepare("SELECT status FROM sales_feedback WHERE place_id = ?")
-      .get(placeId) as { status: string | null } | undefined;
-    crmStatus = (fb?.status as CrmStatus) || "New";
-  }
+  const fbRows = await sql`
+    SELECT status FROM sales_feedback WHERE place_id = ${placeId}
+  `;
+  const crmStatus: CrmStatus = (fbRows[0]?.status as CrmStatus) || "New";
   const leadType: LeadType = (row.category_key as string | null)?.startsWith("vendor_")
     ? "vendor"
     : "client";
 
   return {
     place_id: String(row.place_id),
-    business_name: String(
-      data.business_name ?? row.business_name ?? "Unknown",
-    ),
+    business_name: String(data.business_name ?? row.business_name ?? "Unknown"),
     market_key: (row.market_key as string | null) ?? null,
     category_key: (row.category_key as string | null) ?? null,
     city: (row.city as string | null) ?? null,
-    last_enriched_at: (row.last_enriched_at as string | null) ?? null,
+    last_enriched_at: toIsoOrNull(row.last_enriched_at),
     enrichment_status: (row.enrichment_status as string | null) ?? null,
     confidence: (row.confidence as string | null) ?? null,
     verification_level:
-      typeof data.verification_level === "string"
-        ? data.verification_level
-        : null,
+      typeof data.verification_level === "string" ? data.verification_level : null,
     lead_score: (row.lead_score as number | null) ?? null,
     status: salesStatus(enriched),
     crm_status: crmStatus,
@@ -831,9 +722,7 @@ export function getLeadDetail(placeId: string): LeadDetail | null {
     best_contact_role: presentOrNull(data.best_contact_role),
     best_contact_phone: presentOrNull(data.best_contact_phone),
     best_contact_email_or_form: presentOrNull(data.best_contact_email_or_form),
-    property_manager_clue: presentOrNull(
-      data.property_manager_or_ownership_clue,
-    ),
+    property_manager_clue: presentOrNull(data.property_manager_or_ownership_clue),
     why_good_fit: presentOrNull(data.why_this_is_a_good_fit),
     why_now: presentOrNull(data.why_now),
     score_breakdown:
@@ -841,9 +730,7 @@ export function getLeadDetail(placeId: string): LeadDetail | null {
         ? (data.score_breakdown as Record<string, number>)
         : {},
     talking_points: normalizeListText(presentOrNull(data.sales_talking_points)),
-    need_signals: normalizeListText(
-      presentOrNull(data.exterior_cleaning_need_signals),
-    ),
+    need_signals: normalizeListText(presentOrNull(data.exterior_cleaning_need_signals)),
     site_contacts: siteContacts,
     facts: Array.isArray(data.facts)
       ? (data.facts as Record<string, unknown>[]).map((f) => ({
@@ -861,29 +748,39 @@ export function getLeadDetail(placeId: string): LeadDetail | null {
         }))
       : [],
     evidence_urls: Array.isArray(data.evidence_urls)
-      ? (data.evidence_urls as string[]).filter(
-          (u) => typeof u === "string" && u.trim(),
-        )
+      ? (data.evidence_urls as string[]).filter((u) => typeof u === "string" && u.trim())
       : [],
     notes: presentOrNull(data.notes),
-    related: getRelatedLeads(placeId),
-    source_checks: getSourceChecksForLead(placeId),
-    costs: getLeadCosts(placeId),
+    related: await getRelatedLeads(placeId),
+    source_checks: await getSourceChecksForLead(placeId),
+    costs: await getLeadCosts(placeId),
   };
 }
 
-export function getRunEvents(runId: string): RunEventRow[] {
+function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
+  return {
+    id: Number(row.id),
+    run_id: String(row.run_id),
+    place_id: row.place_id != null ? String(row.place_id) : null,
+    stage: String(row.stage),
+    ran: row.ran ? 1 : 0,
+    reason: row.reason != null ? String(row.reason) : null,
+    credits_est: row.credits_est != null ? Number(row.credits_est) : null,
+    created_at: toIso(row.created_at),
+  };
+}
+
+export async function getRunEvents(runId: string): Promise<RunEventRow[]> {
   if (!dbAvailable()) return [];
-  const db = getDb();
-  if (!tableExists(db, "run_events")) return [];
-  return db
-    .prepare(
-      `SELECT id, run_id, place_id, stage, ran, reason, credits_est, created_at
-       FROM run_events
-       WHERE run_id = ?
-       ORDER BY created_at ASC`,
-    )
-    .all(runId) as RunEventRow[];
+  const sql = getSql();
+
+  const rows = await sql`
+    SELECT id, run_id, place_id, stage, ran, reason, credits_est, created_at
+    FROM run_events
+    WHERE run_id = ${runId}
+    ORDER BY created_at ASC
+  `;
+  return rows.map((row) => mapRunEventRow(row as Record<string, unknown>));
 }
 
 function emptyRunCosts(): RunCosts {
@@ -898,56 +795,52 @@ function emptyRunCosts(): RunCosts {
   };
 }
 
-export function getRun(runId: string): RunRow | null {
+export async function getRun(runId: string): Promise<RunRow | null> {
   if (!dbAvailable()) return null;
-  const db = getDb();
-  const stmt = db.prepare(
-    `SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
-            discovered_count, skipped_known_count, enriched_count, status
-     FROM runs
-     WHERE run_id = ?`,
-  );
-  const row = stmt.get(runId);
+  const sql = getSql();
+
+  const rows = await sql`
+    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+           discovered_count, skipped_known_count, enriched_count, status
+    FROM runs
+    WHERE run_id = ${runId}
+  `;
+  const row = rows[0];
   if (!row) return null;
-  return row as RunRow;
+  return {
+    run_id: String(row.run_id),
+    started_at: toIso(row.started_at),
+    finished_at: toIsoOrNull(row.finished_at),
+    run_type: String(row.run_type),
+    market_key: (row.market_key as string | null) ?? null,
+    category_key: (row.category_key as string | null) ?? null,
+    discovered_count: Number(row.discovered_count),
+    skipped_known_count: Number(row.skipped_known_count),
+    enriched_count: Number(row.enriched_count),
+    status: String(row.status),
+  };
 }
 
-export function getRunCosts(runId: string): RunCosts {
+export async function getRunCosts(runId: string): Promise<RunCosts> {
   if (!dbAvailable()) return emptyRunCosts();
-  const db = getDb();
-  if (!tableExists(db, "cost_events")) return emptyRunCosts();
+  const sql = getSql();
 
-  const rows = db
-    .prepare(
-      `SELECT provider, operation, units, unit_type, usd, meta_json, place_id
-       FROM cost_events
-       WHERE run_id = ?
-       ORDER BY created_at ASC, id ASC`,
-    )
-    .all(runId) as {
-    provider: string;
-    operation: string;
-    units: number;
-    unit_type: string;
-    usd: number | null;
-    meta_json: string | null;
-    place_id: string | null;
-  }[];
+  const rows = await sql`
+    SELECT provider, operation, units, unit_type, usd, meta_json, place_id
+    FROM cost_events
+    WHERE run_id = ${runId}
+    ORDER BY created_at ASC, id ASC
+  `;
 
-  let firecrawlCreditsEst = 0;
-  if (tableExists(db, "run_events")) {
-    const creditsRow = db
-      .prepare(
-        `SELECT COALESCE(SUM(credits_est), 0) AS total
-         FROM run_events WHERE run_id = ?`,
-      )
-      .get(runId) as { total: number } | undefined;
-    firecrawlCreditsEst = creditsRow?.total ?? 0;
-  }
+  const creditsRows = await sql`
+    SELECT COALESCE(SUM(credits_est), 0)::int AS total
+    FROM run_events WHERE run_id = ${runId}
+  `;
+  const firecrawlCreditsEst = Number(creditsRows[0]?.total ?? 0);
 
   const leadIds = new Set<string>();
   for (const row of rows) {
-    if (row.place_id) leadIds.add(row.place_id);
+    if (row.place_id) leadIds.add(String(row.place_id));
   }
 
   if (rows.length === 0) {
@@ -965,43 +858,45 @@ export function getRunCosts(runId: string): RunCosts {
   let estimatedUsd = 0;
 
   for (const row of rows) {
-    if (row.place_id) leadIds.add(row.place_id);
+    if (row.place_id) leadIds.add(String(row.place_id));
     const meta = parseCostMeta(row.meta_json);
-    const usd = row.usd ?? 0;
-    const billing = classifyCostBilling(row.provider, row.operation, meta);
+    const usd = row.usd != null ? Number(row.usd) : 0;
+    const provider = String(row.provider);
+    const operation = String(row.operation);
+    const billing = classifyCostBilling(provider, operation, meta);
     totalUsd += usd;
     if (billing === "verified") verifiedUsd += usd;
     else estimatedUsd += usd;
 
-    let bucket = providerBuckets.get(row.provider);
+    let bucket = providerBuckets.get(provider);
     if (!bucket) {
       bucket = {
-        provider: row.provider,
+        provider,
         usdTotal: 0,
         unitsTotal: 0,
-        unitType: row.unit_type,
+        unitType: String(row.unit_type),
         eventCount: 0,
         verifiedUsd: 0,
         estimatedUsd: 0,
         operations: [],
         opMap: new Map(),
       };
-      providerBuckets.set(row.provider, bucket);
+      providerBuckets.set(provider, bucket);
     }
     bucket.usdTotal += usd;
-    bucket.unitsTotal += row.units;
+    bucket.unitsTotal += Number(row.units);
     bucket.eventCount += 1;
     if (billing === "verified") bucket.verifiedUsd += usd;
     else bucket.estimatedUsd += usd;
 
-    const opKey = `${row.operation}:${row.unit_type}`;
+    const opKey = `${operation}:${row.unit_type}`;
     let op = bucket.opMap.get(opKey);
     if (!op) {
       op = {
-        operation: row.operation,
+        operation,
         usd: 0,
         units: 0,
-        unitType: row.unit_type,
+        unitType: String(row.unit_type),
         count: 0,
         billing,
       };
@@ -1009,7 +904,7 @@ export function getRunCosts(runId: string): RunCosts {
       bucket.operations.push(op);
     }
     op.usd += usd;
-    op.units += row.units;
+    op.units += Number(row.units);
     op.count += 1;
   }
 
@@ -1047,15 +942,15 @@ function toTimelineStage(row: RunEventRow): RunTimelineStage {
   };
 }
 
-export function getRunTimeline(runId: string): RunTimeline {
-  const events = getRunEvents(runId);
+export async function getRunTimeline(runId: string): Promise<RunTimeline> {
+  const events = await getRunEvents(runId);
   const runEvents: RunTimelineStage[] = [];
   const leadMap = new Map<string, RunTimelineLead>();
 
   if (!dbAvailable()) {
     return { runEvents, leads: [] };
   }
-  const db = getDb();
+  const sql = getSql();
 
   for (const row of events) {
     if (!row.place_id) {
@@ -1065,36 +960,25 @@ export function getRunTimeline(runId: string): RunTimeline {
 
     let lead = leadMap.get(row.place_id);
     if (!lead) {
-      const leadRow = db
-        .prepare(
-          `SELECT business_name, category_key, lead_score, enriched_json
-           FROM leads WHERE place_id = ?`,
-        )
-        .get(row.place_id) as
-        | {
-            business_name: string;
-            category_key: string | null;
-            lead_score: number | null;
-            enriched_json: string | null;
-          }
-        | undefined;
+      const leadRows = await sql`
+        SELECT business_name, category_key, lead_score, enriched_json
+        FROM leads WHERE place_id = ${row.place_id}
+      `;
+      const leadRow = leadRows[0];
 
       let verificationLevel: string | null = null;
       if (leadRow?.enriched_json) {
-        try {
-          const data = JSON.parse(leadRow.enriched_json) as { verification_level?: string };
-          verificationLevel = data.verification_level ?? null;
-        } catch {
-          verificationLevel = null;
-        }
+        const data = parseEnrichedJson(leadRow.enriched_json);
+        verificationLevel =
+          typeof data.verification_level === "string" ? data.verification_level : null;
       }
 
       lead = {
         place_id: row.place_id,
-        business_name: leadRow?.business_name ?? null,
-        category_key: leadRow?.category_key ?? null,
+        business_name: leadRow?.business_name != null ? String(leadRow.business_name) : null,
+        category_key: (leadRow?.category_key as string | null) ?? null,
         verification_level: verificationLevel,
-        lead_score: leadRow?.lead_score ?? null,
+        lead_score: (leadRow?.lead_score as number | null) ?? null,
         creditsEst: 0,
         done: false,
         stages: [],
@@ -1113,187 +997,185 @@ export function getRunTimeline(runId: string): RunTimeline {
   };
 }
 
-export function getRunDetail(runId: string): RunDetail | null {
-  const run = getRun(runId);
+export async function getRunDetail(runId: string): Promise<RunDetail | null> {
+  const run = await getRun(runId);
   if (!run) return null;
   return {
     run,
-    costs: getRunCosts(runId),
-    timeline: getRunTimeline(runId),
+    costs: await getRunCosts(runId),
+    timeline: await getRunTimeline(runId),
   };
 }
 
-export function listRuns(limit = 50): RunRow[] {
+export async function listRuns(limit = 50): Promise<RunRow[]> {
   if (!dbAvailable()) return [];
-  const db = getDb();
-  return db
-    .prepare(
-      `SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
-              discovered_count, skipped_known_count, enriched_count, status
-       FROM runs
-       ORDER BY started_at DESC
-       LIMIT ?`,
-    )
-    .all(limit) as RunRow[];
-}
+  const sql = getSql();
 
-export function listRequests(limit = 50): RequestRow[] {
-  if (!dbAvailable()) return [];
-  const db = getDb();
-  if (!tableExists(db, "lead_requests")) return [];
-  const rows = db
-    .prepare(
-      `SELECT request_id, created_at, raw_prompt, spec_json, status,
-              leads_delivered, credits_spent, usd_spent
-       FROM lead_requests
-       ORDER BY created_at DESC
-       LIMIT ?`,
-    )
-    .all(limit) as {
-    request_id: string;
-    created_at: string;
-    raw_prompt: string;
-    spec_json: string;
-    status: string;
-    leads_delivered: number;
-    credits_spent: number;
-    usd_spent: number | null;
-  }[];
+  const rows = await sql`
+    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+           discovered_count, skipped_known_count, enriched_count, status
+    FROM runs
+    ORDER BY started_at DESC
+    LIMIT ${limit}
+  `;
 
   return rows.map((row) => ({
-    request_id: row.request_id,
-    created_at: row.created_at,
-    raw_prompt: row.raw_prompt,
-    status: row.status,
-    leads_delivered: row.leads_delivered,
-    credits_spent: row.credits_spent,
-    usd_spent: row.usd_spent,
-    spec: JSON.parse(row.spec_json) as Record<string, unknown>,
+    run_id: String(row.run_id),
+    started_at: toIso(row.started_at),
+    finished_at: toIsoOrNull(row.finished_at),
+    run_type: String(row.run_type),
+    market_key: (row.market_key as string | null) ?? null,
+    category_key: (row.category_key as string | null) ?? null,
+    discovered_count: Number(row.discovered_count),
+    skipped_known_count: Number(row.skipped_known_count),
+    enriched_count: Number(row.enriched_count),
+    status: String(row.status),
   }));
 }
 
-export function getCostSeries(days = 30): CostSeries {
+function parseSpecJson(raw: unknown): Record<string, unknown> {
+  if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+export async function listRequests(limit = 50): Promise<RequestRow[]> {
+  if (!dbAvailable()) return [];
+  const sql = getSql();
+
+  const rows = await sql`
+    SELECT request_id, created_at, raw_prompt, spec_json, status,
+           leads_delivered, credits_spent, usd_spent
+    FROM lead_requests
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+
+  return rows.map((row) => ({
+    request_id: String(row.request_id),
+    created_at: toIso(row.created_at),
+    raw_prompt: String(row.raw_prompt),
+    status: String(row.status),
+    leads_delivered: Number(row.leads_delivered),
+    credits_spent: Number(row.credits_spent),
+    usd_spent: row.usd_spent != null ? Number(row.usd_spent) : null,
+    spec: parseSpecJson(row.spec_json),
+  }));
+}
+
+export async function getCostSeries(days = 30): Promise<CostSeries> {
   if (!dbAvailable()) {
     return { byDay: [], byProvider: [], byOperation: [], balances: [] };
   }
-  const db = getDb();
-  if (!tableExists(db, "cost_events")) {
-    return { byDay: [], byProvider: [], byOperation: [], balances: getCreditBalances() };
-  }
+  const sql = getSql();
+
   const since = new Date();
   since.setDate(since.getDate() - days);
+  const sinceDate = since.toISOString().slice(0, 10);
   const sinceIso = since.toISOString();
 
-  const byDay = db
-    .prepare(
-      `SELECT substr(created_at, 1, 10) AS date,
-              COALESCE(SUM(usd), 0) AS usd,
-              COALESCE(SUM(CASE WHEN provider = 'firecrawl' THEN units ELSE 0 END), 0) AS firecrawlCredits,
-              COALESCE(SUM(CASE WHEN provider = 'browser_use' THEN usd ELSE 0 END), 0) AS browserUseUsd,
-              COALESCE(SUM(CASE WHEN provider = 'ai_gateway' THEN usd ELSE 0 END), 0) AS aiGatewayUsd,
-              COALESCE(SUM(CASE WHEN provider = 'google_places' THEN usd ELSE 0 END), 0) AS googlePlacesUsd
-       FROM cost_events
-       WHERE created_at >= ?
-       GROUP BY substr(created_at, 1, 10)
-       ORDER BY date`,
-    )
-    .all(sinceIso) as {
-    date: string;
-    usd: number;
-    firecrawlCredits: number;
-    browserUseUsd: number;
-    aiGatewayUsd: number;
-    googlePlacesUsd: number;
-  }[];
+  const byDayRows = await sql`
+    SELECT date,
+           usd,
+           firecrawl_credits,
+           browser_use_usd,
+           ai_gateway_usd,
+           google_places_usd
+    FROM cost_by_day
+    WHERE date >= ${sinceDate}
+    ORDER BY date
+  `;
 
-  const providerRows = db
-    .prepare(
-      `SELECT provider,
-              unit_type,
-              COALESCE(SUM(usd), 0) AS usd,
-              COALESCE(SUM(units), 0) AS units,
-              COUNT(*) AS count
-       FROM cost_events
-       WHERE created_at >= ?
-       GROUP BY provider, unit_type
-       ORDER BY usd DESC`,
-    )
-    .all(sinceIso) as {
-    provider: string;
-    unit_type: string;
-    usd: number;
-    units: number;
-    count: number;
-  }[];
+  const byDay = byDayRows.map((row) => ({
+    date: String(row.date),
+    usd: Number(row.usd),
+    firecrawlCredits: Number(row.firecrawl_credits),
+    browserUseUsd: Number(row.browser_use_usd),
+    aiGatewayUsd: Number(row.ai_gateway_usd),
+    googlePlacesUsd: Number(row.google_places_usd),
+  }));
+
+  const providerRows = await sql`
+    SELECT provider, unit_type, usd, units, event_count
+    FROM cost_by_provider
+  `;
 
   const mergedProviders = new Map<string, CostSeries["byProvider"][number]>();
   for (const row of providerRows) {
-    const existing = mergedProviders.get(row.provider);
+    const provider = String(row.provider);
+    const existing = mergedProviders.get(provider);
+    const usd = Number(row.usd);
+    const units = Number(row.units);
+    const count = Number(row.event_count);
     if (existing) {
-      existing.usd += row.usd;
-      existing.units += row.units;
-      existing.count += row.count;
+      existing.usd += usd;
+      existing.units += units;
+      existing.count += count;
     } else {
-      mergedProviders.set(row.provider, {
-        provider: row.provider,
-        usd: row.usd,
-        units: row.units,
-        unitType: row.unit_type,
-        count: row.count,
+      mergedProviders.set(provider, {
+        provider,
+        usd,
+        units,
+        unitType: String(row.unit_type),
+        count,
       });
     }
   }
   const byProvider = [...mergedProviders.values()].sort((a, b) => b.usd - a.usd);
 
-  const byOperation = db
-    .prepare(
-      `SELECT provider, operation, unit_type,
-              COALESCE(SUM(usd), 0) AS usd,
-              COUNT(*) AS count
-       FROM cost_events
-       WHERE created_at >= ?
-       GROUP BY provider, operation, unit_type
-       ORDER BY usd DESC
-       LIMIT 20`,
-    )
-    .all(sinceIso) as {
-    provider: string;
-    operation: string;
-    unit_type: string;
-    usd: number;
-    count: number;
-  }[];
+  const byOperationRows = await sql`
+    SELECT provider, operation, unit_type,
+           COALESCE(SUM(usd), 0)::float AS usd,
+           COUNT(*)::int AS count
+    FROM cost_events
+    WHERE created_at >= ${sinceIso}
+    GROUP BY provider, operation, unit_type
+    ORDER BY usd DESC
+    LIMIT 20
+  `;
 
   return {
     byDay,
     byProvider,
-    byOperation: byOperation.map((row) => ({
-      provider: row.provider,
-      operation: row.operation,
-      usd: row.usd,
-      count: row.count,
-      unitType: row.unit_type,
+    byOperation: byOperationRows.map((row) => ({
+      provider: String(row.provider),
+      operation: String(row.operation),
+      usd: Number(row.usd),
+      count: Number(row.count),
+      unitType: String(row.unit_type),
     })),
-    balances: getCreditBalances(),
+    balances: await getCreditBalances(),
   };
 }
 
-export function listFilterOptions(): { markets: string[]; categories: string[] } {
+export async function listFilterOptions(): Promise<{
+  markets: string[];
+  categories: string[];
+}> {
   if (!dbAvailable()) return { markets: [], categories: [] };
-  const db = getDb();
-  const markets = (
-    db
-      .prepare(
-        "SELECT DISTINCT market_key FROM leads WHERE market_key IS NOT NULL ORDER BY market_key",
-      )
-      .all() as { market_key: string }[]
-  ).map((r) => r.market_key);
-  const categories = (
-    db
-      .prepare(
-        "SELECT DISTINCT category_key FROM leads WHERE category_key IS NOT NULL ORDER BY category_key",
-      )
-      .all() as { category_key: string }[]
-  ).map((r) => r.category_key);
-  return { markets, categories };
+  const sql = getSql();
+
+  const marketRows = await sql`
+    SELECT DISTINCT market_key FROM leads
+    WHERE market_key IS NOT NULL
+    ORDER BY market_key
+  `;
+  const categoryRows = await sql`
+    SELECT DISTINCT category_key FROM leads
+    WHERE category_key IS NOT NULL
+    ORDER BY category_key
+  `;
+
+  return {
+    markets: marketRows.map((r) => String(r.market_key)),
+    categories: categoryRows.map((r) => String(r.category_key)),
+  };
 }

@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     output_dir: Path = data_dir / "output"
     runs_dir: Path = data_dir / "runs"
     exports_dir: Path = data_dir / "exports"
-    db_path: Path = data_dir / "pallares.db"
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
+    supabase_db_url: str = ""
+    local_cache_path: Path = data_dir / "local_cache.db"
 
     page_cache_ttl_days: int = 7
 

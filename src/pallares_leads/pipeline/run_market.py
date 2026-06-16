@@ -1543,7 +1543,7 @@ def run_market_category(
 
     own_store = store is None
     if store is None:
-        store = LeadStore(settings.db_path)
+        store = LeadStore()
 
     run_id = store.start_run(
         run_type="market",
@@ -1799,7 +1799,7 @@ def _run_market_category_body(
         if workers > 1 and firecrawl and len(raw_leads) > 1:
 
             def _worker(raw: RawLead) -> EnrichedLead:
-                with LeadStore(store.db_path) as worker_store:
+                with LeadStore(store.db_url) as worker_store:
                     client = FirecrawlClient(settings, store=worker_store)
                     return _do_enrich(raw, client, active_store=worker_store)
 

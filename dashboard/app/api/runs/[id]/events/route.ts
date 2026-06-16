@@ -8,6 +8,6 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const events = getRunEvents(id);
+  const events = await getRunEvents(id);
   return NextResponse.json({ events });
 }

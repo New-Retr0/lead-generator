@@ -10,7 +10,7 @@ export async function GET(
 ) {
   try {
     const { placeId } = await params;
-    const lead = getLeadDetail(decodeURIComponent(placeId));
+    const lead = await getLeadDetail(decodeURIComponent(placeId));
     if (!lead) {
       return NextResponse.json({ error: "Lead not found" }, { status: 404 });
     }
@@ -48,7 +48,7 @@ export async function PATCH(
     if (Object.keys(fields).length === 0) {
       return NextResponse.json({ error: "No valid fields" }, { status: 400 });
     }
-    updateSalesFeedback(id, fields);
+    await updateSalesFeedback(id, fields);
     return NextResponse.json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update lead";

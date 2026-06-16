@@ -1,0 +1,123 @@
+# Central Valley CA markets — lat/lng = downtown-ish center for locationBias circles
+# county: jurisdiction key from config/jurisdictions.yaml
+# bbox: [south, west, north, east] for Overpass / geo filters
+markets:
+  reedley:
+    city: Reedley
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.5963
+    longitude: -119.4504
+    search_radius_m: 12000
+    bbox: [36.55, -119.50, 36.64, -119.40]
+  dinuba:
+    city: Dinuba
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.5433
+    longitude: -119.3871
+    search_radius_m: 12000
+    bbox: [36.50, -119.44, 36.59, -119.34]
+  selma:
+    city: Selma
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.5708
+    longitude: -119.6121
+    search_radius_m: 12000
+    bbox: [36.53, -119.66, 36.61, -119.56]
+  kingsburg:
+    city: Kingsburg
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.5138
+    longitude: -119.5540
+    search_radius_m: 10000
+    bbox: [36.48, -119.60, 36.55, -119.51]
+  sanger:
+    city: Sanger
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.7080
+    longitude: -119.5560
+    search_radius_m: 12000
+    bbox: [36.66, -119.60, 36.75, -119.51]
+  fresno:
+    city: Fresno
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.7378
+    longitude: -119.7871
+    search_radius_m: 25000
+    bbox: [36.65, -119.92, 36.92, -119.65]
+  visalia:
+    city: Visalia
+    state: CA
+    region: central_valley
+    county: tulare_ca
+    latitude: 36.3302
+    longitude: -119.2921
+    search_radius_m: 20000
+    bbox: [36.28, -119.36, 36.38, -119.22]
+  fresno_county:
+    city: Fresno County
+    state: CA
+    region: central_valley
+    county: fresno_ca
+    latitude: 36.7378
+    longitude: -119.7871
+    search_radius_m: 80000
+    bbox: [36.25, -120.35, 37.05, -118.85]
+  # --- One-off run targets (not in any campaign) ---
+  los_angeles:
+    city: Los Angeles
+    state: CA
+    region: socal
+    county: los_angeles_ca
+    latitude: 34.0522
+    longitude: -118.2437
+    search_radius_m: 25000
+    bbox: [33.90, -118.45, 34.15, -118.05]
+  orange_county:
+    city: Santa Ana
+    state: CA
+    region: socal
+    county: orange_ca
+    latitude: 33.7455
+    longitude: -117.8677
+    search_radius_m: 25000
+    bbox: [33.60, -118.05, 33.85, -117.65]
+  # --- Vendor scouting markets ---
+  las_vegas:
+    city: Las Vegas
+    state: NV
+    region: vendor_scout
+    county: clark_nv
+    latitude: 36.1699
+    longitude: -115.1398
+    search_radius_m: 20000
+    bbox: [36.05, -115.30, 36.30, -115.00]
+  albuquerque:
+    city: Albuquerque
+    state: NM
+    region: vendor_scout
+    county: bernalillo_nm
+    latitude: 35.0844
+    longitude: -106.6504
+    search_radius_m: 20000
+    bbox: [34.95, -106.80, 35.20, -106.45]
+  kansas_city:
+    city: Kansas City
+    state: MO
+    region: vendor_scout
+    county: jackson_mo
+    latitude: 39.0997
+    longitude: -94.5786
+    search_radius_m: 20000
+    bbox: [38.95, -94.75, 39.25, -94.45]

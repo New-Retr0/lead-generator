@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   try {
     const params = req.nextUrl.searchParams;
-    const leads = listLeads({
+    const leads = await listLeads({
       market: params.get("market") || undefined,
       category: params.get("category") || undefined,
       status: params.get("status") || undefined,
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
       dudsOnly: params.get("dudsOnly") === "1",
       limit: params.has("limit") ? Number(params.get("limit")) : 500,
     });
-    const filters = listFilterOptions();
+    const filters = await listFilterOptions();
     return NextResponse.json({ leads, filters });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load leads";

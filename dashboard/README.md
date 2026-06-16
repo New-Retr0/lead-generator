@@ -1,12 +1,12 @@
 # PALLARES Leads Dashboard
 
-Local Next.js dashboard for the `pallares-leads` pipeline. Reads `data/pallares.db` via better-sqlite3 and spawns CLI jobs for runs, requests, and Sheets export.
+Local operator dashboard for the `pallares-leads` pipeline. Reads **Supabase Postgres** via `postgres` npm and spawns CLI jobs for runs, requests, and health checks.
 
 ## Prerequisites
 
 - Node.js 20+
 - Python venv with `pallares-leads` installed at the repo root (`pip install -e .`)
-- SQLite database at `data/pallares.db` (created by running the pipeline)
+- Supabase project with migrations applied (`supabase db push`)
 
 ## Setup
 
@@ -15,12 +15,14 @@ cd dashboard
 npm install
 ```
 
-Copy or verify `.env.local`:
+Create `dashboard/.env.local`:
 
 ```
-PALLARES_DB_PATH=../data/pallares.db
+SUPABASE_DB_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
 PROJECT_ROOT=..
 ```
+
+Copy `SUPABASE_DB_URL` from the repo-root `.env`.
 
 ## Development
 
@@ -28,42 +30,16 @@ PROJECT_ROOT=..
 npm run dev
 ```
 
-Open **https://pallares.localhost** (via [Portless](https://portless.sh) — stable local URL, no port juggling).
+Open **https://pallares.localhost** (Portless) or `npm run dev:direct` on port 3000.
 
-First run on Windows may prompt to trust the local HTTPS certificate:
+## Sales app
 
-```powershell
-npx portless trust
-```
+Sales reps use the deployed **sales-app** at https://pallares-sales.vercel.app (magic-link auth, CRM-only writes). This dashboard keeps full pipeline control locally.
 
-Bypass Portless and use plain Next.js on port 3000:
+## API
 
-```powershell
-npm run dev:direct
-# or: $env:PORTLESS=0; npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) when using `dev:direct`.
-
-## Pages
-
-| Route | Description |
-|-------|-------------|
-| `/` | KPI overview — leads, ready-to-call rate, monthly credits/USD |
-| `/leads` | Filterable lead table, row select, export to Sheets |
-| `/requests` | NL lead requests (dry-run or full run) |
-| `/runs` | Run history, start new runs, SSE job logs |
-| `/costs` | Cost charts from `cost_events` |
-| `/duds` | Low-score / needs_manual triage |
-
-## API routes
-
-- `GET /api/overview`, `/api/leads`, `/api/costs`, `/api/runs`, `/api/requests`
-- `POST /api/jobs/run`, `/api/jobs/request`, `/api/export/sheets`
+- `POST /api/jobs/run`, `/api/jobs/request`, `/api/jobs/doctor`
 - `GET /api/jobs/[id]/stream` — Server-Sent Events log stream
+- `GET /api/leads`, `/api/runs`, `/api/costs`, etc. — Postgres-backed
 
-## Notes
-
-- The dashboard spawns `pallares-leads` from `.venv/Scripts/` when present.
-- Sheets export requires Google credentials in the parent project `.env`.
-- DB is opened read-only; writes happen via spawned CLI processes.
+The dashboard spawns `pallares-leads` from `.venv/Scripts/` when present.

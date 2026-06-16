@@ -13,11 +13,6 @@ from pallares_leads.discover.mgmt_directory import harvest_management_directory
 from pallares_leads.discover.places import PlacesClient
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.pipeline.export_csv import load_enriched_from_csv
-from pallares_leads.pipeline.export_sheets import (
-    export_sheets,
-    sheets_configured,
-    sheets_health_check,
-)
 from pallares_leads.pipeline.run_campaign import DEFAULT_CAMPAIGN, run_campaign
 from pallares_leads.pipeline.run_market import run_market_category
 from pallares_leads.request.fulfill import fulfill_request
@@ -73,7 +68,7 @@ def _run_under_pipeline_lock(settings: Settings, body: Callable[[], int]) -> int
     log = logging.getLogger(__name__)
     try:
         with pipeline_lock(settings.data_dir):
-            with LeadStore(settings.db_path) as store:
+            with LeadStore() as store:
                 repaired = store.repair_stuck_runs(older_than_hours=2)
                 if repaired:
                     log.info("Repaired %d stuck run(s)", repaired)
@@ -211,88 +206,6 @@ def cmd_smoke_sample(args: argparse.Namespace) -> int:
         if summary.failures:
             return 1
 
-        if not args.no_sheets and sheets_configured(settings):
-            print("Google Sheets updated (new rows appended by place_id dedupe).")
-        elif not args.no_sheets:
-            print("Google Sheets not configured — CSVs written to data/output/ only.")
-
-        return 0
-
-    return _run_under_pipeline_lock(settings, _body)
-
-
-def cmd_sync_sheets(args: argparse.Namespace) -> int:
-    settings = get_settings()
-
-    def _body() -> int:
-        if not sheets_configured(settings):
-            print(
-                "Google Sheets not configured — set GOOGLE_SHEETS_SPREADSHEET_ID "
-                "and GOOGLE_SERVICE_ACCOUNT_JSON",
-                file=sys.stderr,
-            )
-            return 1
-
-        if args.place_ids:
-            place_ids = {pid.strip() for pid in args.place_ids.split(",") if pid.strip()}
-            with LeadStore(settings.db_path) as store:
-                leads = store.list_enriched_leads(place_ids=place_ids)
-                crm_map = store.get_crm_statuses()
-            if not leads:
-                print(f"No enriched leads found for place_ids: {args.place_ids}", file=sys.stderr)
-                return 1
-            print(f"Loaded {len(leads)} enriched lead(s) by place_id")
-        elif args.from_db:
-            with LeadStore(settings.db_path) as store:
-                leads = store.list_enriched_leads()
-                crm_map = store.get_crm_statuses()
-            if not leads:
-                print("No enriched leads in DB — run the pipeline first", file=sys.stderr)
-                return 1
-            print(f"Loaded {len(leads)} enriched lead(s) from database")
-        elif args.all:
-            csv_paths = sorted(settings.output_dir.glob("*.csv"))
-            if not csv_paths:
-                print("No CSV files in data/output/", file=sys.stderr)
-                return 1
-            seen: set[str] = set()
-            leads = []
-            for path in csv_paths:
-                for lead in load_enriched_from_csv(path):
-                    if lead.place_id not in seen:
-                        seen.add(lead.place_id)
-                        leads.append(lead)
-            with LeadStore(settings.db_path) as store:
-                crm_map = store.get_crm_statuses()
-            print(f"Loaded {len(leads)} unique leads from {len(csv_paths)} CSV file(s)")
-        else:
-            csv_path = Path(args.csv) if args.csv else None
-            if csv_path is None:
-                candidates = sorted(
-                    settings.output_dir.glob("*.csv"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                if not candidates:
-                    print(
-                        "No CSV files in data/output — run the pipeline first or pass --csv",
-                        file=sys.stderr,
-                    )
-                    return 1
-                csv_path = candidates[0]
-                print(f"Using latest CSV: {csv_path.name}")
-
-            if not csv_path.is_file():
-                print(f"CSV not found: {csv_path}", file=sys.stderr)
-                return 1
-
-            leads = load_enriched_from_csv(csv_path)
-            with LeadStore(settings.db_path) as store:
-                crm_map = store.get_crm_statuses()
-
-        added = export_sheets(leads, settings, rewrite=args.rewrite, crm_status_map=crm_map)
-        label = "all CSVs" if args.all else (args.csv or "latest CSV")
-        print(f"Google Sheets: wrote {added} lead(s) from {label}")
         return 0
 
     return _run_under_pipeline_lock(settings, _body)
@@ -344,19 +257,11 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         if settings.firecrawl_max_credits_per_run > 0:
             print(f"  Run credit cap: {settings.firecrawl_max_credits_per_run} credits/run")
 
-    if sheets_configured(settings):
-        sheets_ok, sheets_msg = sheets_health_check(settings)
-        status = "OK" if sheets_ok else "WARN"
-        print(f"Google Sheets: {status} — {sheets_msg}")
-        if not sheets_ok:
-            print("  (optional — exports skip until service account JSON is present)")
-    elif settings.google_sheets_spreadsheet_id or settings.google_service_account_json:
-        print(
-            "Google Sheets: INCOMPLETE — set both GOOGLE_SHEETS_SPREADSHEET_ID "
-            "and GOOGLE_SERVICE_ACCOUNT_JSON (optional for pipeline runs)"
-        )
+    if not settings.supabase_db_url:
+        print("Supabase: MISSING — set SUPABASE_DB_URL in .env")
+        ok = False
     else:
-        print("Google Sheets: not configured (optional — auto-syncs when .env is set)")
+        print("Supabase: configured (SUPABASE_DB_URL)")
 
     if not settings.ai_gateway_enabled:
         print("AI Gateway: disabled (AI_GATEWAY_ENABLED=false)")
@@ -370,7 +275,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             "(token costs tracked per completion)"
         )
 
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         lead_count = store.count_leads()
         enriched_count = store.count_enriched()
         repaired = store.repair_stuck_runs()
@@ -438,7 +343,7 @@ def cmd_warm_portals(args: argparse.Namespace) -> int:
             return 1
         counties = {county_filter: counties[county_filter]}
 
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         client = BrowserUseClient(settings, store=store)
         if not client.is_available():
             print(client.last_skip_reason or "Browser Use unavailable", file=sys.stderr)
@@ -467,7 +372,7 @@ def cmd_warm_portals(args: argparse.Namespace) -> int:
 
 def cmd_db_status(args: argparse.Namespace) -> int:
     settings = get_settings()
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         print(f"Database: {store.db_path}")
         print(f"  Total leads:    {store.count_leads()}")
         print(f"  Enriched:       {store.count_enriched()}")
@@ -494,7 +399,7 @@ def cmd_db_status(args: argparse.Namespace) -> int:
 
 def cmd_db_import(args: argparse.Namespace) -> int:
     settings = get_settings()
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         before = store.count_leads()
         if args.csv:
             path = Path(args.csv)
@@ -520,7 +425,7 @@ def cmd_db_import(args: argparse.Namespace) -> int:
 
 def cmd_db_profiles(args: argparse.Namespace) -> int:
     settings = get_settings()
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         profiles = store.list_profiles(limit=args.limit)
         print(f"Enrichment profiles: {store.count_profiles()} total\n")
         for row in profiles:
@@ -535,7 +440,7 @@ def cmd_db_profiles(args: argparse.Namespace) -> int:
 
 def cmd_db_lead(args: argparse.Namespace) -> int:
     settings = get_settings()
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         lead = store.get_enriched_lead(args.place_id)
         if lead is None:
             row = store.get_lead_row(args.place_id)
@@ -550,7 +455,7 @@ def cmd_db_lead(args: argparse.Namespace) -> int:
 
 def cmd_db_run_report(args: argparse.Namespace) -> int:
     settings = get_settings()
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         report = store.run_report(args.run_id)
         if not report:
             print(f"Run not found: {args.run_id}", file=sys.stderr)
@@ -567,7 +472,7 @@ def cmd_db_run_report(args: argparse.Namespace) -> int:
 
 def cmd_db_prune(args: argparse.Namespace) -> int:
     settings = get_settings()
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         stats = store.prune_stale_data(
             runs_dir=settings.runs_dir,
             page_cache_ttl_days=settings.page_cache_ttl_days,
@@ -598,7 +503,7 @@ def cmd_harvest_managers(args: argparse.Namespace) -> int:
             return 1
 
         firecrawl = FirecrawlClient(settings)
-        with LeadStore(settings.db_path) as store:
+        with LeadStore() as store:
             count = harvest_management_directory(
                 settings=settings,
                 market_key=args.market,
@@ -617,7 +522,7 @@ def cmd_request(args: argparse.Namespace) -> int:
     settings = get_settings()
 
     if args.status:
-        with LeadStore(settings.db_path) as store:
+        with LeadStore() as store:
             row = store.get_lead_request(args.status)
         if row is None:
             print(f"Request not found: {args.status}", file=sys.stderr)
@@ -639,7 +544,7 @@ def cmd_request(args: argparse.Namespace) -> int:
         )
         return 1
 
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         if spec_data is not None:
             spec = spec_from_dict(spec_data, settings=settings, prompt=prompt)
             if not prompt:
@@ -688,33 +593,6 @@ def cmd_request(args: argparse.Namespace) -> int:
     )
     if result.output_path:
         print(f"Export: {result.output_path}")
-    return 0
-
-
-def cmd_db_import_feedback(_args: argparse.Namespace) -> int:
-    settings = get_settings()
-    from pallares_leads.pipeline.export_sheets import import_feedback_from_sheets
-
-    try:
-        rows = import_feedback_from_sheets(settings)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-
-    with LeadStore(settings.db_path) as store:
-        for row in rows:
-            addressed = bool(row.get("addressed"))
-            status = row.get("status") or ""
-            store.upsert_sales_feedback(
-                row["place_id"],
-                addressed=addressed,
-                feedback_notes=row.get("notes") or "",
-                status=status or None,
-                sales_ready=True if status == "Ready to call" else None,
-            )
-        print(
-            f"Imported feedback for {len(rows)} row(s) — total {store.count_sales_feedback()} in DB"
-        )
     return 0
 
 
@@ -786,29 +664,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     warm.set_defaults(func=cmd_warm_portals)
 
-    sync = sub.add_parser("sync-sheets", help="Push leads from a CSV file to Google Sheets")
-    sync.add_argument("--csv", help="CSV path (default: newest file in data/output/)")
-    sync.add_argument(
-        "--all",
-        action="store_true",
-        help="Load all CSVs from data/output/ (deduped by place_id)",
-    )
-    sync.add_argument(
-        "--from-db",
-        action="store_true",
-        help="Load canonical enriched_json from SQLite instead of CSV",
-    )
-    sync.add_argument(
-        "--rewrite",
-        action="store_true",
-        help="Clear existing data rows and rewrite from CSV",
-    )
-    sync.add_argument(
-        "--place-ids",
-        help="Comma-separated place_ids to export from DB (--from-db implied)",
-    )
-    sync.set_defaults(func=cmd_sync_sheets)
-
     harvest = sub.add_parser(
         "harvest-managers",
         help="Harvest property-management company profiles into enrichment_profiles",
@@ -834,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     req.add_argument("--status", metavar="REQUEST_ID", help="Show status for a past request")
     req.set_defaults(func=cmd_request)
 
-    db = sub.add_parser("db", help="Local SQLite lead ledger (dedupe + run history)")
+    db = sub.add_parser("db", help="Supabase lead ledger (dedupe + run history)")
     db_sub = db.add_subparsers(dest="db_command", required=True)
 
     db_status = db_sub.add_parser("status", help="Show lead counts and recent runs")
@@ -874,12 +729,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report what would be deleted without removing files or rows",
     )
     db_prune.set_defaults(func=cmd_db_prune)
-
-    db_feedback = db_sub.add_parser(
-        "import-feedback",
-        help="Import Addressed + Notes from Google Sheets into sales_feedback table",
-    )
-    db_feedback.set_defaults(func=cmd_db_import_feedback)
 
     eval_replay = sub.add_parser(
         "eval-replay",

@@ -2,15 +2,11 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { AnimatePresence, motion } from "motion/react";
-import { Phone, Search, SlidersHorizontal, UploadCloud, X } from "lucide-react";
-import { toast } from "sonner";
+import { Phone, Search, SlidersHorizontal } from "lucide-react";
 import { SalesStatusBadge, ScoreBadge, VerificationBadge } from "@/components/badges";
 import { LeadDetailModal } from "@/components/lead-detail-modal";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -46,8 +42,6 @@ function LeadsPageContent() {
   const [minScore, setMinScore] = useState(0);
   const [search, setSearch] = useState("");
 
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [exporting, setExporting] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -98,52 +92,6 @@ function LeadsPageContent() {
         (lead.phone ?? "").includes(q),
     );
   }, [leads, search]);
-
-  const allVisibleSelected =
-    visible.length > 0 && visible.every((l) => selected.has(l.place_id));
-
-  const toggleAll = () => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (allVisibleSelected) {
-        visible.forEach((l) => next.delete(l.place_id));
-      } else {
-        visible.forEach((l) => next.add(l.place_id));
-      }
-      return next;
-    });
-  };
-
-  const toggleOne = (placeId: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(placeId)) next.delete(placeId);
-      else next.add(placeId);
-      return next;
-    });
-  };
-
-  const exportSelected = async () => {
-    setExporting(true);
-    try {
-      const res = await fetch("/api/export/sheets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ placeIds: [...selected] }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error ?? "Export failed to start");
-        return;
-      }
-      toast.success(`Exporting ${selected.size} lead(s) to Google Sheets`, {
-        description: "Formatting is applied automatically on export.",
-      });
-      setSelected(new Set());
-    } finally {
-      setExporting(false);
-    }
-  };
 
   const categoryLabel = (key: string | null) =>
     config.categories.find((c) => c.key === key)?.label ?? key ?? "—";
@@ -234,13 +182,6 @@ function LeadsPageContent() {
         <Table>
           <TableHeader className="border-b border-border/50 bg-card [&_th]:bg-card">
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-10">
-                <Checkbox
-                  checked={allVisibleSelected}
-                  onCheckedChange={toggleAll}
-                  aria-label="Select all"
-                />
-              </TableHead>
               <TableHead>Business</TableHead>
               <TableHead>Market</TableHead>
               <TableHead>Category</TableHead>
@@ -253,14 +194,14 @@ function LeadsPageContent() {
           <TableBody>
             {!loaded || loading ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
                   Loading leads…
                 </TableCell>
               </TableRow>
             ) : visible.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
-                  No leads match these filters. Launch a run or relax the filters.
+                <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
+                  No leads match these filters.
                 </TableCell>
               </TableRow>
             ) : (
@@ -270,13 +211,6 @@ function LeadsPageContent() {
                   className="cursor-pointer transition-colors hover:bg-accent/25"
                   onClick={() => setDetailId(lead.place_id)}
                 >
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <Checkbox
-                      checked={selected.has(lead.place_id)}
-                      onCheckedChange={() => toggleOne(lead.place_id)}
-                      aria-label={`Select ${lead.business_name}`}
-                    />
-                  </TableCell>
                   <TableCell>
                     <p className="font-medium">{lead.business_name}</p>
                     <p className="text-xs text-muted-foreground">{lead.city ?? "—"}</p>
@@ -312,34 +246,6 @@ function LeadsPageContent() {
           </TableBody>
         </Table>
       </Card>
-
-      <AnimatePresence>
-        {selected.size > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 24 }}
-            transition={{ duration: 0.2 }}
-            className="glass-strong fixed inset-x-0 bottom-6 z-30 mx-auto flex w-fit items-center gap-3 rounded-full px-4 py-2.5 shadow-xl"
-          >
-            <span className="text-sm font-medium tabular-nums">
-              {selected.size} selected
-            </span>
-            <Button size="sm" onClick={exportSelected} disabled={exporting}>
-              <UploadCloud className="size-4" />
-              Export to Sheets
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => setSelected(new Set())}
-              aria-label="Clear selection"
-            >
-              <X className="size-4" />
-            </Button>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       <LeadDetailModal placeId={detailId} onClose={() => setDetailId(null)} />
     </div>

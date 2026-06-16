@@ -10,7 +10,7 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const detail = getRunDetail(id);
+    const detail = await getRunDetail(id);
     if (!detail) {
       return NextResponse.json({ error: "Run not found" }, { status: 404 });
     }

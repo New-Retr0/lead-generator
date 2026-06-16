@@ -37,7 +37,7 @@ export function loadProjectEnv(): Record<string, string> {
 const DASHBOARD_ONLY_ENV = new Set(["PROJECT_ROOT", "PALLARES_DB_PATH"]);
 
 export function cliChildEnv(): NodeJS.ProcessEnv {
-  const nodeEnv: NodeJS.ProcessEnv = {};
+  const nodeEnv: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && !DASHBOARD_ONLY_ENV.has(key)) {
       nodeEnv[key] = value;
@@ -49,5 +49,5 @@ export function cliChildEnv(): NodeJS.ProcessEnv {
     PYTHONIOENCODING: process.env.PYTHONIOENCODING ?? "utf-8",
     PYTHONUTF8: process.env.PYTHONUTF8 ?? "1",
     PALLARES_LOG_JSON: process.env.PALLARES_LOG_JSON ?? "1",
-  };
+  } as unknown as NodeJS.ProcessEnv;
 }

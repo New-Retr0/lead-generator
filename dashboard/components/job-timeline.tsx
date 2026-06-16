@@ -192,8 +192,21 @@ function EventRow({ event, active }: { event: JobEvent; active?: boolean }) {
   );
 }
 
-function LeadGroupCard({ group, defaultOpen }: { group: LeadGroup; defaultOpen: boolean }) {
+function LeadGroupCard({
+  group,
+  defaultOpen,
+  nowMs,
+}: {
+  group: LeadGroup;
+  defaultOpen: boolean;
+  nowMs: number;
+}) {
   const rejected = group.events.filter((e) => e.event === "verification_rejected").length;
+  const lastEventTs = group.events.length
+    ? Date.parse(group.events[group.events.length - 1]?.ts ?? "")
+    : 0;
+  const isStale =
+    !group.done && lastEventTs > 0 && nowMs - lastEventTs > 5 * 60 * 1000;
   return (
     <SlideIn>
       <Collapsible defaultOpen={defaultOpen}>
@@ -491,6 +504,7 @@ function JobTimelineStream({
                       key={group.key}
                       group={group}
                       defaultOpen={i === leads.length - 1}
+                      nowMs={now}
                     />
                   ))}
                 </>

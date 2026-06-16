@@ -140,7 +140,7 @@ def run_campaign(
 
     defer_sheets = not skip_sheets and sheets_configured(settings) and not dry_run
 
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         for market_key, category_key in jobs:
             if category_key not in categories:
                 summary.results.append(

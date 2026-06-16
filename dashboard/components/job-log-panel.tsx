@@ -27,13 +27,20 @@ export function JobLogPanel({
   jobId: string | null;
   onDone?: (status: string) => void;
 }) {
+  if (!jobId) return <TimelinePlaceholder />;
+  return <JobLogPanelActive jobId={jobId} onDone={onDone} />;
+}
+
+function JobLogPanelActive({
+  jobId,
+  onDone,
+}: {
+  jobId: string;
+  onDone?: (status: string) => void;
+}) {
   const [kind, setKind] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!jobId) {
-      setKind(null);
-      return;
-    }
     let cancelled = false;
     void fetch(`/api/jobs/${jobId}`)
       .then((r) => r.json())
@@ -48,7 +55,6 @@ export function JobLogPanel({
     };
   }, [jobId]);
 
-  if (!jobId) return <TimelinePlaceholder />;
   if (kind === null) {
     return (
       <div className="glass-strong glass-sheen rounded-2xl border border-dashed border-border/60 p-8 text-center">

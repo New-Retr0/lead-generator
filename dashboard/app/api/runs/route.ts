@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     return NextResponse.json({
-      runs: listRuns(50),
+      runs: await listRuns(50),
       jobs: listJobs(20),
     });
   } catch (err) {

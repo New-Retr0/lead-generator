@@ -192,7 +192,7 @@ def run_eval_replay(
 
     place_ids: set[str] | None = None
     if db_only:
-        with LeadStore(settings.db_path) as store:
+        with LeadStore() as store:
             place_ids = store.list_enriched_place_ids()
         if not place_ids:
             raise ValueError("No enriched leads in DB — run smoke-sample first or omit --db-only")
@@ -212,7 +212,7 @@ def run_eval_replay(
     all_reports: list[dict[str, Any]] = []
     batch_summaries: list[dict[str, Any]] = []
 
-    with LeadStore(settings.db_path) as store:
+    with LeadStore() as store:
         db_run_id = store.start_run(run_type="eval_replay", market_key="", category_key="")
 
         for batch_idx, batch in enumerate(batches, start=batch_offset + 1):
