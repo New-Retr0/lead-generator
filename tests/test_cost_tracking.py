@@ -125,16 +125,21 @@ def test_record_cost_event_queues_on_persistent_operational_error(
 
     import psycopg
 
+    original_conn = store._conn
     mock_conn = MagicMock()
     mock_conn.execute.side_effect = psycopg.OperationalError("database is locked")
     monkeypatch.setattr(store, "_conn", mock_conn)
     monkeypatch.setattr("pallares_leads.db.store.time.sleep", lambda _s: None)
 
-    store.record_cost_event(
-        provider="firecrawl",
-        operation="scrape",
-        units=1,
-        usd=0.01,
-    )
-    assert mock_conn.execute.call_count == 8
-    assert len(store._pending_cost_events) == 1
+    try:
+        store.record_cost_event(
+            provider="firecrawl",
+            operation="scrape",
+            units=1,
+            usd=0.01,
+        )
+        assert mock_conn.execute.call_count == 8
+        assert len(store._pending_cost_events) == 1
+    finally:
+        store._conn = original_conn
+        store._pending_cost_events.clear()
