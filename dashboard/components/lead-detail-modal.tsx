@@ -798,7 +798,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
               </Section>
             ) : null}
 
-            {(lead.website || lead.google_maps_url || lead.evidence_urls.length > 0) && (
+            {lead.website || lead.google_maps_url || lead.evidence_urls.length > 0 ? (
               <Section icon={Globe} title="Links">
                 <div className="space-y-1">
                   {lead.website ? (
@@ -837,7 +837,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                   ))}
                 </div>
               </Section>
-            )}
+            ) : null}
 
             {lead.related.length > 0 ? (
               <Section icon={Link2} title="Related properties">

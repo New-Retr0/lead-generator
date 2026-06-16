@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { dbAvailable, getSql } from "./pg";
 import type {
   CostSeries,
@@ -112,7 +113,7 @@ function parseFirecrawlSnapshotBalance(
   };
 }
 
-export async function getCreditBalances(): Promise<ProviderBalance[]> {
+export const getCreditBalances = cache(async function getCreditBalances(): Promise<ProviderBalance[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -145,7 +146,7 @@ export async function getCreditBalances(): Promise<ProviderBalance[]> {
       snapshotAt: toIsoOrNull(row.created_at),
     };
   });
-}
+});
 
 type EnrichedJson = {
   investigation_status?: string;
@@ -209,7 +210,7 @@ function primaryPhone(data: EnrichedJson): string | null {
   return null;
 }
 
-export async function getOverview(): Promise<OverviewStats> {
+export const getOverview = cache(async function getOverview(): Promise<OverviewStats> {
   if (!dbAvailable()) return emptyOverview();
   const sql = getSql();
 
@@ -297,9 +298,9 @@ export async function getOverview(): Promise<OverviewStats> {
     usdByProvider,
     balances: await getCreditBalances(),
   };
-}
+});
 
-export async function listLeads(filters?: {
+export const listLeads = cache(async function listLeads(filters?: {
   market?: string;
   category?: string;
   status?: string;
@@ -372,7 +373,7 @@ export async function listLeads(filters?: {
     });
   }
   return leads;
-}
+});
 
 const NOT_FOUND = "Not found";
 
@@ -670,7 +671,7 @@ export async function getLeadCosts(placeId: string): Promise<LeadCosts> {
   };
 }
 
-export async function getLeadDetail(placeId: string): Promise<LeadDetail | null> {
+export const getLeadDetail = cache(async function getLeadDetail(placeId: string): Promise<LeadDetail | null> {
   if (!dbAvailable()) return null;
   const sql = getSql();
 
@@ -762,7 +763,7 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
     source_checks: await getSourceChecksForLead(placeId),
     costs: await getLeadCosts(placeId),
   };
-}
+});
 
 function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
   return {
@@ -1004,7 +1005,7 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
   };
 }
 
-export async function getRunDetail(runId: string): Promise<RunDetail | null> {
+export const getRunDetail = cache(async function getRunDetail(runId: string): Promise<RunDetail | null> {
   const run = await getRun(runId);
   if (!run) return null;
   return {
@@ -1012,9 +1013,9 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
     costs: await getRunCosts(runId),
     timeline: await getRunTimeline(runId),
   };
-}
+});
 
-export async function listRuns(limit = 50): Promise<RunRow[]> {
+export const listRuns = cache(async function listRuns(limit = 50): Promise<RunRow[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -1038,7 +1039,7 @@ export async function listRuns(limit = 50): Promise<RunRow[]> {
     enriched_count: Number(row.enriched_count),
     status: String(row.status),
   }));
-}
+});
 
 function parseSpecJson(raw: unknown): Record<string, unknown> {
   if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {
@@ -1054,7 +1055,7 @@ function parseSpecJson(raw: unknown): Record<string, unknown> {
   return {};
 }
 
-export async function listRequests(limit = 50): Promise<RequestRow[]> {
+export const listRequests = cache(async function listRequests(limit = 50): Promise<RequestRow[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -1076,9 +1077,9 @@ export async function listRequests(limit = 50): Promise<RequestRow[]> {
     usd_spent: row.usd_spent != null ? Number(row.usd_spent) : null,
     spec: parseSpecJson(row.spec_json),
   }));
-}
+});
 
-export async function getCostSeries(days = 30): Promise<CostSeries> {
+export const getCostSeries = cache(async function getCostSeries(days = 30): Promise<CostSeries> {
   if (!dbAvailable()) {
     return { byDay: [], byProvider: [], byOperation: [], balances: [] };
   }
@@ -1161,9 +1162,9 @@ export async function getCostSeries(days = 30): Promise<CostSeries> {
     })),
     balances: await getCreditBalances(),
   };
-}
+});
 
-export async function listFilterOptions(): Promise<{
+export const listFilterOptions = cache(async function listFilterOptions(): Promise<{
   markets: string[];
   categories: string[];
 }> {
@@ -1185,4 +1186,4 @@ export async function listFilterOptions(): Promise<{
     markets: marketRows.map((r) => String(r.market_key)),
     categories: categoryRows.map((r) => String(r.category_key)),
   };
-}
+});

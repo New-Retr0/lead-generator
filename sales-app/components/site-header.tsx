@@ -11,9 +11,11 @@ const titles: Record<string, string> = {
   "/": "Overview",
   "/requests": "Lead Requests",
   "/runs": "Runs",
-  "/leads": "Leads",
-  "/triage": "Triage",
-  "/duds": "Triage",
+  "/workspace": "Workspace",
+  "/crm": "Workspace",
+  "/leads": "Workspace",
+  "/triage": "Workspace",
+  "/duds": "Workspace",
   "/costs": "Costs",
 };
 

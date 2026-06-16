@@ -1,6 +1,3 @@
-"use client";
-
-import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/page-header";
 import { RunStatusBadge } from "@/components/badges";
 import {
@@ -18,17 +15,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { listRequests } from "@/lib/db";
 import { formatUsd } from "@/lib/utils";
-import type { RequestRow } from "@/lib/types";
 
-export default function RequestsPage() {
-  const [requests, setRequests] = useState<RequestRow[]>([]);
-
-  useEffect(() => {
-    void fetch("/api/requests")
-      .then((r) => r.json())
-      .then((data) => setRequests(data.requests ?? []));
-  }, []);
+export default async function RequestsPage() {
+  const requests = await listRequests();
 
   return (
     <div className="space-y-6">
@@ -53,7 +44,7 @@ export default function RequestsPage() {
                   <TableHead className="text-right">Delivered</TableHead>
                   <TableHead className="text-right">Credits</TableHead>
                   <TableHead className="text-right">USD</TableHead>
-                  <TableHead>Created</TableHead>
+                  <TableHead className="whitespace-nowrap">Created</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -74,7 +65,7 @@ export default function RequestsPage() {
                     <TableCell className="text-right tabular-nums">
                       {formatUsd(req.usd_spent ?? 0)}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
                       {req.created_at.slice(0, 16).replace("T", " ")}
                     </TableCell>
                   </TableRow>

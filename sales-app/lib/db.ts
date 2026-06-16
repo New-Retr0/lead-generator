@@ -1,3 +1,4 @@
+import { cache } from "react";
 import * as supabaseReads from "./db-supabase";
 import { dbAvailable, getSql } from "./pg";
 import { useSupabaseReads } from "./use-supabase-reads";
@@ -114,7 +115,7 @@ function parseFirecrawlSnapshotBalance(
   };
 }
 
-export async function getCreditBalances(): Promise<ProviderBalance[]> {
+export const getCreditBalances = cache(async function getCreditBalances(): Promise<ProviderBalance[]> {
   if (useSupabaseReads()) return supabaseReads.getCreditBalances();
   if (!dbAvailable()) return [];
   const sql = getSql();
@@ -148,7 +149,7 @@ export async function getCreditBalances(): Promise<ProviderBalance[]> {
       snapshotAt: toIsoOrNull(row.created_at),
     };
   });
-}
+});
 
 type EnrichedJson = {
   investigation_status?: string;
@@ -212,7 +213,7 @@ function primaryPhone(data: EnrichedJson): string | null {
   return null;
 }
 
-export async function getOverview(): Promise<OverviewStats> {
+export const getOverview = cache(async function getOverview(): Promise<OverviewStats> {
   if (useSupabaseReads()) return supabaseReads.getOverview();
   if (!dbAvailable()) return emptyOverview();
   const sql = getSql();
@@ -301,9 +302,9 @@ export async function getOverview(): Promise<OverviewStats> {
     usdByProvider,
     balances: await getCreditBalances(),
   };
-}
+});
 
-export async function listLeads(filters?: {
+export const listLeads = cache(async function listLeads(filters?: {
   market?: string;
   category?: string;
   status?: string;
@@ -322,7 +323,8 @@ export async function listLeads(filters?: {
     SELECT leads.place_id, leads.business_name, leads.market_key, leads.category_key, leads.city,
            leads.last_enriched_at, leads.enrichment_status, leads.confidence,
            leads.lead_score, leads.enriched_json,
-           COALESCE(sf.status, 'New') AS crm_status
+           COALESCE(sf.status, 'New') AS crm_status,
+           COALESCE(sf.addressed, false) AS addressed
     FROM leads
     LEFT JOIN sales_feedback sf ON sf.place_id = leads.place_id
     WHERE leads.enriched_json IS NOT NULL
@@ -374,10 +376,11 @@ export async function listLeads(filters?: {
       crm_status: crmStatus as CrmStatus,
       lead_type: leadType,
       phone: primaryPhone(data),
+      addressed: Boolean(row.addressed),
     });
   }
   return leads;
-}
+});
 
 const NOT_FOUND = "Not found";
 
@@ -678,7 +681,7 @@ export async function getLeadCosts(placeId: string): Promise<LeadCosts> {
   };
 }
 
-export async function getLeadDetail(placeId: string): Promise<LeadDetail | null> {
+export const getLeadDetail = cache(async function getLeadDetail(placeId: string): Promise<LeadDetail | null> {
   if (useSupabaseReads()) return supabaseReads.getLeadDetail(placeId);
   if (!dbAvailable()) return null;
   const sql = getSql();
@@ -708,9 +711,10 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
     .filter(Boolean);
 
   const fbRows = await sql`
-    SELECT status FROM sales_feedback WHERE place_id = ${placeId}
+    SELECT status, addressed FROM sales_feedback WHERE place_id = ${placeId}
   `;
   const crmStatus: CrmStatus = (fbRows[0]?.status as CrmStatus) || "New";
+  const addressed = Boolean(fbRows[0]?.addressed);
   const leadType: LeadType = (row.category_key as string | null)?.startsWith("vendor_")
     ? "vendor"
     : "client";
@@ -731,6 +735,7 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
     crm_status: crmStatus,
     lead_type: leadType,
     phone: primaryPhone(enriched),
+    addressed,
     address: addressParts.length > 0 ? addressParts.join(", ") : null,
     website: presentOrNull(data.website),
     google_maps_url: presentOrNull(data.google_maps_url),
@@ -771,7 +776,7 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
     source_checks: await getSourceChecksForLead(placeId),
     costs: await getLeadCosts(placeId),
   };
-}
+});
 
 function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
   return {
@@ -1017,7 +1022,7 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
   };
 }
 
-export async function getRunDetail(runId: string): Promise<RunDetail | null> {
+export const getRunDetail = cache(async function getRunDetail(runId: string): Promise<RunDetail | null> {
   if (useSupabaseReads()) return supabaseReads.getRunDetail(runId);
   const run = await getRun(runId);
   if (!run) return null;
@@ -1026,9 +1031,9 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
     costs: await getRunCosts(runId),
     timeline: await getRunTimeline(runId),
   };
-}
+});
 
-export async function listRuns(limit = 50): Promise<RunRow[]> {
+export const listRuns = cache(async function listRuns(limit = 50): Promise<RunRow[]> {
   if (useSupabaseReads()) return supabaseReads.listRuns(limit);
   if (!dbAvailable()) return [];
   const sql = getSql();
@@ -1053,7 +1058,7 @@ export async function listRuns(limit = 50): Promise<RunRow[]> {
     enriched_count: Number(row.enriched_count),
     status: String(row.status),
   }));
-}
+});
 
 function parseSpecJson(raw: unknown): Record<string, unknown> {
   if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {
@@ -1069,7 +1074,7 @@ function parseSpecJson(raw: unknown): Record<string, unknown> {
   return {};
 }
 
-export async function listRequests(limit = 50): Promise<RequestRow[]> {
+export const listRequests = cache(async function listRequests(limit = 50): Promise<RequestRow[]> {
   if (useSupabaseReads()) return supabaseReads.listRequests(limit);
   if (!dbAvailable()) return [];
   const sql = getSql();
@@ -1092,9 +1097,9 @@ export async function listRequests(limit = 50): Promise<RequestRow[]> {
     usd_spent: row.usd_spent != null ? Number(row.usd_spent) : null,
     spec: parseSpecJson(row.spec_json),
   }));
-}
+});
 
-export async function getCostSeries(days = 30): Promise<CostSeries> {
+export const getCostSeries = cache(async function getCostSeries(days = 30): Promise<CostSeries> {
   if (useSupabaseReads()) return supabaseReads.getCostSeries(days);
   if (!dbAvailable()) {
     return { byDay: [], byProvider: [], byOperation: [], balances: [] };
@@ -1178,9 +1183,9 @@ export async function getCostSeries(days = 30): Promise<CostSeries> {
     })),
     balances: await getCreditBalances(),
   };
-}
+});
 
-export async function listFilterOptions(): Promise<{
+export const listFilterOptions = cache(async function listFilterOptions(): Promise<{
   markets: string[];
   categories: string[];
 }> {
@@ -1203,4 +1208,4 @@ export async function listFilterOptions(): Promise<{
     markets: marketRows.map((r) => String(r.market_key)),
     categories: categoryRows.map((r) => String(r.category_key)),
   };
-}
+});

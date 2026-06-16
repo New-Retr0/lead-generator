@@ -26,6 +26,7 @@ export type LeadRow = {
   crm_status: CrmStatus;
   lead_type: LeadType;
   phone: string | null;
+  addressed: boolean;
 };
 
 export type SiteContact = {

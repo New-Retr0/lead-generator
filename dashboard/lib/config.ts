@@ -1,5 +1,6 @@
 import { readFileSync } from "fs";
 import path from "path";
+import { cache } from "react";
 import { parse } from "yaml";
 import { projectRoot } from "./paths";
 import type { CategoryOption, MarketOption, PipelineConfig } from "./types";
@@ -41,7 +42,7 @@ function titleize(key: string): string {
 
 let cached: PipelineConfig | null = null;
 
-export function getPipelineConfig(): PipelineConfig {
+function loadPipelineConfig(): PipelineConfig {
   if (cached) return cached;
 
   const marketsYaml = readYaml<MarketsYaml>("markets.yaml");
@@ -81,3 +82,5 @@ export function getPipelineConfig(): PipelineConfig {
   cached = { markets, categories, campaigns };
   return cached;
 }
+
+export const getPipelineConfig = cache(loadPipelineConfig);

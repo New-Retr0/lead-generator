@@ -7,10 +7,8 @@ import {
   Droplets,
   LayoutDashboard,
   MessageSquareText,
-  PhoneCall,
   PlayCircle,
   Receipt,
-  ShieldAlert,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,11 +35,7 @@ const groups = [
   },
   {
     label: "Sales",
-    items: [
-      { href: "/crm", label: "CRM", icon: ContactRound },
-      { href: "/leads", label: "Leads", icon: PhoneCall },
-      { href: "/triage", label: "Triage", icon: ShieldAlert },
-    ],
+    items: [{ href: "/workspace", label: "Workspace", icon: ContactRound }],
   },
   {
     label: "Operations",

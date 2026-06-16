@@ -57,7 +57,7 @@ export async function updateSession(request: NextRequest) {
     (request.nextUrl.pathname === "/login" || request.nextUrl.pathname === "/sign-in")
   ) {
     const url = request.nextUrl.clone();
-    url.pathname = "/crm";
+    url.pathname = "/workspace";
     return NextResponse.redirect(url);
   }
 

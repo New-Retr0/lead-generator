@@ -14,6 +14,15 @@ export function formatUsd(value: number): string {
   }).format(value);
 }
 
+/** Headline stat values — max 2 decimal places. */
+export function formatUsdCompact(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 export function formatPct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }

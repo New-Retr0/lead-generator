@@ -128,3 +128,10 @@ export function crmStatusFromFeedback(
   if (typeof status === "string") return status as CrmStatus;
   return "New";
 }
+
+export function addressedFromFeedback(
+  feedback: { addressed?: boolean } | { addressed?: boolean }[] | null | undefined,
+): boolean {
+  const row = Array.isArray(feedback) ? feedback[0] : feedback;
+  return Boolean(row?.addressed);
+}

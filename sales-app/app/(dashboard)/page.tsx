@@ -1,20 +1,10 @@
-"use client";
-
-import { useEffect, useState } from "react";
+import { Suspense } from "react";
 import Link from "next/link";
-import {
-  Activity,
-  ArrowRight,
-  Coins,
-  DollarSign,
-  PhoneCall,
-  Users,
-} from "lucide-react";
-import { Area, AreaChart, ChartContainer } from "@/components/ui/chart";
+import { Activity, ArrowRight } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { OverviewStatCards } from "@/components/overview/overview-stat-cards";
+import { SpendChartLazy } from "@/components/overview/spend-chart-lazy";
 import { RunStatusBadge } from "@/components/badges";
-import { Stagger, StaggerItem } from "@/components/animated";
-import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,6 +13,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  getCostSeries,
+  getOverview,
+  listRequests,
+  listRuns,
+} from "@/lib/db";
 import {
   formatCredits,
   formatFirecrawlBalanceSub,
@@ -31,38 +28,84 @@ import {
   formatProvider,
   formatUsd,
 } from "@/lib/utils";
-import type { CostDayRow, OverviewStats, RequestRow, RunRow } from "@/lib/types";
 
-export default function OverviewPage() {
-  const [stats, setStats] = useState<OverviewStats | null>(null);
-  const [runs, setRuns] = useState<RunRow[]>([]);
-  const [requests, setRequests] = useState<RequestRow[]>([]);
-  const [costDays, setCostDays] = useState<CostDayRow[]>([]);
-  const [error, setError] = useState("");
+export default async function OverviewPage() {
+  let stats;
+  let runs;
+  let requests;
+  let costDays;
+  let error = "";
 
-  useEffect(() => {
-    fetch("/api/overview")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.error) setError(data.error);
-        else setStats(data);
-      })
-      .catch((e) => setError(String(e)));
-    fetch("/api/runs")
-      .then((r) => r.json())
-      .then((data) => {
-        setRuns((data.runs ?? []).slice(0, 5));
-      });
-    fetch("/api/requests")
-      .then((r) => r.json())
-      .then((data) => setRequests((data.requests ?? []).slice(0, 5)));
-    fetch("/api/costs?days=14")
-      .then((r) => r.json())
-      .then((data) => setCostDays(data.byDay ?? []));
-  }, []);
+  try {
+    const [statsResult, runsResult, requestsResult, costSeries] = await Promise.all([
+      getOverview(),
+      listRuns(5),
+      listRequests(5),
+      getCostSeries(14),
+    ]);
+    stats = statsResult;
+    runs = runsResult;
+    requests = requestsResult;
+    costDays = costSeries.byDay;
+  } catch (err) {
+    error = err instanceof Error ? err.message : "Failed to load overview";
+  }
 
   const totalUsd = stats?.usdByProvider.reduce((s, p) => s + p.usd, 0) ?? 0;
   const firecrawlBalance = stats?.balances.find((b) => b.provider === "firecrawl");
+
+  const totalLeadsDetails = stats
+    ? [
+        { label: "Enriched", value: String(stats.enrichedLeads) },
+        {
+          label: "% enriched",
+          value: formatPct(
+            stats.totalLeads > 0 ? stats.enrichedLeads / stats.totalLeads : 0,
+          ),
+        },
+      ]
+    : [];
+
+  const readyToCallDetails = stats
+    ? [
+        { label: "Ready rate", value: formatPct(stats.readyToCallRate) },
+        {
+          label: "Needs research",
+          value: String(stats.enrichedLeads - stats.readyToCall),
+        },
+      ]
+    : [];
+
+  const firecrawlDetails = stats
+    ? [
+        {
+          label: "Remaining",
+          value:
+            firecrawlBalance?.remaining != null
+              ? formatCredits(firecrawlBalance.remaining)
+              : "—",
+        },
+        {
+          label: "Used",
+          value:
+            firecrawlBalance?.used != null && firecrawlBalance.plan != null
+              ? `${formatCredits(firecrawlBalance.used)} / ${formatCredits(firecrawlBalance.plan)}`
+              : firecrawlBalance?.used != null
+                ? formatCredits(firecrawlBalance.used)
+                : "—",
+        },
+        {
+          label: "Pipeline (mo)",
+          value: formatCredits(stats.creditsThisMonth),
+        },
+      ]
+    : [];
+
+  const spendDetails =
+    stats?.usdByProvider.map((row) => ({
+      label: formatProvider(row.provider),
+      value: formatUsd(row.usd),
+    })) ?? [];
 
   return (
     <div className="space-y-6">
@@ -78,47 +121,23 @@ export default function OverviewPage() {
           </CardContent>
         </Card>
       ) : (
-        <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StaggerItem>
-            <StatCard
-              label="Total leads"
-              value={stats?.totalLeads ?? 0}
-              sub={`${stats?.enrichedLeads ?? 0} enriched`}
-              icon={Users}
-            />
-          </StaggerItem>
-          <StaggerItem>
-            <StatCard
-              label="Ready to call"
-              value={stats?.readyToCall ?? 0}
-              sub={`${formatPct(stats?.readyToCallRate ?? 0)} of enriched`}
-              icon={PhoneCall}
-              tone="success"
-            />
-          </StaggerItem>
-          <StaggerItem>
-            <StatCard
-              label="Firecrawl remaining"
-              value={firecrawlBalance?.remaining ?? stats?.creditsThisMonth ?? 0}
-              format={(n) => formatCredits(n)}
-              sub={formatFirecrawlBalanceSub(
-                firecrawlBalance,
-                stats?.creditsThisMonth ?? 0,
-              )}
-              icon={Coins}
-              tone="warning"
-            />
-          </StaggerItem>
-          <StaggerItem>
-            <StatCard
-              label="Pipeline spend (month)"
-              value={totalUsd}
-              format={(n) => formatUsd(n)}
-              sub={formatOverviewSpendSub(stats?.usdByProvider ?? [])}
-              icon={DollarSign}
-            />
-          </StaggerItem>
-        </Stagger>
+        <OverviewStatCards
+          totalLeads={stats?.totalLeads ?? 0}
+          enrichedLeads={stats?.enrichedLeads ?? 0}
+          totalLeadsDetails={totalLeadsDetails}
+          readyToCall={stats?.readyToCall ?? 0}
+          readyToCallSub={`${formatPct(stats?.readyToCallRate ?? 0)} of enriched`}
+          readyToCallDetails={readyToCallDetails}
+          firecrawlValue={firecrawlBalance?.remaining ?? stats?.creditsThisMonth ?? 0}
+          firecrawlSub={formatFirecrawlBalanceSub(
+            firecrawlBalance,
+            stats?.creditsThisMonth ?? 0,
+          )}
+          firecrawlDetails={firecrawlDetails}
+          totalUsd={totalUsd}
+          spendSub={formatOverviewSpendSub(stats?.usdByProvider ?? [])}
+          spendDetails={spendDetails}
+        />
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -139,33 +158,9 @@ export default function OverviewPage() {
             </Button>
           </CardHeader>
           <CardContent className="h-44">
-            {costDays.length === 0 ? (
-              <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                No cost events yet.
-              </p>
-            ) : (
-              <ChartContainer
-                config={{ usd: { label: "USD", color: "var(--chart-1)" } }}
-              >
-                <AreaChart data={costDays} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="usdFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
-                      <stop offset="55%" stopColor="var(--chart-2)" stopOpacity={0.12} />
-                      <stop offset="100%" stopColor="var(--chart-2)" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <Area
-                    type="monotone"
-                    dataKey="usd"
-                    stroke="var(--chart-1)"
-                    strokeWidth={2.5}
-                    fill="url(#usdFill)"
-                    animationDuration={900}
-                  />
-                </AreaChart>
-              </ChartContainer>
-            )}
+            <Suspense fallback={<Skeleton className="h-full w-full" />}>
+              <SpendChartLazy data={costDays ?? []} />
+            </Suspense>
           </CardContent>
         </Card>
 
@@ -219,7 +214,7 @@ export default function OverviewPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-2">
-            {runs.length === 0 ? (
+            {!runs || runs.length === 0 ? (
               <p className="text-sm text-muted-foreground">No runs yet.</p>
             ) : (
               runs.map((run) => (
@@ -257,7 +252,7 @@ export default function OverviewPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-2">
-            {requests.length === 0 ? (
+            {!requests || requests.length === 0 ? (
               <p className="text-sm text-muted-foreground">No requests yet.</p>
             ) : (
               requests.map((req) => (

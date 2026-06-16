@@ -4,6 +4,11 @@ import path from "path";
 const src = path.resolve(process.cwd(), "..", "config");
 const dest = path.resolve(process.cwd(), "config");
 
+if (existsSync(path.join(dest, "markets.yaml"))) {
+  console.log("copy-config: config already bundled in sales-app/config");
+  process.exit(0);
+}
+
 if (!existsSync(src)) {
   console.warn("copy-config: ../config not found, skipping");
   process.exit(0);

@@ -10,6 +10,7 @@ import {
   salesStatus,
   toIso,
   toIsoOrNull,
+  addressedFromFeedback,
   type EnrichedJson,
 } from "./db-helpers";
 import type {
@@ -293,7 +294,7 @@ export async function listLeads(filters?: {
   let query = client
     .from("leads")
     .select(
-      "place_id, business_name, market_key, category_key, city, last_enriched_at, enrichment_status, confidence, lead_score, enriched_json, sales_feedback ( status )",
+      "place_id, business_name, market_key, category_key, city, last_enriched_at, enrichment_status, confidence, lead_score, enriched_json, sales_feedback ( status, addressed )",
     )
     .not("enriched_json", "is", null)
     .order("lead_score", { ascending: false, nullsFirst: false })
@@ -320,6 +321,9 @@ export async function listLeads(filters?: {
     const crmStatus = crmStatusFromFeedback(
       row.sales_feedback as { status?: string } | { status?: string }[] | null,
     );
+    const addressed = addressedFromFeedback(
+      row.sales_feedback as { addressed?: boolean } | { addressed?: boolean }[] | null,
+    );
     if (filters?.crmStatus && crmStatus !== filters.crmStatus) continue;
     const categoryKey = (row.category_key as string | null) ?? null;
     const leadType = leadTypeFromCategory(categoryKey);
@@ -340,6 +344,7 @@ export async function listLeads(filters?: {
       crm_status: crmStatus,
       lead_type: leadType,
       phone: primaryPhone(dataJson),
+      addressed,
     });
   }
   return leads;
@@ -797,7 +802,7 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
   const { data: row, error } = await client
     .from("leads")
     .select(
-      "place_id, business_name, market_key, category_key, city, last_enriched_at, enrichment_status, confidence, lead_score, enriched_json, sales_feedback ( status )",
+      "place_id, business_name, market_key, category_key, city, last_enriched_at, enrichment_status, confidence, lead_score, enriched_json, sales_feedback ( status, addressed )",
     )
     .eq("place_id", placeId)
     .maybeSingle();
@@ -826,6 +831,9 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
   const crmStatus = crmStatusFromFeedback(
     row.sales_feedback as { status?: string } | { status?: string }[] | null,
   );
+  const addressed = addressedFromFeedback(
+    row.sales_feedback as { addressed?: boolean } | { addressed?: boolean }[] | null,
+  );
   const categoryKey = (row.category_key as string | null) ?? null;
   const leadType = leadTypeFromCategory(categoryKey);
 
@@ -845,6 +853,7 @@ export async function getLeadDetail(placeId: string): Promise<LeadDetail | null>
     crm_status: crmStatus,
     lead_type: leadType,
     phone: primaryPhone(enriched),
+    addressed,
     address: addressParts.length > 0 ? addressParts.join(", ") : null,
     website: presentOrNull(data.website),
     google_maps_url: presentOrNull(data.google_maps_url),
