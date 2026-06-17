@@ -11,6 +11,7 @@ import {
   Globe,
   Lightbulb,
   Link2,
+  Mail,
   MapPin,
   MessageCircle,
   Phone,
@@ -80,10 +81,10 @@ function SourceChip({ url }: { url: string | null | undefined }) {
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+      className="inline-flex min-h-7 max-w-full items-center gap-1 truncate rounded-full border bg-muted/40 px-2.5 py-1 text-[10px] text-muted-foreground hover:text-foreground sm:min-h-0 sm:px-2 sm:py-0.5"
     >
       <Globe className="size-3" />
-      {domain}
+      <span className="truncate">{domain}</span>
     </a>
   );
 }
@@ -114,27 +115,70 @@ function ContactVerificationBadge({ level }: { level: string }) {
 
 function SourceRows({ sources }: { sources: ContactSource[] }) {
   return (
-    <div className="space-y-2 border-t border-border/50 pt-3">
+    <div className="mt-3 space-y-2 border-t border-border/50 pt-3">
       {sources.map((source, i) => (
         <div
           key={`${source.source_url}-${source.label}-${i}`}
-          className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-xs"
+          className="rounded-lg border border-border/40 bg-muted/20 px-3 py-3 text-xs sm:py-2"
         >
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             <Badge variant="outline" className="text-[10px] capitalize">
               {source.label}
             </Badge>
             <SourceChip url={source.source_url} />
             {source.method ? (
-              <span className="text-muted-foreground">{source.method.replace(/_/g, " ")}</span>
+              <span className="break-words text-muted-foreground">
+                {source.method.replace(/_/g, " ")}
+              </span>
             ) : null}
           </div>
           {source.quote ? (
-            <p className="mt-1.5 line-clamp-3 text-muted-foreground">&ldquo;{source.quote}&rdquo;</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground sm:line-clamp-3">
+              &ldquo;{source.quote}&rdquo;
+            </p>
           ) : null}
         </div>
       ))}
     </div>
+  );
+}
+
+function SourceDisclosureButton({
+  count,
+  verification,
+  open,
+}: {
+  count: number;
+  verification: string;
+  open: boolean;
+}) {
+  return (
+    <>
+      <CollapsibleTrigger asChild>
+        <Button variant="ghost" size="sm" className="hidden h-8 gap-1 text-xs sm:inline-flex">
+          {count} sources
+          <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex min-h-12 w-full items-center justify-between gap-3 rounded-lg border border-border bg-muted/35 px-3 py-2 text-left text-xs transition-colors hover:bg-accent/50 sm:hidden"
+        >
+          <span className="min-w-0">
+            <span className="block font-medium text-foreground">
+              {open ? "Hide source details" : `Show ${count} sources`}
+            </span>
+            <span className="block truncate text-muted-foreground">
+              Verification: {verification.replace(/_/g, " ")}
+            </span>
+          </span>
+          <ChevronDown
+            className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+          />
+        </button>
+      </CollapsibleTrigger>
+    </>
   );
 }
 
@@ -146,7 +190,7 @@ function PhoneContactCard({ group }: { group: PhoneGroup }) {
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="text-[10px]">
@@ -165,6 +209,12 @@ function PhoneContactCard({ group }: { group: PhoneGroup }) {
             >
               {group.display}
             </a>
+            <Button className="mt-3 h-11 w-full sm:hidden" asChild>
+              <a href={`tel:+1${telHref}`}>
+                <Phone className="size-4" />
+                Call {group.display}
+              </a>
+            </Button>
             {group.labels.length > 1 ? (
               <p className="text-xs text-muted-foreground">
                 Also listed as: {group.labels.filter((l) => l !== label).join(" · ")}
@@ -172,21 +222,18 @@ function PhoneContactCard({ group }: { group: PhoneGroup }) {
             ) : null}
           </div>
           {group.sources.length > 1 ? (
-            <CollapsibleTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                {group.sources.length} sources
-                <ChevronDown
-                  className={cn("size-3.5 transition-transform", open && "rotate-180")}
-                />
-              </Button>
-            </CollapsibleTrigger>
+            <SourceDisclosureButton
+              count={group.sources.length}
+              verification={group.verification}
+              open={open}
+            />
           ) : (
             <SourceChip url={group.sources[0]?.source_url} />
           )}
         </div>
         {group.sources.length === 1 ? (
           group.sources[0]?.quote ? (
-            <p className="mt-2 line-clamp-3 text-xs italic text-muted-foreground">
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground sm:line-clamp-3 sm:italic">
               &ldquo;{group.sources[0].quote}&rdquo;
             </p>
           ) : null
@@ -207,7 +254,7 @@ function EmailContactCard({ group }: { group: EmailGroup }) {
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="text-[10px]">
@@ -221,16 +268,19 @@ function EmailContactCard({ group }: { group: EmailGroup }) {
             >
               {group.value}
             </a>
+            <Button variant="secondary" className="mt-3 h-11 w-full sm:hidden" asChild>
+              <a href={`mailto:${group.value}`}>
+                <Mail className="size-4" />
+                Email {label}
+              </a>
+            </Button>
           </div>
           {group.sources.length > 1 ? (
-            <CollapsibleTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                {group.sources.length} sources
-                <ChevronDown
-                  className={cn("size-3.5 transition-transform", open && "rotate-180")}
-                />
-              </Button>
-            </CollapsibleTrigger>
+            <SourceDisclosureButton
+              count={group.sources.length}
+              verification={group.verification}
+              open={open}
+            />
           ) : (
             <SourceChip url={group.sources[0]?.source_url} />
           )}
@@ -242,6 +292,49 @@ function EmailContactCard({ group }: { group: EmailGroup }) {
         ) : null}
       </div>
     </Collapsible>
+  );
+}
+
+function MobileContactQuickActions({
+  phone,
+  website,
+  mapsUrl,
+}: {
+  phone: PhoneGroup | undefined;
+  website: string | null | undefined;
+  mapsUrl: string | null | undefined;
+}) {
+  if (!phone) return null;
+
+  return (
+    <div className="grid gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:hidden">
+      <Button className="h-11 w-full" asChild>
+        <a href={`tel:+1${phone.key}`}>
+          <Phone className="size-4" />
+          Call {phone.display}
+        </a>
+      </Button>
+      {website || mapsUrl ? (
+        <div className={cn("grid gap-2", website && mapsUrl ? "grid-cols-2" : "grid-cols-1")}>
+          {website ? (
+            <Button variant="outline" className="h-10 min-w-0 bg-card" asChild>
+              <a href={website} target="_blank" rel="noreferrer">
+                <Globe className="size-4" />
+                Website
+              </a>
+            </Button>
+          ) : null}
+          {mapsUrl ? (
+            <Button variant="outline" className="h-10 min-w-0 bg-card" asChild>
+              <a href={mapsUrl} target="_blank" rel="noreferrer">
+                <MapPin className="size-4" />
+                Maps
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -562,7 +655,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                 .join(" · ")}
             </DialogDescription>
           </div>
-          <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+          <div className="hidden w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
             {mainPhone ? (
               <Button size="sm" className="col-span-2 h-10 sm:col-span-1 sm:h-8" asChild>
                 <a href={`tel:+1${mainPhone.key}`}>
@@ -608,6 +701,11 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                   </p>
                 ) : (
                   <div className="space-y-3">
+                    <MobileContactQuickActions
+                      phone={mainPhone}
+                      website={lead.website}
+                      mapsUrl={lead.google_maps_url}
+                    />
                     {grouped.phones.map((phone) => (
                       <PhoneContactCard key={phone.key} group={phone} />
                     ))}
