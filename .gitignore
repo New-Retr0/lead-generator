@@ -41,3 +41,5 @@ service-account-email.txt
 .cursor/
 data/*.db
 data/jobs/
+
+.vercel
