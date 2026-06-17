@@ -44,11 +44,16 @@ Open http://localhost:3000 — unauthenticated users redirect to `/login`.
 
 ## Deploy (Vercel)
 
+The Vercel project **`pallares-sales`** must use **Root Directory = `sales-app`** (not the repo root). GitHub pushes to `main` auto-deploy that project only — do not connect a second Vercel project to this monorepo root.
+
 ```bash
-vercel link    # project: pallares-sales
-python ../scripts/sync_sales_vercel_env.py   # NEXT_PUBLIC_SUPABASE_* + PROJECT_ROOT
+cd ..   # repo root
+vercel link --yes --project pallares-sales
+python scripts/sync_sales_vercel_env.py   # NEXT_PUBLIC_SUPABASE_* + PROJECT_ROOT
 vercel deploy --prod
 ```
+
+Run `vercel` from the **repo root** when the project root directory is `sales-app`. Deploying from inside `sales-app/` doubles the path and fails.
 
 Add the Vercel production + preview URLs to Supabase Auth → URL configuration.
 
