@@ -253,7 +253,7 @@ function FactProvenanceRow({ fact }: { fact: LeadFact }) {
       .join(" · ") || fact.quote;
 
   return (
-    <div className="flex items-start gap-2 rounded-lg border border-border/40 px-3 py-2 text-xs">
+    <div className="flex flex-col gap-2 rounded-lg border border-border/40 px-3 py-2 text-xs sm:flex-row sm:items-start">
       <Badge variant="outline" className="shrink-0 text-[10px] capitalize">
         {fact.fact_kind.replace(/_/g, " ")}
       </Badge>
@@ -264,7 +264,9 @@ function FactProvenanceRow({ fact }: { fact: LeadFact }) {
           {fact.method ? ` · ${fact.method.replace(/_/g, " ")}` : ""}
         </p>
       </div>
-      <SourceChip url={fact.source_url} />
+      <div className="sm:shrink-0">
+        <SourceChip url={fact.source_url} />
+      </div>
     </div>
   );
 }
@@ -514,7 +516,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
   if (loading) {
     return (
-      <div className="space-y-4 p-6">
+      <div className="space-y-4 p-4 sm:p-6">
         <DialogTitle className="sr-only">Loading lead details</DialogTitle>
         <DialogDescription className="sr-only">
           Fetching enriched lead contacts and provenance.
@@ -531,7 +533,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
   if (!lead || !grouped) {
     return (
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         <DialogTitle className="text-lg">Lead not found</DialogTitle>
         <DialogDescription className="mt-2">
           {error || "No record for this place id in the database."}
@@ -542,15 +544,15 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
   return (
     <>
-      <div className="sticky top-0 z-10 border-b border-border bg-card px-6 py-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="sticky top-0 z-10 border-b border-border bg-card px-4 py-3 pr-12 sm:px-6 sm:py-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <ScoreBadge score={lead.lead_score} />
               <SalesStatusBadge status={lead.status} />
               <VerificationBadge level={lead.verification_level ?? lead.confidence} />
             </div>
-            <DialogTitle className="text-xl font-semibold leading-snug">
+            <DialogTitle className="text-lg font-semibold leading-snug sm:text-xl">
               {lead.business_name}
             </DialogTitle>
             <DialogDescription className="flex flex-wrap items-center gap-1 text-sm">
@@ -560,9 +562,9 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                 .join(" · ")}
             </DialogDescription>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
             {mainPhone ? (
-              <Button size="sm" asChild>
+              <Button size="sm" className="col-span-2 h-10 sm:col-span-1 sm:h-8" asChild>
                 <a href={`tel:+1${mainPhone.key}`}>
                   <Phone className="size-4" />
                   Call {mainPhone.display}
@@ -570,7 +572,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
               </Button>
             ) : null}
             {lead.website ? (
-              <Button size="sm" variant="outline" asChild>
+              <Button size="sm" variant="outline" className="h-10 sm:h-8" asChild>
                 <a href={lead.website} target="_blank" rel="noreferrer">
                   <Globe className="size-4" />
                   Website
@@ -578,7 +580,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
               </Button>
             ) : null}
             {lead.google_maps_url ? (
-              <Button size="sm" variant="outline" asChild>
+              <Button size="sm" variant="outline" className="h-10 sm:h-8" asChild>
                 <a href={lead.google_maps_url} target="_blank" rel="noreferrer">
                   <MapPin className="size-4" />
                   Maps
@@ -590,7 +592,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-8 p-6">
+        <div className="space-y-6 p-4 sm:space-y-8 sm:p-6">
           {lead.why_now ? (
             <p className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm leading-relaxed">
               {lead.why_now}
@@ -742,7 +744,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
             </div>
           </div>
 
-          <div className="space-y-6 rounded-2xl border border-border/50 bg-muted/20 p-5">
+          <div className="space-y-6 rounded-xl border border-border/50 bg-muted/20 p-4 sm:rounded-2xl sm:p-5">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Details & provenance
             </p>
@@ -893,7 +895,7 @@ export function LeadDetailModal({
     <Dialog open={Boolean(placeId)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton
-        className="top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden border border-border bg-card p-0 shadow-lg sm:max-w-6xl"
+        className="top-0 flex h-svh w-full max-w-none translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden rounded-none border border-border bg-card p-0 shadow-lg sm:top-6 sm:h-[calc(100vh-3rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl sm:rounded-lg"
       >
         {placeId ? <LeadDetailContent placeId={placeId} /> : null}
       </DialogContent>

@@ -36,7 +36,7 @@ export default function RootLayout({
       <body className="min-h-full" suppressHydrationWarning>
         <ThemeProvider>
           {children}
-          <Toaster position="top-right" richColors />
+          <Toaster position="top-center" richColors />
         </ThemeProvider>
       </body>
     </html>

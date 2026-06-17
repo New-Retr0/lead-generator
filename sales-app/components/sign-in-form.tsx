@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Droplets } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -14,23 +14,11 @@ function friendlyAuthError(message: string): string {
   return message;
 }
 
-export function SignInForm() {
+export function SignInForm({ initialError = null }: { initialError?: string | null }) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("error") === "auth") {
-      const timeout = window.setTimeout(() => {
-        setError(
-          "That sign-in link expired or was opened in a different app. Request a new link and open it in your browser.",
-        );
-      }, 0);
-      return () => window.clearTimeout(timeout);
-    }
-  }, []);
 
   async function sendMagicLink(e: React.FormEvent) {
     e.preventDefault();
@@ -61,7 +49,7 @@ export function SignInForm() {
         </div>
         <div className="space-y-1">
           <CardTitle className="text-2xl tracking-tight">PALLARES Sales</CardTitle>
-          <CardDescription>
+          <CardDescription className="leading-relaxed">
             Registered reps only — enter your email and we&apos;ll send a sign-in link.
           </CardDescription>
         </div>
@@ -76,9 +64,9 @@ export function SignInForm() {
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
-              className="h-11"
+              className="h-12 sm:h-11"
             />
-            <Button type="submit" className="h-11 w-full" disabled={loading}>
+            <Button type="submit" className="h-12 w-full sm:h-11" disabled={loading}>
               {loading ? "Sending…" : "Send magic link"}
             </Button>
           </form>

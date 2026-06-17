@@ -10,6 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "@/components/ui/chart";
+import { useIsMobile } from "@/hooks/use-mobile";
 import type { CostDayRow } from "@/lib/types";
 import { formatUsd } from "@/lib/utils";
 
@@ -20,6 +21,8 @@ const PROVIDER_CHART_COLORS: Record<string, string> = {
 };
 
 export function CostsUsdChart({ data }: { data: CostDayRow[] }) {
+  const isMobile = useIsMobile();
+
   return (
     <ChartContainer
       config={{
@@ -31,7 +34,10 @@ export function CostsUsdChart({ data }: { data: CostDayRow[] }) {
         },
       }}
     >
-      <AreaChart data={data}>
+      <AreaChart
+        data={data}
+        margin={{ top: 8, right: isMobile ? 4 : 12, left: isMobile ? -24 : 0, bottom: 0 }}
+      >
         <defs>
           <linearGradient id="buFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--chart-3)" stopOpacity={0.35} />
@@ -47,10 +53,22 @@ export function CostsUsdChart({ data }: { data: CostDayRow[] }) {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-        <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-        <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+        <XAxis
+          dataKey="date"
+          tick={{ fontSize: isMobile ? 9 : 10 }}
+          tickFormatter={(v) => String(v).slice(5)}
+          tickLine={false}
+          axisLine={false}
+          interval={isMobile ? "preserveStartEnd" : 0}
+        />
+        <YAxis
+          tick={{ fontSize: isMobile ? 9 : 10 }}
+          tickLine={false}
+          axisLine={false}
+          width={isMobile ? 34 : 48}
+        />
         <Tooltip formatter={(v) => formatUsd(Number(v))} />
-        <Legend />
+        {isMobile ? null : <Legend />}
         <Area
           type="monotone"
           dataKey="browserUseUsd"

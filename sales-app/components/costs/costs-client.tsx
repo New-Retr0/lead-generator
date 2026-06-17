@@ -93,7 +93,7 @@ export function CostsClient({
     <div className="space-y-6">
       <PageHeader description="Spend across Firecrawl, Browser Use, AI Gateway, and Google Places — balances from the latest doctor/run snapshots.">
         <Tabs value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-          <TabsList>
+          <TabsList className="w-full justify-start sm:w-fit">
             {RANGES.map((r) => (
               <TabsTrigger key={r} value={String(r)}>
                 {r}d
@@ -159,7 +159,7 @@ export function CostsClient({
               {data?.balances.map((row) => (
                 <div
                   key={row.provider}
-                  className="flex items-center justify-between rounded-lg border bg-card px-4 py-3"
+                  className="flex flex-col gap-2 rounded-lg border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div>
                     <p className="text-sm font-medium">{formatProvider(row.provider)}</p>
@@ -169,7 +169,7 @@ export function CostsClient({
                         : "No snapshot date"}
                     </p>
                   </div>
-                  <div className="text-right">
+                  <div className="text-left sm:text-right">
                     <p className="text-lg font-bold tabular-nums">
                       {row.remaining != null
                         ? row.provider === "browser_use"
@@ -196,7 +196,7 @@ export function CostsClient({
             <CardTitle className="text-sm">USD per day by provider</CardTitle>
             <CardDescription>Stacked spend — Browser Use, AI Gateway, Places</CardDescription>
           </CardHeader>
-          <CardContent className="h-72">
+          <CardContent className="h-56 sm:h-72">
             <CostsUsdChart data={data?.byDay ?? []} />
           </CardContent>
         </Card>
@@ -206,7 +206,7 @@ export function CostsClient({
             <CardTitle className="text-sm">Firecrawl credits per day</CardTitle>
             <CardDescription>Firecrawl credits from single-pass lead runs</CardDescription>
           </CardHeader>
-          <CardContent className="h-72">
+          <CardContent className="h-56 sm:h-72">
             <CostsCreditsChart data={data?.byDay ?? []} />
           </CardContent>
         </Card>
@@ -222,7 +222,29 @@ export function CostsClient({
             {!data || data.byProvider.length === 0 ? (
               <p className="text-sm text-muted-foreground">No cost events in range.</p>
             ) : (
-              <Table>
+              <>
+                <div className="space-y-3 md:hidden">
+                  {data.byProvider.map((row) => (
+                    <div key={row.provider} className="rounded-lg border bg-card p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {formatProvider(row.provider)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">{row.count} calls</p>
+                        </div>
+                        <p className="shrink-0 font-semibold tabular-nums">
+                          {formatUsd(row.usd)}
+                        </p>
+                      </div>
+                      <p className="mt-2 text-xs tabular-nums text-muted-foreground">
+                        {formatCostUnits(row.provider, row.units, row.unitType)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Provider</TableHead>
@@ -248,7 +270,9 @@ export function CostsClient({
                     </TableRow>
                   ))}
                 </TableBody>
-              </Table>
+                  </Table>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -262,7 +286,32 @@ export function CostsClient({
             {!data || data.byOperation.length === 0 ? (
               <p className="text-sm text-muted-foreground">No operations in range.</p>
             ) : (
-              <Table>
+              <>
+                <div className="space-y-3 md:hidden">
+                  {data.byOperation.map((row) => (
+                    <div
+                      key={`${row.provider}-${row.operation}`}
+                      className="rounded-lg border bg-card p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{row.operation}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatProvider(row.provider)}
+                          </p>
+                        </div>
+                        <p className="shrink-0 font-semibold tabular-nums">
+                          {formatUsd(row.usd)}
+                        </p>
+                      </div>
+                      <p className="mt-2 text-xs tabular-nums text-muted-foreground">
+                        {row.count} calls
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Operation</TableHead>
@@ -287,7 +336,9 @@ export function CostsClient({
                     </TableRow>
                   ))}
                 </TableBody>
-              </Table>
+                  </Table>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>

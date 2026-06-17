@@ -8,7 +8,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <AppSidebar />
       <SidebarInset className="min-w-0 overflow-x-clip">
         <SiteHeader />
-        <main className="min-w-0 flex-1 px-4 py-6 md:px-8">
+        <main className="min-w-0 flex-1 px-3 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:px-4 sm:py-6 md:px-8">
           <div className="mx-auto w-full max-w-screen-2xl min-w-0">{children}</div>
         </main>
       </SidebarInset>

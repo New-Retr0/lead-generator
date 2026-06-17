@@ -549,7 +549,7 @@ function RunDetailContent({
 
   if (loading) {
     return (
-      <div className="space-y-4 p-6">
+      <div className="space-y-4 p-4 sm:p-6">
         <DialogTitle className="sr-only">Loading run details</DialogTitle>
         <DialogDescription className="sr-only">
           Fetching run progress and cost summary.
@@ -562,7 +562,7 @@ function RunDetailContent({
 
   if (!detail) {
     return (
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         <DialogTitle className="text-lg">Run not found</DialogTitle>
         <DialogDescription className="mt-2">
           No record for this run id in the database.
@@ -575,15 +575,17 @@ function RunDetailContent({
 
   return (
     <>
-      <div className="sticky top-0 z-10 border-b border-border bg-card px-6 py-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="sticky top-0 z-10 border-b border-border bg-card px-4 py-3 pr-12 sm:px-6 sm:py-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <RunStatusBadge status={detail.run.status} />
               <Badge variant="outline">{detail.run.run_type}</Badge>
               {running ? <LiveDot tone="warning" /> : null}
             </div>
-            <DialogTitle className="text-xl font-semibold leading-snug">{title}</DialogTitle>
+            <DialogTitle className="text-lg font-semibold leading-snug sm:text-xl">
+              {title}
+            </DialogTitle>
             <DialogDescription className="text-sm">
               Started {formatTs(detail.run.started_at)}
               {detail.run.finished_at
@@ -607,12 +609,14 @@ function RunDetailContent({
               )}
             </DialogDescription>
           </div>
-          <p className="font-mono text-[10px] text-muted-foreground">{detail.run.run_id}</p>
+          <p className="break-all font-mono text-[10px] text-muted-foreground">
+            {detail.run.run_id}
+          </p>
         </div>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-8 p-6">
+        <div className="space-y-6 p-4 sm:space-y-8 sm:p-6">
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               <SquareTerminal className="size-3.5" />
@@ -685,7 +689,7 @@ export function RunDetailModal({
     <Dialog open={Boolean(runId)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton
-        className="top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden border border-border bg-card p-0 shadow-lg sm:max-w-6xl"
+        className="top-0 flex h-svh w-full max-w-none translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden rounded-none border border-border bg-card p-0 shadow-lg sm:top-6 sm:h-[calc(100vh-3rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl sm:rounded-lg"
       >
         {runId ? (
           <RunDetailContent runId={runId} onRunFinished={onRunFinished} />

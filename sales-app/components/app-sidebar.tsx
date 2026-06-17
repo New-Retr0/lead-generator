@@ -21,6 +21,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { SignOutButton } from "@/components/sign-out-button";
 
@@ -45,6 +46,10 @@ const groups = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { isMobile, setOpenMobile } = useSidebar();
+  const closeMobileNav = () => {
+    if (isMobile) setOpenMobile(false);
+  };
 
   return (
     <Sidebar collapsible="icon" className="border-r border-border/40">
@@ -52,7 +57,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <Link href="/">
+              <Link href="/" onClick={closeMobileNav}>
                 <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-sidebar-primary to-[oklch(0.55_0.16_300)] text-sidebar-primary-foreground shadow-[0_4px_16px_-4px_oklch(0.58_0.18_262/0.7)]">
                   <Droplets className="size-4" />
                 </div>
@@ -83,7 +88,7 @@ export function AppSidebar() {
                       isActive={pathname === item.href}
                       tooltip={item.label}
                     >
-                      <Link href={item.href}>
+                      <Link href={item.href} onClick={closeMobileNav}>
                         <item.icon />
                         <span>{item.label}</span>
                       </Link>

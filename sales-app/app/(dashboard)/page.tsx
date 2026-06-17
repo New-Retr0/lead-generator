@@ -142,7 +142,7 @@ export default async function OverviewPage() {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Activity className="size-4 text-muted-foreground" />
@@ -157,7 +157,7 @@ export default async function OverviewPage() {
               </Link>
             </Button>
           </CardHeader>
-          <CardContent className="h-44">
+          <CardContent className="h-48 sm:h-44">
             <Suspense fallback={<Skeleton className="h-full w-full" />}>
               <SpendChartLazy data={costDays ?? []} />
             </Suspense>
@@ -201,7 +201,7 @@ export default async function OverviewPage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <div>
               <CardTitle className="text-sm">Recent runs</CardTitle>
               <CardDescription>Latest run activity</CardDescription>
@@ -220,7 +220,7 @@ export default async function OverviewPage() {
               runs.map((run) => (
                 <div
                   key={run.run_id}
-                  className="flex items-center gap-2.5 rounded-xl border border-border/50 bg-card/40 p-2.5 text-sm transition-colors hover:border-primary/30 hover:bg-accent/30"
+                  className="flex flex-col items-start gap-2.5 rounded-lg border border-border/50 bg-card/40 p-3 text-sm transition-colors hover:border-primary/30 hover:bg-accent/30 sm:flex-row sm:items-center sm:rounded-xl sm:p-2.5"
                 >
                   <RunStatusBadge status={run.status} />
                   <span className="min-w-0 flex-1 truncate font-medium">
@@ -229,7 +229,7 @@ export default async function OverviewPage() {
                       <span className="text-muted-foreground"> / {run.category_key}</span>
                     ) : null}
                   </span>
-                  <span className="text-xs tabular-nums text-muted-foreground">
+                  <span className="text-xs tabular-nums text-muted-foreground sm:shrink-0">
                     {run.enriched_count} completed
                   </span>
                 </div>
@@ -239,7 +239,7 @@ export default async function OverviewPage() {
         </Card>
 
         <Card>
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <div>
               <CardTitle className="text-sm">Recent requests</CardTitle>
               <CardDescription>Latest lead requests</CardDescription>
@@ -258,11 +258,11 @@ export default async function OverviewPage() {
               requests.map((req) => (
                 <div
                   key={req.request_id}
-                  className="flex items-center gap-2.5 rounded-xl border border-border/50 bg-card/40 p-2.5 text-sm transition-colors hover:border-primary/30 hover:bg-accent/30"
+                  className="flex flex-col items-start gap-2.5 rounded-lg border border-border/50 bg-card/40 p-3 text-sm transition-colors hover:border-primary/30 hover:bg-accent/30 sm:flex-row sm:items-center sm:rounded-xl sm:p-2.5"
                 >
                   <RunStatusBadge status={req.status} />
                   <span className="min-w-0 flex-1 truncate">{req.raw_prompt}</span>
-                  <span className="text-xs tabular-nums text-muted-foreground">
+                  <span className="text-xs tabular-nums text-muted-foreground sm:shrink-0">
                     {req.leads_delivered} delivered
                   </span>
                 </div>

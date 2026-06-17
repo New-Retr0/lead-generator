@@ -26,6 +26,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -74,8 +81,10 @@ function triageReason(lead: LeadRow): string {
 }
 
 function formatPhoneHref(phone: string): string {
-  const digits = phone.replace(/[^\d+]/g, "");
-  return `tel:${digits}`;
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length === 10) return `tel:+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `tel:+${digits}`;
+  return `tel:${digits || phone}`;
 }
 
 type LeadListRowProps = {
@@ -106,7 +115,7 @@ const LeadListRow = memo(function LeadListRow({
   return (
     <div
       className={cn(
-        "grid gap-3 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[2rem_minmax(18rem,1.7fr)_12.5rem_minmax(12rem,auto)_10rem_4rem] md:items-center",
+        "grid gap-3 rounded-lg border border-border bg-card px-3 py-3 shadow-sm md:grid-cols-[2rem_minmax(18rem,1.7fr)_12.5rem_minmax(12rem,auto)_10rem_4rem] md:items-center md:rounded-none md:border-x-0 md:border-t-0 md:bg-transparent md:px-4 md:shadow-none md:last:border-b-0",
         selected && "bg-primary/5",
         lead.addressed && "opacity-70",
       )}
@@ -146,7 +155,7 @@ const LeadListRow = memo(function LeadListRow({
         {lead.phone ? (
           <a
             href={formatPhoneHref(lead.phone)}
-            className="inline-flex min-h-8 w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 font-mono text-sm tabular-nums text-foreground hover:border-primary/40 hover:bg-accent"
+            className="inline-flex min-h-10 w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 font-mono text-sm tabular-nums text-foreground hover:border-primary/40 hover:bg-accent md:min-h-8"
           >
             <Phone className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate">{lead.phone}</span>
@@ -155,7 +164,7 @@ const LeadListRow = memo(function LeadListRow({
           <button
             type="button"
             onClick={() => onOpenDetail(lead.place_id)}
-            className="inline-flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border px-2.5 text-sm text-muted-foreground"
+            className="inline-flex min-h-10 w-full items-center gap-2 rounded-md border border-dashed border-border px-2.5 text-sm text-muted-foreground md:min-h-8"
           >
             <Phone className="size-3.5" />
             No phone
@@ -239,6 +248,7 @@ export function WorkspaceClient({
   const [detailId, setDetailId] = useState<string | null>(initialPlaceId ?? null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkStatus, setBulkStatus] = useState<CrmStatus>("Contacted");
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const categoryLabelMap = useMemo(
     () => new Map(config.categories.map((c) => [c.key, c.label])),
@@ -299,6 +309,14 @@ export function WorkspaceClient({
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
   const hasSelection = selected.size > 0;
+  const activeFilterCount = [
+    market !== ALL,
+    category !== ALL,
+    salesStatus !== ALL,
+    crmStatus !== ALL,
+    minScore > 0,
+    hideDone,
+  ].filter(Boolean).length;
 
   const patchLead = useCallback(
     async (placeId: string, body: { status?: CrmStatus; addressed?: boolean }) => {
@@ -357,6 +375,104 @@ export function WorkspaceClient({
     setDetailId(placeId);
   }, []);
 
+  const resetFilters = useCallback(() => {
+    setMarket(ALL);
+    setCategory(ALL);
+    setSalesStatus(ALL);
+    setCrmStatus(ALL);
+    setMinScore(0);
+    setHideDone(false);
+  }, []);
+
+  const renderFilterControls = (idPrefix: string) => (
+    <>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">Market</Label>
+        <Select value={market} onValueChange={setMarket}>
+          <SelectTrigger className="w-full md:w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All markets</SelectItem>
+            {config.markets.map((m) => (
+              <SelectItem key={m.key} value={m.key}>
+                {m.city}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">Category</Label>
+        <Select value={category} onValueChange={setCategory}>
+          <SelectTrigger className="w-full md:w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All categories</SelectItem>
+            {config.categories.map((c) => (
+              <SelectItem key={c.key} value={c.key}>
+                {c.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">Sales status</Label>
+        <Select value={salesStatus} onValueChange={setSalesStatus}>
+          <SelectTrigger className="w-full md:w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All</SelectItem>
+            <SelectItem value="Ready to call">Ready to call</SelectItem>
+            <SelectItem value="Needs research">Needs research</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">CRM status</Label>
+        <Select value={crmStatus} onValueChange={setCrmStatus}>
+          <SelectTrigger className="w-full md:w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All statuses</SelectItem>
+            {CRM_STATUSES.map((s) => (
+              <SelectItem key={s} value={s}>
+                {s}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5 md:w-44">
+        <Label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <SlidersHorizontal className="size-3" />
+          Min score: <span className="font-semibold tabular-nums">{minScore}</span>
+        </Label>
+        <Slider
+          min={0}
+          max={100}
+          step={5}
+          value={[minScore]}
+          onValueChange={([v]) => setMinScore(v)}
+        />
+      </div>
+      <div className="flex items-center gap-2 pb-0.5">
+        <Switch
+          id={`${idPrefix}-hide-done`}
+          checked={hideDone}
+          onCheckedChange={setHideDone}
+        />
+        <Label htmlFor={`${idPrefix}-hide-done`} className="text-xs text-muted-foreground">
+          Hide done
+        </Label>
+      </div>
+    </>
+  );
+
   const bulkSetStatus = async () => {
     const ids = [...selected];
     if (ids.length === 0) return;
@@ -382,11 +498,11 @@ export function WorkspaceClient({
   };
 
   return (
-    <div className="space-y-6">
+    <div className={cn("space-y-6", hasSelection && "pb-40 md:pb-0")}>
       <PageHeader description="Work callable leads in one place: filter, triage, set CRM status, and mark done as you go." />
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as WorkspaceTab)}>
-        <TabsList className="flex h-auto flex-wrap">
+        <TabsList className="w-full justify-start sm:w-fit">
           <TabsTrigger value="all">All ({tabCounts.all})</TabsTrigger>
           <TabsTrigger value="client">Clients ({tabCounts.client})</TabsTrigger>
           <TabsTrigger value="vendor">Vendors ({tabCounts.vendor})</TabsTrigger>
@@ -394,7 +510,35 @@ export function WorkspaceClient({
         </TabsList>
       </Tabs>
 
-      <Card className="sticky top-14 z-10">
+      <Card className="sticky top-14 z-10 md:hidden">
+        <CardContent className="flex items-center gap-2 py-3">
+          <div className="relative min-w-0 flex-1">
+            <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="h-11 pl-8"
+              placeholder="Search leads..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11 shrink-0 gap-1.5 px-3"
+            onClick={() => setFiltersOpen(true)}
+          >
+            <SlidersHorizontal className="size-4" />
+            <span className="sr-only">Open filters</span>
+            {activeFilterCount > 0 ? (
+              <Badge variant="secondary" className="h-5 min-w-5 px-1 text-[10px]">
+                {activeFilterCount}
+              </Badge>
+            ) : null}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="sticky top-14 z-10 hidden md:block">
         <CardContent className="flex flex-wrap items-end gap-4 py-5">
           <div className="relative min-w-56 flex-1">
             <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -405,88 +549,37 @@ export function WorkspaceClient({
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Market</Label>
-            <Select value={market} onValueChange={setMarket}>
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All markets</SelectItem>
-                {config.markets.map((m) => (
-                  <SelectItem key={m.key} value={m.key}>
-                    {m.city}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Category</Label>
-            <Select value={category} onValueChange={setCategory}>
-              <SelectTrigger className="w-56">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All categories</SelectItem>
-                {config.categories.map((c) => (
-                  <SelectItem key={c.key} value={c.key}>
-                    {c.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Sales status</Label>
-            <Select value={salesStatus} onValueChange={setSalesStatus}>
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All</SelectItem>
-                <SelectItem value="Ready to call">Ready to call</SelectItem>
-                <SelectItem value="Needs research">Needs research</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">CRM status</Label>
-            <Select value={crmStatus} onValueChange={setCrmStatus}>
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All statuses</SelectItem>
-                {CRM_STATUSES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="w-44 space-y-1.5">
-            <Label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <SlidersHorizontal className="size-3" />
-              Min score: <span className="font-semibold tabular-nums">{minScore}</span>
-            </Label>
-            <Slider
-              min={0}
-              max={100}
-              step={5}
-              value={[minScore]}
-              onValueChange={([v]) => setMinScore(v)}
-            />
-          </div>
-          <div className="flex items-center gap-2 pb-0.5">
-            <Switch id="hide-done" checked={hideDone} onCheckedChange={setHideDone} />
-            <Label htmlFor="hide-done" className="text-xs text-muted-foreground">
-              Hide done
-            </Label>
-          </div>
+          {renderFilterControls("desktop")}
+          {activeFilterCount > 0 ? (
+            <Button type="button" variant="ghost" size="sm" onClick={resetFilters}>
+              Reset
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
+
+      <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+        <SheetContent
+          side="bottom"
+          className="max-h-[85svh] overflow-y-auto rounded-t-xl p-0"
+        >
+          <SheetHeader className="border-b border-border px-4 py-3 text-left">
+            <SheetTitle>Filters</SheetTitle>
+            <SheetDescription>
+              Narrow the lead list without losing your current search.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="grid gap-4 px-4 py-4">{renderFilterControls("mobile")}</div>
+          <div className="sticky bottom-0 grid grid-cols-2 gap-2 border-t border-border bg-card/95 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] backdrop-blur">
+            <Button type="button" variant="outline" className="h-11" onClick={resetFilters}>
+              Reset
+            </Button>
+            <Button type="button" className="h-11" onClick={() => setFiltersOpen(false)}>
+              Apply
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <Card className="overflow-hidden py-0">
         <CardHeader className="gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
@@ -504,7 +597,7 @@ export function WorkspaceClient({
             </div>
           </div>
 
-          <div className="flex min-h-9 flex-wrap items-center gap-2">
+          <div className="hidden min-h-9 flex-wrap items-center gap-2 md:flex">
             <span
               className={cn(
                 "min-w-24 text-sm font-medium",
@@ -576,7 +669,7 @@ export function WorkspaceClient({
           <span className="text-center">Done</span>
         </div>
 
-        <div>
+        <div className="space-y-3 p-3 md:space-y-0 md:p-0">
           {filtered.length === 0 ? (
             <div className="px-4 py-16 text-center text-sm text-muted-foreground">
               No leads match these filters.
@@ -603,6 +696,59 @@ export function WorkspaceClient({
           )}
         </div>
       </Card>
+
+      {hasSelection ? (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card/95 px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-10px_30px_rgba(15,23,42,0.16)] backdrop-blur md:hidden">
+          <div className="mx-auto max-w-md space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-semibold">{selected.size} selected</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 px-2"
+                onClick={() => setSelected(new Set())}
+              >
+                <X className="size-4" />
+                Clear
+              </Button>
+            </div>
+            <div className="grid gap-2">
+              <Select value={bulkStatus} onValueChange={(v) => setBulkStatus(v as CrmStatus)}>
+                <SelectTrigger className="h-11 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CRM_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="grid grid-cols-3 gap-2">
+                <Button className="h-11" onClick={() => void bulkSetStatus()}>
+                  Set
+                </Button>
+                <Button
+                  className="h-11"
+                  variant="secondary"
+                  onClick={() => void bulkSetDone(true)}
+                >
+                  Done
+                </Button>
+                <Button
+                  className="h-11"
+                  variant="outline"
+                  onClick={() => void bulkSetDone(false)}
+                >
+                  Undo
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <LeadDetailModal placeId={detailId} onClose={() => setDetailId(null)} />
     </div>

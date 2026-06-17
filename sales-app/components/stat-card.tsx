@@ -63,7 +63,7 @@ export function StatCard({
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
               {label}
             </p>
-            <p className="mt-2 text-[2rem] font-bold leading-none tabular-nums tracking-tight">
+            <p className="mt-2 text-3xl font-bold leading-none tabular-nums tracking-tight sm:text-[2rem]">
               <AnimatedNumber value={value} format={format} />
             </p>
             {sub ? <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{sub}</p> : null}
