@@ -28,7 +28,7 @@ export default async function SignInPage({
     <div className="flex min-h-svh flex-col items-center justify-center px-4 py-[calc(2rem+env(safe-area-inset-top))] pb-[calc(2rem+env(safe-area-inset-bottom))]">
       <SignInForm initialError={initialError} />
       <p className="mt-8 text-center text-xs text-muted-foreground">
-        Admin-provisioned accounts only · Central Valley exterior cleaning leads
+        Admin-provisioned access only · PALLARES lead-generation console
       </p>
     </div>
   );

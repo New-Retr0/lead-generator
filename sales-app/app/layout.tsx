@@ -16,10 +16,10 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "PALLARES Sales",
-    template: "%s · PALLARES Sales",
+    default: "PALLARES Developer Console",
+    template: "%s · PALLARES Developer Console",
   },
-  description: "Sales CRM for PALLARES commercial exterior cleaning leads",
+  description: "Developer command console for PALLARES lead-generation workflows",
 };
 
 export default function RootLayout({

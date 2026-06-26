@@ -109,7 +109,7 @@ export default async function OverviewPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader description="PALLARES sales CRM — Central Valley exterior cleaning." />
+      <PageHeader description="Developer command console for lead generation, partner sync, costs, runs, and pipeline health." />
 
       {error ? (
         <Card>

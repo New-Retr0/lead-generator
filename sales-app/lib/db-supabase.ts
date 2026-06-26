@@ -22,6 +22,7 @@ import type {
   LeadDetail,
   LeadRow,
   OverviewStats,
+  PipelineJob,
   ProviderBalance,
   RelatedLead,
   RequestRow,
@@ -416,6 +417,40 @@ export async function listRequests(limit = 50): Promise<RequestRow[]> {
     credits_spent: Number(row.credits_spent),
     usd_spent: row.usd_spent != null ? Number(row.usd_spent) : null,
     spec: parseSpecJson(row.spec_json),
+  }));
+}
+
+function parseObject(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return {};
+}
+
+export async function listPipelineJobs(limit = 25): Promise<PipelineJob[]> {
+  const client = await supabase();
+  const { data, error } = await client
+    .from("pipeline_jobs")
+    .select(
+      "id, kind, payload, status, attempts, max_attempts, command, error, created_at, updated_at, started_at, finished_at",
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  throwOnError(error, "pipeline_jobs");
+
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    kind: row.kind as PipelineJob["kind"],
+    payload: parseObject(row.payload),
+    status: row.status as PipelineJob["status"],
+    attempts: Number(row.attempts ?? 0),
+    max_attempts: Number(row.max_attempts ?? 0),
+    command: (row.command as string | null) ?? null,
+    error: (row.error as string | null) ?? null,
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at),
+    started_at: toIsoOrNull(row.started_at),
+    finished_at: toIsoOrNull(row.finished_at),
   }));
 }
 

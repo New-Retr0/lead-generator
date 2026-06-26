@@ -1,0 +1,516 @@
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const API_VERSION = "v1";
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 500;
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-api-key, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+};
+
+type PartnerKey = {
+  id: string;
+  key_hash: string;
+  partner_name: string;
+  scopes: string[];
+  rate_limit_per_minute: number;
+  daily_row_limit: number;
+};
+
+type PartnerLeadRow = {
+  lead_id: string;
+  place_id: string;
+  lead_type: "client" | "vendor";
+  business_name: string;
+  category_key: string | null;
+  market_key: string | null;
+  city: string | null;
+  state: string | null;
+  address: string | null;
+  website: string | null;
+  google_maps_url: string | null;
+  primary_phone: string | null;
+  best_contact_name: string | null;
+  best_contact_role: string | null;
+  best_contact_type: string | null;
+  best_contact_email_or_form: string | null;
+  lead_score: number | null;
+  confidence: string | null;
+  verification_level: string | null;
+  why_good_fit: string | null;
+  why_now: string | null;
+  need_signals: unknown;
+  talking_points: unknown;
+  last_enriched_at: string | null;
+  updated_at: string;
+  site_contacts: unknown;
+  evidence_urls: unknown;
+  enriched_facts: unknown;
+  score_breakdown: unknown;
+  latitude: number | null;
+  longitude: number | null;
+  notes: string | null;
+};
+
+const supabase = createClient(
+  Deno.env.get("SUPABASE_URL") ?? "",
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+  {
+    auth: { persistSession: false },
+  },
+);
+
+function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      ...extraHeaders,
+      "Content-Type": "application/json",
+      "Cache-Control": "private, no-store",
+    },
+  });
+}
+
+function error(code: string, message: string, status: number, retryAfter?: number) {
+  const headers = retryAfter ? { "Retry-After": String(retryAfter) } : {};
+  return json({ error: { code, message } }, status, headers);
+}
+
+function extractApiKey(req: Request): string | null {
+  const xApiKey = req.headers.get("x-api-key")?.trim();
+  if (xApiKey) return xApiKey;
+  const auth = req.headers.get("authorization")?.trim();
+  if (!auth) return null;
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const data = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+async function authenticate(req: Request): Promise<PartnerKey | Response> {
+  const apiKey = extractApiKey(req);
+  if (!apiKey) return error("missing_api_key", "Provide a partner API key.", 401);
+
+  const keyPrefix = apiKey.slice(0, 16);
+  const keyHash = await sha256Hex(apiKey);
+  const nowIso = new Date().toISOString();
+
+  const { data, error: keyError } = await supabase
+    .from("partner_api_keys")
+    .select(
+      "id, key_hash, partner_name, scopes, rate_limit_per_minute, daily_row_limit, expires_at",
+    )
+    .eq("key_prefix", keyPrefix)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (keyError) return error("auth_lookup_failed", keyError.message, 500);
+  if (!data || !timingSafeEqual(String(data.key_hash), keyHash)) {
+    return error("invalid_api_key", "The partner API key is invalid.", 401);
+  }
+  if (data.expires_at && String(data.expires_at) <= nowIso) {
+    return error("expired_api_key", "The partner API key has expired.", 401);
+  }
+
+  return {
+    id: String(data.id),
+    key_hash: String(data.key_hash),
+    partner_name: String(data.partner_name),
+    scopes: Array.isArray(data.scopes) ? data.scopes.map(String) : [],
+    rate_limit_per_minute: Number(data.rate_limit_per_minute ?? 60),
+    daily_row_limit: Number(data.daily_row_limit ?? 10000),
+  };
+}
+
+async function checkRateLimit(key: PartnerKey, requestedRows = 0): Promise<Response | null> {
+  const minuteAgo = new Date(Date.now() - 60_000).toISOString();
+  const { count, error: countError } = await supabase
+    .from("partner_api_requests")
+    .select("id", { count: "exact", head: true })
+    .eq("key_id", key.id)
+    .gte("created_at", minuteAgo);
+
+  if (countError) return error("rate_limit_lookup_failed", countError.message, 500);
+  if ((count ?? 0) >= key.rate_limit_per_minute) {
+    return error("rate_limited", "Too many requests. Try again shortly.", 429, 60);
+  }
+
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const { data, error: rowsError } = await supabase
+    .from("partner_api_requests")
+    .select("row_count")
+    .eq("key_id", key.id)
+    .gte("created_at", dayStart.toISOString());
+
+  if (rowsError) return error("daily_limit_lookup_failed", rowsError.message, 500);
+  const rowsToday = (data ?? []).reduce((sum, row) => sum + Number(row.row_count ?? 0), 0);
+  if (rowsToday + requestedRows > key.daily_row_limit) {
+    return error("daily_row_limit_exceeded", "Daily lead row limit exceeded.", 429, 3600);
+  }
+  return null;
+}
+
+async function logRequest(
+  req: Request,
+  key: PartnerKey | null,
+  endpoint: string,
+  statusCode: number,
+  rowCount: number,
+  durationMs: number,
+  errorCode?: string,
+) {
+  await supabase.from("partner_api_requests").insert({
+    key_id: key?.id ?? null,
+    endpoint,
+    method: req.method,
+    status_code: statusCode,
+    row_count: rowCount,
+    duration_ms: durationMs,
+    error_code: errorCode ?? null,
+    remote_addr:
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      req.headers.get("cf-connecting-ip"),
+    user_agent: req.headers.get("user-agent"),
+  });
+  if (key) {
+    await supabase
+      .from("partner_api_keys")
+      .update({ last_used_at: new Date().toISOString() })
+      .eq("id", key.id);
+  }
+}
+
+function categoryLabel(categoryKey: string | null): string | null {
+  if (!categoryKey) return null;
+  return categoryKey
+    .replace(/^vendor_/, "Vendor: ")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value !== "string") return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+    } catch {
+      return trimmed
+        .slice(1, -1)
+        .split(/['"],\s*['"]/)
+        .map((part) => part.replace(/^\s*['"]+|['"]+\s*$/g, "").trim())
+        .filter(Boolean);
+    }
+  }
+  return trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function groupedFacts(value: unknown): Record<string, unknown[]> {
+  const groups: Record<string, unknown[]> = {
+    phone: [],
+    person: [],
+    email: [],
+    social: [],
+    insurance: [],
+    other: [],
+  };
+  if (!Array.isArray(value)) return groups;
+  for (const rawFact of value) {
+    if (!rawFact || typeof rawFact !== "object") continue;
+    const fact = rawFact as Record<string, unknown>;
+    const kind = String(fact.fact_kind ?? "other").toLowerCase();
+    const bucket =
+      kind.includes("phone")
+        ? "phone"
+        : kind.includes("person") || kind.includes("owner")
+          ? "person"
+          : kind.includes("email")
+            ? "email"
+            : kind.includes("social")
+              ? "social"
+              : kind.includes("insurance")
+                ? "insurance"
+                : "other";
+    groups[bucket].push({
+      kind: fact.fact_kind,
+      value: fact.value ?? fact.value_json ?? null,
+      source_kind: fact.source_kind,
+      source_url: fact.source_url,
+      method: fact.method,
+      verification: fact.verification,
+      observed_at: fact.observed_at,
+    });
+  }
+  return groups;
+}
+
+function toListLead(row: PartnerLeadRow) {
+  return {
+    lead_id: row.lead_id,
+    place_id: row.place_id,
+    lead_type: row.lead_type,
+    business_name: row.business_name,
+    category_key: row.category_key,
+    category_label: categoryLabel(row.category_key),
+    market_key: row.market_key,
+    city: row.city,
+    state: row.state,
+    address: row.address,
+    website: row.website,
+    google_maps_url: row.google_maps_url,
+    primary_phone: row.primary_phone,
+    best_contact: {
+      name: row.best_contact_name,
+      role: row.best_contact_role,
+      type: row.best_contact_type,
+      email_or_form: row.best_contact_email_or_form,
+    },
+    lead_score: row.lead_score,
+    confidence: row.confidence,
+    verification_level: row.verification_level,
+    why_good_fit: row.why_good_fit,
+    why_now: row.why_now,
+    need_signals: normalizeList(row.need_signals),
+    talking_points: normalizeList(row.talking_points),
+    last_enriched_at: row.last_enriched_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function toDetailLead(row: PartnerLeadRow) {
+  return {
+    ...toListLead(row),
+    site_contacts: Array.isArray(row.site_contacts) ? row.site_contacts : [],
+    evidence_urls: Array.isArray(row.evidence_urls) ? row.evidence_urls : [],
+    fact_summaries: groupedFacts(row.enriched_facts),
+    score_breakdown:
+      row.score_breakdown && typeof row.score_breakdown === "object"
+        ? row.score_breakdown
+        : {},
+    coordinates: {
+      latitude: row.latitude,
+      longitude: row.longitude,
+    },
+    notes: row.notes,
+  };
+}
+
+function encodeCursor(row: PartnerLeadRow): string {
+  const payload = JSON.stringify({ updated_at: row.updated_at, place_id: row.place_id });
+  return btoa(payload).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeCursor(cursor: string): { updated_at: string; place_id: string } | null {
+  try {
+    const padded = cursor.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+      Math.ceil(cursor.length / 4) * 4,
+      "=",
+    );
+    const parsed = JSON.parse(atob(padded)) as Record<string, unknown>;
+    if (typeof parsed.updated_at !== "string" || typeof parsed.place_id !== "string") {
+      return null;
+    }
+    return { updated_at: parsed.updated_at, place_id: parsed.place_id };
+  } catch {
+    return null;
+  }
+}
+
+async function handleMetadata() {
+  const { data, error: queryError } = await supabase
+    .from("partner_leads_v1")
+    .select("lead_type, category_key, market_key");
+  if (queryError) return error("metadata_query_failed", queryError.message, 500);
+
+  const categories = new Map<string, { key: string; label: string | null }>();
+  const markets = new Set<string>();
+  for (const row of data ?? []) {
+    if (row.category_key) {
+      categories.set(String(row.category_key), {
+        key: String(row.category_key),
+        label: categoryLabel(String(row.category_key)),
+      });
+    }
+    if (row.market_key) markets.add(String(row.market_key));
+  }
+
+  return json({
+    api_version: API_VERSION,
+    schema_version: "partner-leads-v1",
+    lead_types: ["client", "vendor", "all"],
+    max_limit: MAX_LIMIT,
+    cursor: {
+      sort: ["updated_at", "place_id"],
+      mode: "forward-only",
+    },
+    categories: [...categories.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    markets: [...markets].sort(),
+  });
+}
+
+async function handleList(url: URL, key: PartnerKey) {
+  const limitParam = Number(url.searchParams.get("limit") ?? DEFAULT_LIMIT);
+  const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : DEFAULT_LIMIT, 1), MAX_LIMIT);
+  const type = url.searchParams.get("type") ?? "client";
+  const cursorParam = url.searchParams.get("cursor");
+  const updatedSince = url.searchParams.get("updated_since");
+  const cursor = cursorParam ? decodeCursor(cursorParam) : null;
+
+  if (!["client", "vendor", "all"].includes(type)) {
+    return error("invalid_type", "type must be client, vendor, or all.", 400);
+  }
+  if (cursorParam && !cursor) return error("invalid_cursor", "Cursor is malformed.", 400);
+
+  const limited = await checkRateLimit(key, limit);
+  if (limited) return limited;
+
+  let query = supabase
+    .from("partner_leads_v1")
+    .select("*")
+    .order("updated_at", { ascending: true })
+    .order("place_id", { ascending: true })
+    .limit(limit + 1);
+
+  if (type !== "all") query = query.eq("lead_type", type);
+  if (cursor) {
+    query = query.or(
+      `updated_at.gt.${cursor.updated_at},and(updated_at.eq.${cursor.updated_at},place_id.gt.${cursor.place_id})`,
+    );
+  } else if (updatedSince) {
+    query = query.gte("updated_at", updatedSince);
+  }
+
+  const { data, error: queryError } = await query;
+  if (queryError) return error("leads_query_failed", queryError.message, 500);
+
+  const rows = (data ?? []) as PartnerLeadRow[];
+  const pageRows = rows.slice(0, limit);
+  const hasMore = rows.length > limit;
+  const nextCursor = hasMore && pageRows.length > 0 ? encodeCursor(pageRows[pageRows.length - 1]) : null;
+
+  return json({
+    data: pageRows.map(toListLead),
+    page: {
+      limit,
+      next_cursor: nextCursor,
+      has_more: hasMore,
+    },
+    meta: {
+      api_version: API_VERSION,
+      generated_at: new Date().toISOString(),
+      filters: { type, updated_since: updatedSince },
+    },
+  });
+}
+
+async function handleDetail(placeId: string, key: PartnerKey) {
+  const limited = await checkRateLimit(key, 1);
+  if (limited) return limited;
+
+  const { data, error: queryError } = await supabase
+    .from("partner_leads_v1")
+    .select("*")
+    .eq("place_id", decodeURIComponent(placeId))
+    .maybeSingle();
+
+  if (queryError) return error("lead_query_failed", queryError.message, 500);
+  if (!data) return error("not_found", "Lead not found or not eligible for partner sync.", 404);
+
+  return json({
+    data: toDetailLead(data as PartnerLeadRow),
+    meta: {
+      api_version: API_VERSION,
+      generated_at: new Date().toISOString(),
+    },
+  });
+}
+
+Deno.serve(async (req: Request) => {
+  const started = Date.now();
+  const url = new URL(req.url);
+  const parts = url.pathname.split("/").filter(Boolean);
+  const versionIndex = parts.lastIndexOf(API_VERSION);
+  const route = versionIndex >= 0 ? parts.slice(versionIndex + 1) : parts.slice(1);
+  const endpoint = `/${API_VERSION}/${route.join("/")}`;
+
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+  if (req.method !== "GET") {
+    return error("method_not_allowed", "Only GET is supported.", 405);
+  }
+  if (route[0] === "health") {
+    return json({
+      ok: true,
+      api_version: API_VERSION,
+      generated_at: new Date().toISOString(),
+    });
+  }
+
+  let key: PartnerKey | null = null;
+  let response: Response;
+  let rowCount = 0;
+  let errorCode: string | undefined;
+
+  const authResult = await authenticate(req);
+  if (authResult instanceof Response) {
+    response = authResult;
+    errorCode = "auth_failed";
+  } else {
+    key = authResult;
+    if (!key.scopes.includes("leads:read")) {
+      response = error("missing_scope", "This key cannot read leads.", 403);
+      errorCode = "missing_scope";
+    } else if (route[0] === "metadata") {
+      response = await handleMetadata();
+    } else if (route[0] === "leads" && route.length === 1) {
+      response = await handleList(url, key);
+    } else if (route[0] === "leads" && route[1]) {
+      response = await handleDetail(route[1], key);
+    } else {
+      response = error("not_found", "Unknown partner API endpoint.", 404);
+      errorCode = "not_found";
+    }
+  }
+
+  try {
+    const cloned = response.clone();
+    const body = await cloned.json().catch(() => null) as { data?: unknown; error?: { code?: string } } | null;
+    if (Array.isArray(body?.data)) rowCount = body.data.length;
+    else if (body?.data) rowCount = 1;
+    if (!errorCode && body?.error?.code) errorCode = body.error.code;
+  } catch {
+    // best-effort logging only
+  }
+
+  await logRequest(req, key, endpoint, response.status, rowCount, Date.now() - started, errorCode)
+    .catch((logError) => console.error("partner-api audit log failed", logError));
+
+  return response;
+});

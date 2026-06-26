@@ -48,9 +48,9 @@ export function SignInForm({ initialError = null }: { initialError?: string | nu
           <Droplets className="size-6" />
         </div>
         <div className="space-y-1">
-          <CardTitle className="text-2xl tracking-tight">PALLARES Sales</CardTitle>
+          <CardTitle className="text-2xl tracking-tight">PALLARES Console</CardTitle>
           <CardDescription className="leading-relaxed">
-            Registered reps only — enter your email and we&apos;ll send a sign-in link.
+            Private developer access — enter your email and we&apos;ll send a sign-in link.
           </CardDescription>
         </div>
       </CardHeader>

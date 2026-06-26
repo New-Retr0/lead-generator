@@ -499,7 +499,9 @@ export function WorkspaceClient({
 
   return (
     <div className={cn("space-y-6", hasSelection && "pb-40 md:pb-0")}>
-      <PageHeader description="Work callable leads in one place: filter, triage, set CRM status, and mark done as you go." />
+      <PageHeader description="Deprecated CRM retained for developer-only review, triage, and borrowing workflows if needed.">
+        <Badge variant="secondary">Deprecated CRM</Badge>
+      </PageHeader>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as WorkspaceTab)}>
         <TabsList className="w-full justify-start sm:w-fit">

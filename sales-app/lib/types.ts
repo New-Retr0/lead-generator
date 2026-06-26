@@ -297,6 +297,24 @@ export type RequestRow = {
   spec: Record<string, unknown>;
 };
 
+export type PipelineJobKind = "doctor" | "run" | "run_campaign" | "request";
+export type PipelineJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export type PipelineJob = {
+  id: string;
+  kind: PipelineJobKind;
+  payload: Record<string, unknown>;
+  status: PipelineJobStatus;
+  attempts: number;
+  max_attempts: number;
+  command: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 export type JobStatus =
   | "pending"
   | "running"

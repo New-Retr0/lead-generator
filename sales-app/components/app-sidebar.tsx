@@ -6,7 +6,9 @@ import {
   ContactRound,
   Droplets,
   LayoutDashboard,
+  ListChecks,
   MessageSquareText,
+  ScrollText,
   PlayCircle,
   Receipt,
 } from "lucide-react";
@@ -27,20 +29,24 @@ import { SignOutButton } from "@/components/sign-out-button";
 
 const groups = [
   {
-    label: "Pipeline",
+    label: "Command",
     items: [
       { href: "/", label: "Overview", icon: LayoutDashboard },
+      { href: "/jobs", label: "Jobs", icon: ListChecks },
       { href: "/requests", label: "Lead Requests", icon: MessageSquareText },
       { href: "/runs", label: "Runs", icon: PlayCircle },
     ],
   },
   {
-    label: "Sales",
-    items: [{ href: "/workspace", label: "Workspace", icon: ContactRound }],
+    label: "Operations",
+    items: [
+      { href: "/costs", label: "Costs", icon: Receipt },
+      { href: "/partner-api", label: "Partner API", icon: ScrollText },
+    ],
   },
   {
-    label: "Operations",
-    items: [{ href: "/costs", label: "Costs", icon: Receipt }],
+    label: "Deprecated",
+    items: [{ href: "/workspace", label: "Deprecated CRM", icon: ContactRound }],
   },
 ];
 
@@ -66,7 +72,7 @@ export function AppSidebar() {
                     PALLARES
                   </span>
                   <span className="truncate text-xs text-sidebar-foreground/60">
-                    Sales CRM
+                    Developer Console
                   </span>
                 </div>
               </Link>
@@ -108,7 +114,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
         <p className="truncate px-2 pb-1 text-[10px] uppercase tracking-widest text-sidebar-foreground/40 group-data-[collapsible=icon]:hidden">
-          Central Valley · CA
+          Private command console
         </p>
       </SidebarFooter>
     </Sidebar>

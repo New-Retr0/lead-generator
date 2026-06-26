@@ -1,0 +1,2 @@
+-- Reconciliation marker for a remote migration history row.
+-- Supabase migration history for this version has no stored statements.

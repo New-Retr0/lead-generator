@@ -9,19 +9,21 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 
 const titles: Record<string, string> = {
   "/": "Overview",
+  "/jobs": "Jobs",
   "/requests": "Lead Requests",
   "/runs": "Runs",
-  "/workspace": "Workspace",
-  "/crm": "Workspace",
-  "/leads": "Workspace",
-  "/triage": "Workspace",
-  "/duds": "Workspace",
+  "/workspace": "Deprecated CRM",
+  "/crm": "Deprecated CRM",
+  "/leads": "Deprecated CRM",
+  "/triage": "Deprecated CRM",
+  "/duds": "Deprecated CRM",
   "/costs": "Costs",
+  "/partner-api": "Partner API",
 };
 
 export function SiteHeader() {
   const pathname = usePathname();
-  const title = titles[pathname] ?? "PALLARES Leads";
+  const title = titles[pathname] ?? "PALLARES Console";
   const { theme, setTheme } = useTheme();
 
   return (
@@ -38,7 +40,7 @@ export function SiteHeader() {
             />
             <span className="relative inline-flex size-1.5 rounded-full bg-success" />
           </span>
-          Lead engine
+          Console
         </span>
         <Button
           type="button"

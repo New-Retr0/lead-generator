@@ -12,7 +12,6 @@ from pallares_leads.db.store import LeadStore
 from pallares_leads.discover.mgmt_directory import harvest_management_directory
 from pallares_leads.discover.places import PlacesClient
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
-from pallares_leads.pipeline.export_csv import load_enriched_from_csv
 from pallares_leads.pipeline.run_campaign import DEFAULT_CAMPAIGN, run_campaign
 from pallares_leads.pipeline.run_market import run_market_category
 from pallares_leads.request.fulfill import fulfill_request
@@ -371,7 +370,6 @@ def cmd_warm_portals(args: argparse.Namespace) -> int:
 
 
 def cmd_db_status(args: argparse.Namespace) -> int:
-    settings = get_settings()
     with LeadStore() as store:
         print(f"Database: {store.db_path}")
         print(f"  Total leads:    {store.count_leads()}")
@@ -424,7 +422,6 @@ def cmd_db_import(args: argparse.Namespace) -> int:
 
 
 def cmd_db_profiles(args: argparse.Namespace) -> int:
-    settings = get_settings()
     with LeadStore() as store:
         profiles = store.list_profiles(limit=args.limit)
         print(f"Enrichment profiles: {store.count_profiles()} total\n")
@@ -439,7 +436,6 @@ def cmd_db_profiles(args: argparse.Namespace) -> int:
 
 
 def cmd_db_lead(args: argparse.Namespace) -> int:
-    settings = get_settings()
     with LeadStore() as store:
         lead = store.get_enriched_lead(args.place_id)
         if lead is None:
@@ -454,7 +450,6 @@ def cmd_db_lead(args: argparse.Namespace) -> int:
 
 
 def cmd_db_run_report(args: argparse.Namespace) -> int:
-    settings = get_settings()
     with LeadStore() as store:
         report = store.run_report(args.run_id)
         if not report:
@@ -663,6 +658,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print planned warm-up steps without calling Browser Use",
     )
     warm.set_defaults(func=cmd_warm_portals)
+
+    from pallares_leads.queue_worker import add_worker_parser
+
+    add_worker_parser(sub)
 
     harvest = sub.add_parser(
         "harvest-managers",
