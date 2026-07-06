@@ -44,7 +44,22 @@ class RawLead(BaseModel):
     market_key: str = ""
     date_found: date = Field(default_factory=date.today)
     osm_area_m2: float | None = None
+    osm_tags: dict | None = None
     alternate_place_ids: list[str] = Field(default_factory=list)
+    business_status: str | None = None
+    rating: float | None = None
+    user_rating_count: int | None = None
+    price_level: str | None = None
+    international_phone: str | None = None
+    opening_hours_json: dict | None = None
+    utc_offset_minutes: int | None = None
+    editorial_summary: str | None = None
+    parking_options: dict | None = None
+    payment_options: dict | None = None
+    plus_code: str | None = None
+    short_address: str | None = None
+    pure_service_area: bool | None = None
+    review_stats: dict | None = None
 
 
 class SiteContact(BaseModel):

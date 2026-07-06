@@ -736,6 +736,67 @@ class LeadStore:
         with self._lock:
             self._conn.commit()
 
+    def upsert_lead_features(
+        self,
+        place_id: str,
+        run_id: str | None,
+        features: dict[str, Any],
+        *,
+        feature_version: int = 1,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO lead_features (place_id, run_id, feature_version, features, snapshot_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (place_id, run_id) DO UPDATE SET
+                    feature_version = excluded.feature_version,
+                    features = excluded.features,
+                    snapshot_at = excluded.snapshot_at
+                """,
+                (
+                    place_id,
+                    run_id,
+                    feature_version,
+                    features,
+                    _iso(_utc_now()),
+                ),
+            )
+            self._conn.commit()
+
+    def record_insight_report(
+        self,
+        *,
+        sample_size: int,
+        labeled_count: int,
+        report_json: dict[str, Any],
+        model_metrics: dict[str, Any] | None = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO insight_reports (sample_size, labeled_count, report_json, model_metrics)
+                VALUES (?, ?, ?, ?)
+                RETURNING id
+                """,
+                (sample_size, labeled_count, report_json, model_metrics),
+            )
+            row = cur.fetchone()
+            self._conn.commit()
+            return int(row["id"]) if row else 0
+
+    def lead_cost_usd(self, run_id: str | None, place_id: str) -> float:
+        if not run_id:
+            return 0.0
+        row = self._conn.execute(
+            """
+            SELECT COALESCE(SUM(usd), 0) AS total FROM cost_events
+            WHERE run_id = ? AND place_id = ?
+            """,
+            (run_id, place_id),
+        ).fetchone()
+        return float(row["total"] if row else 0.0)
+
     def repair_stuck_runs(self, *, older_than_hours: int = 24) -> int:
         """Mark long-running runs as failed (dashboard cleanup)."""
         cutoff = _iso(_utc_now() - timedelta(hours=older_than_hours))

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import math
+from pathlib import Path
+from typing import Any
+
+import yaml
+
 from pallares_leads.enrich.contact_requirements import is_callable_phone
 from pallares_leads.enrich.contacts_format import primary_phone
 from pallares_leads.eval.score import copy_score, exterior_score, source_diversity
+from pallares_leads.intelligence.features import build_feature_snapshot
 from pallares_leads.resolve.triggers import compute_trigger
 from pallares_leads.schemas import NOT_FOUND, EnrichedLead
+from pallares_leads.settings import get_settings
 
 _DECISION_ROLES: tuple[str, ...] = (
     "facilities manager",
@@ -104,6 +112,54 @@ def _ticket_size_score(enriched: EnrichedLead) -> int:
     return min(base, 25)
 
 
+def _load_learned_coefficients(config_dir: Path) -> dict[str, Any] | None:
+    path = config_dir / "learned_score.yaml"
+    if not path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return None
+    coefs = data.get("coefficients") or {}
+    labeled = int(data.get("labeled_count") or 0)
+    gate = int(data.get("min_labels_gate") or 150)
+    if labeled < gate or not coefs:
+        return None
+    return data
+
+
+def _learned_p_win(enriched: EnrichedLead) -> float | None:
+    settings = get_settings()
+    if settings.learned_score_weight <= 0:
+        return None
+    model = _load_learned_coefficients(settings.config_dir)
+    if not model:
+        return None
+    features = build_feature_snapshot(
+        enriched,
+        run_id=None,
+        category_key=enriched.lead_category,
+    )
+    coefs: dict[str, float] = model.get("coefficients") or {}
+    intercept = float(model.get("intercept") or 0.0)
+    logit = intercept
+    for key, weight in coefs.items():
+        raw = features.get(key, 0)
+        if isinstance(raw, bool):
+            raw = int(raw)
+        if isinstance(raw, str):
+            continue
+        try:
+            logit += float(weight) * float(raw)
+        except (TypeError, ValueError):
+            continue
+    # logistic sigmoid
+    try:
+        return 1.0 / (1.0 + math.exp(-logit))
+    except OverflowError:
+        return 1.0 if logit > 0 else 0.0
+
+
 def compute_lead_score(enriched: EnrichedLead) -> int:
     """Composite lead quality score 0–100 with transparent component breakdown."""
     trigger_score, why_now = compute_trigger(enriched)
@@ -129,8 +185,17 @@ def compute_lead_score(enriched: EnrichedLead) -> int:
         components["ready"] = 5
 
     enriched.score_breakdown = components
-    total = sum(components.values())
-    return max(0, min(100, total))
+    heuristic = sum(components.values())
+    heuristic = max(0, min(100, heuristic))
+    settings = get_settings()
+    p_win = _learned_p_win(enriched)
+    if p_win is not None and settings.learned_score_weight > 0:
+        weight = min(1.0, max(0.0, settings.learned_score_weight))
+        blended = round((1.0 - weight) * heuristic + weight * 100.0 * p_win)
+        components["learned_blend"] = blended - heuristic
+        enriched.score_breakdown = components
+        return max(0, min(100, blended))
+    return heuristic
 
 
 def is_decision_maker_contact(enriched: EnrichedLead) -> bool:

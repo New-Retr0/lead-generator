@@ -5,8 +5,9 @@ firecrawl:
   credit_usd: 0.00099
 
 google_places:
-  text_search_usd: 0.032
-  nearby_search_usd: 0.032
+  # Enterprise + Atmosphere SKU (reviews, parkingOptions, paymentOptions, editorialSummary)
+  text_search_usd: 0.040
+  nearby_search_usd: 0.040
   health_check_usd: 0.0
 
 browser_use:

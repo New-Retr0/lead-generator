@@ -2,12 +2,22 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Phone, Search } from "lucide-react";
+import { Phone, PhoneCall, Search } from "lucide-react";
 import { toast } from "sonner";
 import { ScoreBadge, VerificationBadge } from "@/components/badges";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -26,7 +36,20 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CRM_STATUSES, type CrmStatus, type LeadRow, type PipelineConfig } from "@/lib/types";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  CRM_STATUSES,
+  OUTCOME_REASONS,
+  TOUCH_RESULTS,
+  type CrmStatus,
+  type LeadOutcomeInput,
+  type LeadOutcomeValue,
+  type LeadRow,
+  type LeadTouchInput,
+  type OutcomeReason,
+  type PipelineConfig,
+  type TouchResult,
+} from "@/lib/types";
 
 const LeadDetailModal = dynamic(
   () => import("@/components/lead-detail-modal").then((m) => m.LeadDetailModal),
@@ -46,11 +69,25 @@ const STATUS_TONE: Record<CrmStatus, string> = {
   "Bad Data": "bg-red-500/15 text-red-500",
 };
 
+const CLOSING_STATUSES: CrmStatus[] = ["Won", "Lost", "Bad Data"];
+
+const CRM_TO_OUTCOME: Record<CrmStatus, LeadOutcomeValue> = {
+  New: "no_response",
+  Contacted: "no_response",
+  "Follow Up": "no_response",
+  Interested: "no_response",
+  "Quote Sent": "no_response",
+  Won: "won",
+  Lost: "lost",
+  "Bad Data": "bad_data",
+};
+
 type CrmRowProps = {
   lead: LeadRow;
   categoryLabel: string;
   onOpen: (placeId: string) => void;
   onStatusChange: (placeId: string, status: CrmStatus) => void;
+  onLogCall: (lead: LeadRow) => void;
 };
 
 const CrmTableRow = memo(function CrmTableRow({
@@ -58,6 +95,7 @@ const CrmTableRow = memo(function CrmTableRow({
   categoryLabel,
   onOpen,
   onStatusChange,
+  onLogCall,
 }: CrmRowProps) {
   return (
     <TableRow
@@ -94,6 +132,18 @@ const CrmTableRow = memo(function CrmTableRow({
         ) : (
           <span className="text-sm text-muted-foreground">—</span>
         )}
+      </TableCell>
+      <TableCell onClick={(e) => e.stopPropagation()}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1 text-xs"
+          onClick={() => onLogCall(lead)}
+        >
+          <PhoneCall className="size-3.5" />
+          Log call
+        </Button>
       </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         <Select
@@ -135,6 +185,22 @@ export function CrmClient({
   const [detailId, setDetailId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const skipFilterFetch = useRef(true);
+  const [outcomeLead, setOutcomeLead] = useState<LeadRow | null>(null);
+  const [pendingStatus, setPendingStatus] = useState<CrmStatus | null>(null);
+  const [outcomeReason, setOutcomeReason] = useState<OutcomeReason | "">("");
+  const [dealValue, setDealValue] = useState("");
+  const [qualityRating, setQualityRating] = useState("3");
+  const [outcomeNotes, setOutcomeNotes] = useState("");
+  const [dataFlags, setDataFlags] = useState<Record<string, boolean>>({
+    phone_correct: true,
+    contact_name_correct: true,
+    contact_role_correct: true,
+    still_in_business: true,
+    website_correct: true,
+  });
+  const [callLead, setCallLead] = useState<LeadRow | null>(null);
+  const [callResult, setCallResult] = useState<TouchResult>("no_answer");
+  const [callNotes, setCallNotes] = useState("");
 
   const categoryLabelMap = useMemo(
     () => new Map(config.categories.map((c) => [c.key, c.label])),
@@ -182,6 +248,16 @@ export function CrmClient({
   }, [leads, deferredSearch]);
 
   const setStatus = useCallback(async (placeId: string, status: CrmStatus) => {
+    if (CLOSING_STATUSES.includes(status)) {
+      const lead = leads.find((l) => l.place_id === placeId) ?? null;
+      setOutcomeLead(lead);
+      setPendingStatus(status);
+      setOutcomeReason("");
+      setDealValue("");
+      setQualityRating("3");
+      setOutcomeNotes("");
+      return;
+    }
     setLeads((prev) =>
       prev.map((l) => (l.place_id === placeId ? { ...l, crm_status: status } : l)),
     );
@@ -194,7 +270,67 @@ export function CrmClient({
       toast.error("Failed to save status");
       setRefreshKey((k) => k + 1);
     }
-  }, []);
+  }, [leads]);
+
+  const submitOutcome = useCallback(async () => {
+    if (!outcomeLead || !pendingStatus) return;
+    const outcome: LeadOutcomeInput = {
+      outcome: CRM_TO_OUTCOME[pendingStatus],
+      outcome_reason: outcomeReason || null,
+      deal_value_usd:
+        pendingStatus === "Won" && dealValue ? Number.parseFloat(dealValue) : null,
+      quality_rating: Number.parseInt(qualityRating, 10) || null,
+      data_flags: dataFlags,
+      notes: outcomeNotes || null,
+    };
+    const res = await fetch(`/api/leads/${encodeURIComponent(outcomeLead.place_id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: pendingStatus, outcome }),
+    });
+    if (!res.ok) {
+      toast.error("Failed to save outcome");
+      return;
+    }
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.place_id === outcomeLead.place_id ? { ...l, crm_status: pendingStatus } : l,
+      ),
+    );
+    toast.success("Outcome saved");
+    setOutcomeLead(null);
+    setPendingStatus(null);
+  }, [
+    outcomeLead,
+    pendingStatus,
+    outcomeReason,
+    dealValue,
+    qualityRating,
+    dataFlags,
+    outcomeNotes,
+  ]);
+
+  const submitCall = useCallback(async () => {
+    if (!callLead) return;
+    const touch: LeadTouchInput = {
+      touch_type: "call",
+      result: callResult,
+      contact_phone: callLead.phone,
+      notes: callNotes || null,
+    };
+    const res = await fetch(`/api/leads/${encodeURIComponent(callLead.place_id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ touch }),
+    });
+    if (!res.ok) {
+      toast.error("Failed to log call");
+      return;
+    }
+    toast.success("Call logged");
+    setCallLead(null);
+    setCallNotes("");
+  }, [callLead, callResult, callNotes]);
 
   const openDetail = useCallback((placeId: string) => setDetailId(placeId), []);
 
@@ -274,19 +410,20 @@ export function CrmClient({
                 <TableHead className="text-center">Score</TableHead>
                 <TableHead>Verification</TableHead>
                 <TableHead>Phone</TableHead>
+                <TableHead className="w-28">Activity</TableHead>
                 <TableHead className="w-44">CRM Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="h-32 text-center text-sm text-muted-foreground">
                     Loading CRM…
                   </TableCell>
                 </TableRow>
               ) : visible.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={9} className="h-32 text-center text-sm text-muted-foreground">
                     No leads here yet. Launch a run, then work them from this board.
                   </TableCell>
                 </TableRow>
@@ -302,6 +439,7 @@ export function CrmClient({
                     }
                     onOpen={openDetail}
                     onStatusChange={(id, s) => void setStatus(id, s)}
+                    onLogCall={setCallLead}
                   />
                 ))
               )}
@@ -311,6 +449,124 @@ export function CrmClient({
       </Card>
 
       <LeadDetailModal placeId={detailId} onClose={() => setDetailId(null)} />
+
+      <Dialog open={!!outcomeLead} onOpenChange={(open) => !open && setOutcomeLead(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Record outcome — {outcomeLead?.business_name}</DialogTitle>
+            <DialogDescription>
+              Structured outcome data feeds lead quality learning across the pipeline.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Reason</Label>
+              <Select
+                value={outcomeReason || "__none__"}
+                onValueChange={(v) => setOutcomeReason(v === "__none__" ? "" : (v as OutcomeReason))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select reason" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">—</SelectItem>
+                  {OUTCOME_REASONS.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {r.replace(/_/g, " ")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {pendingStatus === "Won" ? (
+              <div className="space-y-1.5">
+                <Label>Deal value (USD)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={dealValue}
+                  onChange={(e) => setDealValue(e.target.value)}
+                />
+              </div>
+            ) : null}
+            <div className="space-y-1.5">
+              <Label>Lead quality (1–5)</Label>
+              <Select value={qualityRating} onValueChange={setQualityRating}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Data accuracy</Label>
+              {Object.keys(dataFlags).map((key) => (
+                <label key={key} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={dataFlags[key]}
+                    onCheckedChange={(checked) =>
+                      setDataFlags((prev) => ({ ...prev, [key]: checked === true }))
+                    }
+                  />
+                  {key.replace(/_/g, " ")}
+                </label>
+              ))}
+            </div>
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Textarea value={outcomeNotes} onChange={(e) => setOutcomeNotes(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOutcomeLead(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void submitOutcome()}>Save outcome</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!callLead} onOpenChange={(open) => !open && setCallLead(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Log call — {callLead?.business_name}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Result</Label>
+              <Select value={callResult} onValueChange={(v) => setCallResult(v as TouchResult)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TOUCH_RESULTS.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {r.replace(/_/g, " ")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Textarea value={callNotes} onChange={(e) => setCallNotes(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCallLead(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void submitCall()}>Save call</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

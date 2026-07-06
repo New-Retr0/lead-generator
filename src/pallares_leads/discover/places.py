@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from pallares_leads.config_loader import CategoryConfig, MarketConfig
 from pallares_leads.costs import load_pricing, usd_for
+from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.schemas import RawLead
 from pallares_leads.settings import Settings
 from pallares_leads.utils.geo import market_bbox, tile_circles
@@ -19,11 +21,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Pro + Enterprise fields only — phone/website require Enterprise SKU (required for leads).
+# Enterprise + Atmosphere fields — phone/website require Enterprise SKU.
 _PLACE_FIELDS = (
-    "places.id,places.displayName,places.formattedAddress,places.location,"
-    "places.types,places.primaryType,places.googleMapsUri,places.businessStatus,"
-    "places.nationalPhoneNumber,places.websiteUri"
+    "places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,"
+    "places.addressComponents,places.plusCode,places.location,places.viewport,"
+    "places.types,places.primaryType,places.primaryTypeDisplayName,"
+    "places.googleMapsUri,places.businessStatus,places.pureServiceAreaBusiness,"
+    "places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,"
+    "places.rating,places.userRatingCount,places.priceLevel,places.priceRange,"
+    "places.regularOpeningHours,places.utcOffsetMinutes,"
+    "places.editorialSummary,places.parkingOptions,places.paymentOptions,places.reviews"
 )
 
 SEARCH_FIELD_MASK = f"{_PLACE_FIELDS},nextPageToken"
@@ -104,6 +111,24 @@ class PlacesClient:
             }
         }
 
+    def _archive_response(
+        self,
+        operation: str,
+        *,
+        request: dict[str, Any],
+        response: dict[str, Any],
+        duration_ms: int,
+    ) -> None:
+        record_capture(
+            self._settings,
+            "google_places",
+            operation,
+            run_id=self._run_id,
+            request=request,
+            response=response,
+            duration_ms=duration_ms,
+        )
+
     def health_check(self) -> tuple[bool, str]:
         """Minimal Text Search — Essentials-tier field mask for cheap validation."""
         body = {
@@ -169,8 +194,16 @@ class PlacesClient:
                 label="Places searchText",
             )
             response.raise_for_status()
-            self._record_request("text_search", duration_ms=int((time.perf_counter() - started) * 1000))
-            return response.json()
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            self._record_request("text_search", duration_ms=duration_ms)
+            payload = response.json()
+            self._archive_response(
+                "text_search",
+                request=body,
+                response=payload,
+                duration_ms=duration_ms,
+            )
+            return payload
 
     def search_nearby(
         self,
@@ -213,16 +246,60 @@ class PlacesClient:
                 label="Places searchNearby",
             )
             response.raise_for_status()
+            duration_ms = int((time.perf_counter() - started) * 1000)
             self._record_request(
                 "nearby_search",
-                duration_ms=int((time.perf_counter() - started) * 1000),
+                duration_ms=duration_ms,
             )
-            return response.json()
+            payload = response.json()
+            self._archive_response(
+                "nearby_search",
+                request=body,
+                response=payload,
+                duration_ms=duration_ms,
+            )
+            return payload
 
     @staticmethod
     def _skip_place(place: dict[str, Any]) -> bool:
         status = place.get("businessStatus")
         return status == "CLOSED_PERMANENTLY"
+
+    @staticmethod
+    def _review_stats(reviews: list[Any] | None) -> dict[str, int | float] | None:
+        if not reviews:
+            return None
+        now = datetime.now(tz=UTC)
+        ages: list[int] = []
+        text_lens: list[int] = []
+        for review in reviews[:5]:
+            if not isinstance(review, dict):
+                continue
+            text = str((review.get("text") or {}).get("text") or review.get("text") or "")
+            text_lens.append(len(text))
+            publish = review.get("publishTime") or review.get("relativePublishTimeDescription")
+            if isinstance(publish, str) and "T" in publish:
+                try:
+                    published = datetime.fromisoformat(publish.replace("Z", "+00:00"))
+                    ages.append(max(0, (now - published).days))
+                except ValueError:
+                    continue
+        if not ages and not text_lens:
+            return {"count": len(reviews), "newest_review_days_ago": 0, "avg_text_len": 0}
+        return {
+            "count": len(reviews),
+            "newest_review_days_ago": min(ages) if ages else 0,
+            "oldest_of_5_days_ago": max(ages) if ages else 0,
+            "avg_text_len": sum(text_lens) / len(text_lens) if text_lens else 0,
+        }
+
+    @staticmethod
+    def _text_field(value: Any) -> str | None:
+        if isinstance(value, dict):
+            return str(value.get("text") or "") or None
+        if isinstance(value, str):
+            return value or None
+        return None
 
     def place_to_raw_lead(
         self,
@@ -258,6 +335,11 @@ class PlacesClient:
         if primary and primary not in types:
             types.insert(0, primary)
 
+        plus = place.get("plusCode") or {}
+        plus_code = plus.get("globalCode") if isinstance(plus, dict) else None
+        opening = place.get("regularOpeningHours")
+        reviews = place.get("reviews") if isinstance(place.get("reviews"), list) else None
+
         return RawLead(
             place_id=place_id,
             business_name=name,
@@ -275,6 +357,28 @@ class PlacesClient:
             google_types=types,
             discovery_query=discovery_query,
             market_key=market_key,
+            business_status=place.get("businessStatus"),
+            rating=float(place["rating"]) if place.get("rating") is not None else None,
+            user_rating_count=int(place["userRatingCount"])
+            if place.get("userRatingCount") is not None
+            else None,
+            price_level=str(place.get("priceLevel") or "") or None,
+            international_phone=normalize_phone(place.get("internationalPhoneNumber")),
+            opening_hours_json=opening if isinstance(opening, dict) else None,
+            utc_offset_minutes=int(place["utcOffsetMinutes"])
+            if place.get("utcOffsetMinutes") is not None
+            else None,
+            editorial_summary=self._text_field(place.get("editorialSummary")),
+            parking_options=place.get("parkingOptions")
+            if isinstance(place.get("parkingOptions"), dict)
+            else None,
+            payment_options=place.get("paymentOptions")
+            if isinstance(place.get("paymentOptions"), dict)
+            else None,
+            plus_code=str(plus_code) if plus_code else None,
+            short_address=place.get("shortFormattedAddress"),
+            pure_service_area=place.get("pureServiceAreaBusiness"),
+            review_stats=self._review_stats(reviews),
         )
 
     def _collect_from_payload(

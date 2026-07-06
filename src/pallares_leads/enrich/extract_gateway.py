@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from pallares_leads.enrich.ai_gateway_client import gateway_chat_completion, gateway_configured
 from pallares_leads.enrich.schema import LEAD_INVESTIGATION_SCHEMA, LeadInvestigationResult
-from pallares_leads.enrich.verify import ground_investigation
+from pallares_leads.enrich.verify import Rejection, ground_investigation
 from pallares_leads.schemas import RawLead
 
 if TYPE_CHECKING:
@@ -40,6 +40,7 @@ def extract_contacts(
     place_id: str | None = None,
     request_id: str | None = None,
     stage: str | None = None,
+    rejections_sink: list[Rejection] | None = None,
 ) -> LeadInvestigationResult | None:
     """Extract contacts + sales copy from markdown via AI Gateway JSON schema."""
     if not markdown.strip() or not gateway_configured(settings):
@@ -59,6 +60,8 @@ def extract_contacts(
                 if investigation:
                     label = source_url or raw.website or ""
                     grounding = ground_investigation(investigation, markdown, source_label=label)
+                    if rejections_sink is not None:
+                        rejections_sink.extend(grounding.rejections)
                     return grounding.result
             except json.JSONDecodeError:
                 pass
@@ -111,4 +114,6 @@ def extract_contacts(
 
     label = source_url or raw.website or ""
     grounding = ground_investigation(investigation, markdown, source_label=label)
+    if rejections_sink is not None:
+        rejections_sink.extend(grounding.rejections)
     return grounding.result

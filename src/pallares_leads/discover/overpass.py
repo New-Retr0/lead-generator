@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from pallares_leads.config_loader import CategoryConfig, MarketConfig
+from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.schemas import RawLead
 from pallares_leads.settings import Settings
 from pallares_leads.utils.geo import market_bbox, polygon_area_m2
@@ -72,7 +73,14 @@ def _way_coords(
     return coords
 
 
-def _reverse_geocode(lat: float, lon: float, *, city_fallback: str, state_fallback: str) -> str:
+def _reverse_geocode(
+    lat: float,
+    lon: float,
+    *,
+    city_fallback: str,
+    state_fallback: str,
+    settings: Settings,
+) -> str:
     params = {
         "lat": lat,
         "lon": lon,
@@ -80,11 +88,19 @@ def _reverse_geocode(lat: float, lon: float, *, city_fallback: str, state_fallba
         "addressdetails": 1,
     }
     headers = {"User-Agent": "pallares-leads/0.1 (commercial lead discovery)"}
+    payload: dict[str, Any] = {}
     try:
         with httpx.Client(timeout=15.0) as client:
             response = client.get(NOMINATIM_URL, params=params, headers=headers)
             response.raise_for_status()
             payload = response.json()
+            record_capture(
+                settings,
+                "nominatim",
+                "reverse",
+                request={"lat": lat, "lon": lon},
+                response=payload,
+            )
             address = payload.get("display_name") or ""
             if address:
                 return address
@@ -118,6 +134,13 @@ class OverpassClient:
             response = client.post(OVERPASS_URL, data={"data": query})
             response.raise_for_status()
             payload = response.json()
+            record_capture(
+                self._settings,
+                "overpass",
+                "interpreter",
+                request={"query": query},
+                response=payload,
+            )
 
         nodes: dict[int, dict[str, float]] = {}
         ways: list[dict[str, Any]] = []
@@ -185,7 +208,13 @@ class OverpassClient:
         city = market["city"]
         state = market["state"]
         self._throttle_geocode()
-        formatted_address = _reverse_geocode(lat, lon, city_fallback=city, state_fallback=state)
+        formatted_address = _reverse_geocode(
+            lat,
+            lon,
+            city_fallback=city,
+            state_fallback=state,
+            settings=self._settings,
+        )
         parsed_city, parsed_state, zip_code = parse_city_state_zip(formatted_address, city, state)
 
         name = tags.get("name") or tags.get("operator") or f"Parking lot ({int(area_m2)} m²)"
@@ -204,6 +233,7 @@ class OverpassClient:
             discovery_query=f"overpass:{tags.get('amenity', 'parking')}",
             market_key=market_key,
             osm_area_m2=area_m2,
+            osm_tags={"tags": dict(tags), "node_count": len(way_nodes)},
         )
 
     def discover_category(

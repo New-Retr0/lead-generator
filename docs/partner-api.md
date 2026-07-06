@@ -77,6 +77,56 @@ GET /leads?cursor=<next_cursor>
 GET /leads/{place_id}
 ```
 
+### Feedback (`leads:feedback` scope)
+
+Post structured outcomes and activity so Pallares can learn what makes a good lead.
+Keys need `leads:feedback` in addition to (or instead of) `leads:read` for these routes.
+
+```http
+POST /leads/{place_id}/outcome
+GET  /leads/{place_id}/outcome
+POST /leads/{place_id}/touches
+GET  /leads/{place_id}/touches?limit=50
+POST /feedback/batch
+```
+
+Outcome body:
+
+```json
+{
+  "outcome": "won",
+  "outcome_reason": "timing",
+  "deal_value_usd": 12000,
+  "quality_rating": 4,
+  "data_flags": { "phone_correct": true, "contact_name_correct": true },
+  "notes": "Closed after site walk"
+}
+```
+
+Touch body:
+
+```json
+{
+  "touch_type": "call",
+  "result": "dm_reached",
+  "contact_phone": "+15591234567",
+  "duration_seconds": 240,
+  "notes": "Spoke with facilities manager"
+}
+```
+
+`GET .../touches` returns only rows posted by the caller's API key.
+`GET .../outcome` returns the authoritative outcome regardless of source.
+
+Batch sync (≤100 items):
+
+```json
+[
+  { "place_id": "places/abc", "outcome": "lost", "outcome_reason": "no_budget" },
+  { "place_id": "places/def", "touch_type": "call", "result": "voicemail" }
+]
+```
+
 ## Pull Sync
 
 `GET /leads` returns leads in stable cursor order by `updated_at, place_id`.

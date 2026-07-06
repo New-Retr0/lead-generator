@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 from pallares_leads.config_loader import CategoryConfig, MarketConfig, load_markets
 from pallares_leads.db.store import LeadStore
+from pallares_leads.enrich.verify import Rejection
+from pallares_leads.intelligence.features import FEATURE_VERSION, build_feature_snapshot
 from pallares_leads.discover.county_filter import filter_excluded_counties
 from pallares_leads.discover.overpass import OverpassClient
 from pallares_leads.discover.places import PlacesClient
@@ -334,6 +336,7 @@ def _scrape_fallback(
         place_id=firecrawl._cost_place_id,
         request_id=firecrawl._cost_request_id,
         stage="scrape",
+        rejections_sink=firecrawl.session_rejections,
     )
     if not result:
         return enriched, None
@@ -977,6 +980,8 @@ def _persist_facts(
     store: LeadStore | None,
     run_id: str | None,
     enriched: EnrichedLead,
+    *,
+    rejections: list[Rejection] | None = None,
 ) -> None:
     if not store:
         return
@@ -991,6 +996,27 @@ def _persist_facts(
             verification=fact.verification,
             source_url=fact.source_url or None,
             quote=fact.quote or None,
+            run_id=run_id,
+        )
+    for rejection in rejections or []:
+        kind = rejection.kind
+        fact_kind = "person" if kind == "name" else kind
+        if fact_kind not in ("phone", "person", "email"):
+            fact_kind = "person"
+        if fact_kind == "person":
+            value = {"name": rejection.value, "title": rejection.context}
+        elif fact_kind == "phone":
+            value = {"phone": rejection.value, "label": rejection.context}
+        else:
+            value = {"email": rejection.value, "label": rejection.context}
+        store.record_fact(
+            place_id=enriched.place_id,
+            fact_kind=fact_kind,
+            value=value,
+            source_kind="website",
+            method="llm_extract",
+            verification="rejected",
+            quote=f"{rejection.value}: {rejection.reason}",
             run_id=run_id,
         )
     store.commit_facts()
@@ -1592,7 +1618,8 @@ def enrich_lead(
         store.commit_cost_events()
 
     enriched.facts = [*_collect_contact_facts(enriched, raw), *enriched.facts]
-    _persist_facts(store, run_id, enriched)
+    rejections = firecrawl.session_rejections if firecrawl else []
+    _persist_facts(store, run_id, enriched, rejections=rejections)
     enriched = _apply_verification_fields(enriched)
 
     if trace:
@@ -1904,18 +1931,68 @@ def _run_market_category_body(
         used = store.run_credits_total(run_id)
         return used >= cap
 
-    def _persist_lead(lead: EnrichedLead) -> None:
-        if not firecrawl or discover_only:
+    def _persist_lead(lead: EnrichedLead, *, client: FirecrawlClient | None = None) -> None:
+        if discover_only:
             return
-        store.upsert_enriched(
+        profile_key = classify_lead(RawLead.model_validate(lead.model_dump())).key
+        if firecrawl or not discover_only:
+            store.upsert_enriched(
+                lead,
+                market_key=market_key,
+                category_key=category_key,
+                run_id=run_id,
+                csv_path=None,
+                profile_key=profile_key,
+                credits_total=store.lead_run_credits(run_id, lead.place_id) or None,
+                lead_score=lead.lead_score,
+            )
+        owner = store.get_owner_record(lead.place_id) or {}
+        principals = owner.get("principals_json") or []
+        if isinstance(principals, str):
+            try:
+                principals = json.loads(principals)
+            except json.JSONDecodeError:
+                principals = []
+        bbb_facts = [
+            f
+            for f in lead.facts
+            if getattr(f, "fact_kind", "") == "registry_rating"
+            or (isinstance(f, dict) and f.get("fact_kind") == "registry_rating")
+        ]
+        bbb_rating = ""
+        bbb_years = None
+        if bbb_facts:
+            val = getattr(bbb_facts[0], "value", None) or bbb_facts[0].get("value", {})
+            if isinstance(val, dict):
+                bbb_rating = str(val.get("rating") or val.get("bbb_rating") or "")
+                years_raw = val.get("years_in_business")
+                if years_raw is not None:
+                    try:
+                        bbb_years = int(years_raw)
+                    except (TypeError, ValueError):
+                        bbb_years = None
+        features = build_feature_snapshot(
             lead,
-            market_key=market_key,
-            category_key=category_key,
             run_id=run_id,
-            csv_path=None,
-            profile_key=classify_lead(RawLead.model_validate(lead.model_dump())).key,
-            credits_total=store.lead_run_credits(run_id, lead.place_id) or None,
-            lead_score=lead.lead_score,
+            category_key=category_key,
+            profile_key=profile_key,
+            owner_record_present=bool(owner),
+            owner_kind=str(owner.get("owner_kind") or ""),
+            principals_count=len(principals) if isinstance(principals, list) else 0,
+            bbb_rating=bbb_rating,
+            bbb_years_in_business=bbb_years,
+            grounding_rejections_count=len(client.session_rejections) if client else 0,
+            model=settings.ai_gateway_model or "",
+            cost_summary={
+                "credits_total": store.lead_run_credits(run_id, lead.place_id),
+                "usd_total": store.lead_cost_usd(run_id, lead.place_id),
+            },
+        )
+        store.upsert_lead_features(
+            lead.place_id,
+            run_id,
+            features,
+            feature_version=FEATURE_VERSION,
         )
 
     def _do_enrich(
@@ -1994,7 +2071,7 @@ def _run_market_category_body(
                         try:
                             result = future.result()
                             enriched.append(result)
-                            _persist_lead(result)
+                            _persist_lead(result, client=firecrawl)
                             logger.info(
                                 "[%d/%d] %s — done", i, len(raw_leads), raw.business_name
                             )
@@ -2039,7 +2116,7 @@ def _run_market_category_body(
                     )
                     break
                 enriched.append(result)
-                _persist_lead(result)
+                _persist_lead(result, client=firecrawl)
     finally:
         heartbeat_stop.set()
 

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   ContactRound,
   Droplets,
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   PhoneCall,
   PlayCircle,
   Receipt,
+  Settings2,
   ShieldAlert,
 } from "lucide-react";
 import {
@@ -44,7 +46,11 @@ const groups = [
   },
   {
     label: "Operations",
-    items: [{ href: "/costs", label: "Costs", icon: Receipt }],
+    items: [
+      { href: "/insights", label: "Insights", icon: BarChart3 },
+      { href: "/costs", label: "Costs", icon: Receipt },
+      { href: "/settings", label: "Settings", icon: Settings2 },
+    ],
   },
 ];
 

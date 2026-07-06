@@ -228,6 +228,12 @@ def cmd_list_config(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_settings_schema(_args: argparse.Namespace) -> int:
+    from pallares_leads.settings_schema import print_settings_schema
+
+    return print_settings_schema()
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     settings = get_settings()
     ok = True
@@ -555,6 +561,41 @@ def cmd_db_run_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_db_archive_stats(_args: argparse.Namespace) -> int:
+    settings = get_settings()
+    from pallares_leads.db.raw_archive import get_raw_archive
+
+    if not settings.raw_capture_enabled:
+        print("Raw capture disabled (raw_capture_enabled=false)", file=sys.stderr)
+        return 1
+    archive = get_raw_archive(settings)
+    stats = archive.stats()
+    print(json.dumps(stats, indent=2))
+    if stats["by_provider"]:
+        print(
+            f"\nRaw archive: {stats['total_count']} capture(s), "
+            f"{stats['total_blob_bytes']:,} compressed bytes at {stats['path']}"
+        )
+        for row in stats["by_provider"]:
+            print(
+                f"  {row['provider']}: {row['count']} capture(s), "
+                f"{row['blob_bytes']:,} bytes"
+            )
+    else:
+        print(f"\nRaw archive empty at {stats['path']}")
+    return 0
+
+
+def cmd_insights(args: argparse.Namespace) -> int:
+    from pallares_leads.intelligence.analyze import run_insights
+
+    settings = get_settings()
+    with LeadStore() as store:
+        report = run_insights(store, settings, fit_score=args.fit_score)
+    print(json.dumps(report, indent=2, default=str))
+    return 0
+
+
 def cmd_db_prune(args: argparse.Namespace) -> int:
     settings = get_settings()
     with LeadStore() as store:
@@ -739,6 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doc.set_defaults(func=cmd_doctor)
 
+    schema = sub.add_parser(
+        "settings-schema",
+        help="Export Settings JSON schema and masked values for the dashboard",
+    )
+    schema.set_defaults(func=cmd_settings_schema)
+
     warm = sub.add_parser(
         "warm-portals",
         help="Seed Browser Use Cloud cached portal scripts (one-time setup)",
@@ -807,6 +854,12 @@ def build_parser() -> argparse.ArgumentParser:
     db_runs.add_argument("run_id", help="Run UUID from db status")
     db_runs.set_defaults(func=cmd_db_run_report)
 
+    db_archive = db_sub.add_parser(
+        "archive-stats",
+        help="Raw API capture counts and compressed size by provider",
+    )
+    db_archive.set_defaults(func=cmd_db_archive_stats)
+
     db_prune = db_sub.add_parser(
         "prune",
         help="Prune expired page_cache rows and stale run artifact folders",
@@ -823,6 +876,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report what would be deleted without removing files or rows",
     )
     db_prune.set_defaults(func=cmd_db_prune)
+
+    insights = sub.add_parser(
+        "insights",
+        help="Correlate lead features with outcomes; write report to data/insights/",
+    )
+    insights.add_argument(
+        "--fit-score",
+        action="store_true",
+        help="Fit learned score coefficients to config/learned_score.yaml (requires >=150 labels)",
+    )
+    insights.set_defaults(func=cmd_insights)
 
     eval_replay = sub.add_parser(
         "eval-replay",

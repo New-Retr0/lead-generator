@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.enrich.task_templates import (
     LOOPNET_TASK,
     PARCELQUEST_TASK,
@@ -361,6 +362,25 @@ class BrowserUseClient:
             meta=meta,
         )
         self.store.commit_cost_events()
+        session_payload: dict[str, Any] = dict(meta)
+        if hasattr(result, "model_dump"):
+            session_payload["result"] = result.model_dump(mode="json")
+        session = getattr(result, "session", None)
+        if session is not None and hasattr(session, "model_dump"):
+            session_payload["session"] = session.model_dump(mode="json")
+        steps = getattr(result, "steps", None)
+        if steps is not None:
+            session_payload["steps"] = steps
+        record_capture(
+            self.settings,
+            "browser_use",
+            stage,
+            place_id=self.place_id,
+            run_id=self.run_id,
+            request={"task_stage": stage},
+            response=session_payload,
+            duration_ms=duration_ms,
+        )
 
     async def _ensure_workspace(self, client: Any) -> str | None:
         if self.store is None:

@@ -8,8 +8,11 @@ import type {
   LeadCostByProvider,
   LeadCostEvent,
   LeadCosts,
+  InsightReport,
   LeadDetail,
+  LeadOutcome,
   LeadRow,
+  LeadTouch,
   LeadType,
   OverviewStats,
   ProviderBalance,
@@ -1292,3 +1295,126 @@ export const listFilterOptions = cache(async function listFilterOptions(): Promi
     categories: categoryRows.map((r) => String(r.category_key)),
   };
 });
+
+export async function getLeadOutcome(placeId: string): Promise<LeadOutcome | null> {
+  if (!dbAvailable()) return null;
+  const sql = getSql();
+  const rows = await sql`
+    SELECT place_id, outcome, outcome_reason, deal_value_usd, quality_rating,
+           data_flags, source, notes, decided_at
+    FROM lead_outcomes
+    WHERE place_id = ${placeId}
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    place_id: String(row.place_id),
+    outcome: String(row.outcome) as LeadOutcome["outcome"],
+    outcome_reason: row.outcome_reason as LeadOutcome["outcome_reason"],
+    deal_value_usd: row.deal_value_usd != null ? Number(row.deal_value_usd) : null,
+    quality_rating: row.quality_rating != null ? Number(row.quality_rating) : null,
+    data_flags:
+      row.data_flags && typeof row.data_flags === "object"
+        ? (row.data_flags as Record<string, boolean>)
+        : {},
+    source: String(row.source),
+    notes: row.notes != null ? String(row.notes) : null,
+    decided_at: toIso(row.decided_at),
+  };
+}
+
+export async function listLeadTouches(placeId: string, limit = 50): Promise<LeadTouch[]> {
+  if (!dbAvailable()) return [];
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, place_id, touch_type, result, contact_name, contact_phone,
+           duration_seconds, source, notes, occurred_at
+    FROM lead_touches
+    WHERE place_id = ${placeId}
+    ORDER BY occurred_at DESC
+    LIMIT ${limit}
+  `;
+  return rows.map((row) => ({
+    id: Number(row.id),
+    place_id: String(row.place_id),
+    touch_type: String(row.touch_type) as LeadTouch["touch_type"],
+    result: row.result as LeadTouch["result"],
+    contact_name: row.contact_name != null ? String(row.contact_name) : null,
+    contact_phone: row.contact_phone != null ? String(row.contact_phone) : null,
+    duration_seconds: row.duration_seconds != null ? Number(row.duration_seconds) : null,
+    source: String(row.source),
+    notes: row.notes != null ? String(row.notes) : null,
+    occurred_at: toIso(row.occurred_at),
+  }));
+}
+
+export const getLatestInsightReport = cache(async function getLatestInsightReport(): Promise<InsightReport | null> {
+  if (!dbAvailable()) return null;
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, created_at, sample_size, labeled_count, report_json, model_metrics
+    FROM insight_reports
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    created_at: toIso(row.created_at),
+    sample_size: Number(row.sample_size),
+    labeled_count: Number(row.labeled_count),
+    report_json:
+      row.report_json && typeof row.report_json === "object"
+        ? (row.report_json as Record<string, unknown>)
+        : {},
+    model_metrics:
+      row.model_metrics && typeof row.model_metrics === "object"
+        ? (row.model_metrics as Record<string, unknown>)
+        : null,
+  };
+});
+
+export async function getFeatureOutcomeStats(): Promise<{
+  winRateByCategory: { bucket: string; wins: number; total: number; smoothed_win_rate: number }[];
+  winRateByMarket: { bucket: string; wins: number; total: number; smoothed_win_rate: number }[];
+}> {
+  if (!dbAvailable()) return { winRateByCategory: [], winRateByMarket: [] };
+  const sql = getSql();
+  const categoryRows = await sql`
+    SELECT COALESCE(features->>'category_key', 'unknown') AS bucket,
+           SUM(CASE WHEN label_good = 1 THEN 1 ELSE 0 END)::int AS wins,
+           COUNT(*) FILTER (WHERE label_good IS NOT NULL)::int AS total
+    FROM feature_outcomes
+    GROUP BY 1
+    HAVING COUNT(*) FILTER (WHERE label_good IS NOT NULL) > 0
+    ORDER BY total DESC
+    LIMIT 20
+  `;
+  const marketRows = await sql`
+    SELECT COALESCE(features->>'market_key', 'unknown') AS bucket,
+           SUM(CASE WHEN label_good = 1 THEN 1 ELSE 0 END)::int AS wins,
+           COUNT(*) FILTER (WHERE label_good IS NOT NULL)::int AS total
+    FROM feature_outcomes
+    GROUP BY 1
+    HAVING COUNT(*) FILTER (WHERE label_good IS NOT NULL) > 0
+    ORDER BY total DESC
+    LIMIT 20
+  `;
+  const alpha = 2;
+  const smooth = (wins: number, total: number) => (wins + alpha) / (total + 2 * alpha);
+  return {
+    winRateByCategory: categoryRows.map((row) => ({
+      bucket: String(row.bucket),
+      wins: Number(row.wins),
+      total: Number(row.total),
+      smoothed_win_rate: smooth(Number(row.wins), Number(row.total)),
+    })),
+    winRateByMarket: marketRows.map((row) => ({
+      bucket: String(row.bucket),
+      wins: Number(row.wins),
+      total: Number(row.total),
+      smoothed_win_rate: smooth(Number(row.wins), Number(row.total)),
+    })),
+  };
+}

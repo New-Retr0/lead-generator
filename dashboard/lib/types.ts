@@ -418,6 +418,101 @@ export type RequestSpec = {
   needs_confirmation: string[];
 };
 
+export const OUTCOME_VALUES = [
+  "won",
+  "lost",
+  "bad_data",
+  "unqualified",
+  "no_response",
+] as const;
+export type LeadOutcomeValue = (typeof OUTCOME_VALUES)[number];
+
+export const OUTCOME_REASONS = [
+  "wrong_number",
+  "no_answer_ever",
+  "gatekeeper_block",
+  "not_decision_maker",
+  "no_budget",
+  "competitor",
+  "timing",
+  "price",
+  "invalid_business",
+  "duplicate",
+  "other",
+] as const;
+export type OutcomeReason = (typeof OUTCOME_REASONS)[number];
+
+export const TOUCH_TYPES = ["call", "email", "sms", "visit", "other"] as const;
+export type TouchType = (typeof TOUCH_TYPES)[number];
+
+export const TOUCH_RESULTS = [
+  "answered",
+  "voicemail",
+  "no_answer",
+  "wrong_number",
+  "disconnected",
+  "gatekeeper",
+  "dm_reached",
+  "email_sent",
+  "email_bounced",
+  "email_replied",
+  "other",
+] as const;
+export type TouchResult = (typeof TOUCH_RESULTS)[number];
+
+export type LeadOutcome = {
+  place_id: string;
+  outcome: LeadOutcomeValue;
+  outcome_reason: OutcomeReason | null;
+  deal_value_usd: number | null;
+  quality_rating: number | null;
+  data_flags: Record<string, boolean>;
+  source: string;
+  notes: string | null;
+  decided_at: string;
+};
+
+export type LeadTouch = {
+  id: number;
+  place_id: string;
+  touch_type: TouchType;
+  result: TouchResult | null;
+  contact_name: string | null;
+  contact_phone: string | null;
+  duration_seconds: number | null;
+  source: string;
+  notes: string | null;
+  occurred_at: string;
+};
+
+export type InsightReport = {
+  id: number;
+  created_at: string;
+  sample_size: number;
+  labeled_count: number;
+  report_json: Record<string, unknown>;
+  model_metrics: Record<string, unknown> | null;
+};
+
+export type LeadOutcomeInput = {
+  outcome: LeadOutcomeValue;
+  outcome_reason?: OutcomeReason | null;
+  deal_value_usd?: number | null;
+  quality_rating?: number | null;
+  data_flags?: Record<string, boolean>;
+  notes?: string | null;
+};
+
+export type LeadTouchInput = {
+  touch_type: TouchType;
+  result?: TouchResult | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  duration_seconds?: number | null;
+  notes?: string | null;
+  occurred_at?: string | null;
+};
+
 /** Mirrors estimate_request_cost() in request/planner.py. */
 export function estimateRequestCost(spec: {
   count: number;

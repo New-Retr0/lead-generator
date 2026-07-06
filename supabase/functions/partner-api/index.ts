@@ -8,7 +8,44 @@ const MAX_LIMIT = 500;
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-api-key, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+
+const OUTCOMES = ["won", "lost", "bad_data", "unqualified", "no_response"] as const;
+const OUTCOME_REASONS = [
+  "wrong_number",
+  "no_answer_ever",
+  "gatekeeper_block",
+  "not_decision_maker",
+  "no_budget",
+  "competitor",
+  "timing",
+  "price",
+  "invalid_business",
+  "duplicate",
+  "other",
+] as const;
+const TOUCH_TYPES = ["call", "email", "sms", "visit", "other"] as const;
+const TOUCH_RESULTS = [
+  "answered",
+  "voicemail",
+  "no_answer",
+  "wrong_number",
+  "disconnected",
+  "gatekeeper",
+  "dm_reached",
+  "email_sent",
+  "email_bounced",
+  "email_replied",
+  "other",
+] as const;
+
+const OUTCOME_TO_CRM: Record<string, string> = {
+  won: "Won",
+  lost: "Lost",
+  bad_data: "Bad Data",
+  unqualified: "Lost",
+  no_response: "Lost",
 };
 
 type PartnerKey = {
@@ -451,6 +488,191 @@ async function handleDetail(placeId: string, key: PartnerKey) {
   });
 }
 
+  });
+}
+
+async function leadExists(placeId: string): Promise<boolean> {
+  const decoded = decodeURIComponent(placeId);
+  const { data, error: queryError } = await supabase
+    .from("leads")
+    .select("place_id")
+    .eq("place_id", decoded)
+    .maybeSingle();
+  if (queryError) throw new Error(queryError.message);
+  return Boolean(data);
+}
+
+async function mirrorSalesFeedback(placeId: string, outcome: string, notes?: string | null) {
+  const status = OUTCOME_TO_CRM[outcome] ?? "Lost";
+  const now = new Date().toISOString();
+  const { data: existing } = await supabase
+    .from("sales_feedback")
+    .select("addressed, feedback_notes, sales_ready, assigned_to")
+    .eq("place_id", placeId)
+    .maybeSingle();
+  await supabase.from("sales_feedback").upsert({
+    place_id: placeId,
+    status,
+    feedback_notes: notes ?? existing?.feedback_notes ?? "",
+    addressed: existing?.addressed ?? false,
+    sales_ready: existing?.sales_ready ?? null,
+    assigned_to: existing?.assigned_to ?? null,
+    updated_at: now,
+  });
+}
+
+async function handlePostOutcome(placeId: string, key: PartnerKey, body: Record<string, unknown>) {
+  const limited = await checkRateLimit(key, 1);
+  if (limited) return limited;
+  const decoded = decodeURIComponent(placeId);
+  if (!(await leadExists(decoded))) {
+    return error("not_found", "Lead not found.", 404);
+  }
+  const outcome = String(body.outcome ?? "");
+  if (!OUTCOMES.includes(outcome as (typeof OUTCOMES)[number])) {
+    return error("invalid_outcome", "outcome must be a supported value.", 400);
+  }
+  const reason = body.outcome_reason != null ? String(body.outcome_reason) : null;
+  if (reason && !OUTCOME_REASONS.includes(reason as (typeof OUTCOME_REASONS)[number])) {
+    return error("invalid_outcome_reason", "outcome_reason is not allowed.", 400);
+  }
+  const quality = body.quality_rating != null ? Number(body.quality_rating) : null;
+  if (quality != null && (quality < 1 || quality > 5)) {
+    return error("invalid_quality_rating", "quality_rating must be 1-5.", 400);
+  }
+  const now = new Date().toISOString();
+  const decidedAt = typeof body.decided_at === "string" ? body.decided_at : now;
+  const row = {
+    place_id: decoded,
+    outcome,
+    outcome_reason: reason,
+    deal_value_usd: body.deal_value_usd != null ? Number(body.deal_value_usd) : null,
+    quality_rating: quality,
+    data_flags: body.data_flags && typeof body.data_flags === "object" ? body.data_flags : {},
+    source: "partner_api",
+    partner_key_id: key.id,
+    notes: body.notes != null ? String(body.notes) : null,
+    decided_at: decidedAt,
+    updated_at: now,
+  };
+  const { data, error: upsertError } = await supabase
+    .from("lead_outcomes")
+    .upsert(row)
+    .select("*")
+    .single();
+  if (upsertError) return error("outcome_write_failed", upsertError.message, 500);
+  await mirrorSalesFeedback(decoded, outcome, row.notes);
+  return json({ data, meta: { api_version: API_VERSION, generated_at: now } });
+}
+
+async function handleGetOutcome(placeId: string, key: PartnerKey) {
+  const limited = await checkRateLimit(key, 1);
+  if (limited) return limited;
+  const decoded = decodeURIComponent(placeId);
+  const { data, error: queryError } = await supabase
+    .from("lead_outcomes")
+    .select("*")
+    .eq("place_id", decoded)
+    .maybeSingle();
+  if (queryError) return error("outcome_query_failed", queryError.message, 500);
+  if (!data) return error("not_found", "No outcome recorded for this lead.", 404);
+  return json({ data, meta: { api_version: API_VERSION, generated_at: new Date().toISOString() } });
+}
+
+async function handlePostTouch(placeId: string, key: PartnerKey, body: Record<string, unknown>) {
+  const limited = await checkRateLimit(key, 1);
+  if (limited) return limited;
+  const decoded = decodeURIComponent(placeId);
+  if (!(await leadExists(decoded))) {
+    return error("not_found", "Lead not found.", 404);
+  }
+  const touchType = String(body.touch_type ?? "");
+  if (!TOUCH_TYPES.includes(touchType as (typeof TOUCH_TYPES)[number])) {
+    return error("invalid_touch_type", "touch_type is required and must be valid.", 400);
+  }
+  const result = body.result != null ? String(body.result) : null;
+  if (result && !TOUCH_RESULTS.includes(result as (typeof TOUCH_RESULTS)[number])) {
+    return error("invalid_touch_result", "result is not allowed.", 400);
+  }
+  const row = {
+    place_id: decoded,
+    touch_type: touchType,
+    result,
+    contact_name: body.contact_name != null ? String(body.contact_name) : null,
+    contact_phone: body.contact_phone != null ? String(body.contact_phone) : null,
+    duration_seconds: body.duration_seconds != null ? Number(body.duration_seconds) : null,
+    source: "partner_api",
+    partner_key_id: key.id,
+    notes: body.notes != null ? String(body.notes) : null,
+    meta_json: body.meta && typeof body.meta === "object" ? body.meta : null,
+    occurred_at: typeof body.occurred_at === "string" ? body.occurred_at : new Date().toISOString(),
+  };
+  const { data, error: insertError } = await supabase
+    .from("lead_touches")
+    .insert(row)
+    .select("*")
+    .single();
+  if (insertError) return error("touch_write_failed", insertError.message, 500);
+  return json({ data, meta: { api_version: API_VERSION, generated_at: new Date().toISOString() } });
+}
+
+async function handleGetTouches(placeId: string, key: PartnerKey, url: URL) {
+  const limitParam = Number(url.searchParams.get("limit") ?? 50);
+  const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 50, 1), 200);
+  const limited = await checkRateLimit(key, limit);
+  if (limited) return limited;
+  const decoded = decodeURIComponent(placeId);
+  const { data, error: queryError } = await supabase
+    .from("lead_touches")
+    .select("*")
+    .eq("place_id", decoded)
+    .eq("partner_key_id", key.id)
+    .order("occurred_at", { ascending: false })
+    .limit(limit);
+  if (queryError) return error("touches_query_failed", queryError.message, 500);
+  return json({
+    data: data ?? [],
+    page: { limit, count: (data ?? []).length },
+    meta: { api_version: API_VERSION, generated_at: new Date().toISOString() },
+  });
+}
+
+async function handleFeedbackBatch(key: PartnerKey, body: unknown) {
+  if (!Array.isArray(body)) {
+    return error("invalid_body", "Batch body must be a JSON array.", 400);
+  }
+  if (body.length > 100) {
+    return error("batch_too_large", "Maximum 100 items per batch.", 400);
+  }
+  const limited = await checkRateLimit(key, body.length);
+  if (limited) return limited;
+  const results: unknown[] = [];
+  for (const item of body) {
+    if (!item || typeof item !== "object") {
+      results.push({ ok: false, error: "invalid_item" });
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const placeId = String(record.place_id ?? "");
+    if (!placeId) {
+      results.push({ ok: false, error: "missing_place_id" });
+      continue;
+    }
+    if (record.outcome) {
+      const resp = await handlePostOutcome(placeId, key, record);
+      const payload = await resp.json();
+      results.push({ ok: resp.ok, place_id: placeId, kind: "outcome", ...payload });
+    } else if (record.touch_type) {
+      const resp = await handlePostTouch(placeId, key, record);
+      const payload = await resp.json();
+      results.push({ ok: resp.ok, place_id: placeId, kind: "touch", ...payload });
+    } else {
+      results.push({ ok: false, place_id: placeId, error: "missing_outcome_or_touch" });
+    }
+  }
+  return json({ data: results, meta: { api_version: API_VERSION, count: results.length } });
+}
+
 Deno.serve(async (req: Request) => {
   const started = Date.now();
   const url = new URL(req.url);
@@ -461,9 +683,6 @@ Deno.serve(async (req: Request) => {
 
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
-  }
-  if (req.method !== "GET") {
-    return error("method_not_allowed", "Only GET is supported.", 405);
   }
   if (route[0] === "health") {
     return json({
@@ -484,15 +703,53 @@ Deno.serve(async (req: Request) => {
     errorCode = "auth_failed";
   } else {
     key = authResult;
-    if (!key.scopes.includes("leads:read")) {
+    const isLeadRead =
+      req.method === "GET" &&
+      (route[0] === "metadata" ||
+        (route[0] === "leads" && route.length === 1) ||
+        (route[0] === "leads" && route[1] && route.length === 2));
+    const isFeedbackRead =
+      req.method === "GET" &&
+      route[0] === "leads" &&
+      (route[2] === "outcome" || route[2] === "touches");
+    const isFeedbackWrite =
+      req.method === "POST" &&
+      ((route[0] === "leads" && (route[2] === "outcome" || route[2] === "touches")) ||
+        (route[0] === "feedback" && route[1] === "batch"));
+
+    if (isLeadRead && !key.scopes.includes("leads:read")) {
       response = error("missing_scope", "This key cannot read leads.", 403);
       errorCode = "missing_scope";
-    } else if (route[0] === "metadata") {
+    } else if ((isFeedbackRead || isFeedbackWrite) && !key.scopes.includes("leads:feedback")) {
+      response = error("missing_scope", "This key cannot post or read feedback.", 403);
+      errorCode = "missing_scope";
+    } else if (req.method === "GET" && route[0] === "metadata") {
       response = await handleMetadata();
-    } else if (route[0] === "leads" && route.length === 1) {
+    } else if (req.method === "GET" && route[0] === "leads" && route.length === 1) {
       response = await handleList(url, key);
-    } else if (route[0] === "leads" && route[1]) {
+    } else if (req.method === "GET" && route[0] === "leads" && route[1] && route.length === 2) {
       response = await handleDetail(route[1], key);
+    } else if (req.method === "GET" && route[0] === "leads" && route[2] === "outcome") {
+      response = await handleGetOutcome(route[1], key);
+    } else if (req.method === "GET" && route[0] === "leads" && route[2] === "touches") {
+      response = await handleGetTouches(route[1], key, url);
+    } else if (req.method === "POST" && route[0] === "leads" && route[2] === "outcome") {
+      const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!body) {
+        response = error("invalid_body", "JSON body required.", 400);
+      } else {
+        response = await handlePostOutcome(route[1], key, body);
+      }
+    } else if (req.method === "POST" && route[0] === "leads" && route[2] === "touches") {
+      const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!body) {
+        response = error("invalid_body", "JSON body required.", 400);
+      } else {
+        response = await handlePostTouch(route[1], key, body);
+      }
+    } else if (req.method === "POST" && route[0] === "feedback" && route[1] === "batch") {
+      const body = await req.json().catch(() => null);
+      response = await handleFeedbackBatch(key, body);
     } else {
       response = error("not_found", "Unknown partner API endpoint.", 404);
       errorCode = "not_found";

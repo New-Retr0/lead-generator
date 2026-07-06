@@ -112,6 +112,86 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
+  /leads/{place_id}/outcome:
+    get:
+      summary: Read structured outcome (requires leads:feedback)
+      parameters:
+        - in: path
+          name: place_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current outcome
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      summary: Upsert structured outcome (requires leads:feedback)
+      parameters:
+        - in: path
+          name: place_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeadOutcomeInput"
+      responses:
+        "200":
+          description: Outcome saved
+  /leads/{place_id}/touches:
+    get:
+      summary: List touches posted by this API key (requires leads:feedback)
+      parameters:
+        - in: path
+          name: place_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Touch list
+    post:
+      summary: Log a touch (requires leads:feedback)
+      parameters:
+        - in: path
+          name: place_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeadTouchInput"
+      responses:
+        "200":
+          description: Touch saved
+  /feedback/batch:
+    post:
+      summary: Batch outcome/touch sync (requires leads:feedback, max 100)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              maxItems: 100
+              items:
+                type: object
+      responses:
+        "200":
+          description: Batch results
 components:
   securitySchemes:
     bearerAuth:
@@ -236,6 +316,74 @@ components:
                     longitude:
                       type: number
                       nullable: true
+        meta:
+          type: object
+    LeadOutcomeInput:
+      type: object
+      required: [outcome]
+      properties:
+        outcome:
+          type: string
+          enum: [won, lost, bad_data, unqualified, no_response]
+        outcome_reason:
+          type: string
+          enum:
+            - wrong_number
+            - no_answer_ever
+            - gatekeeper_block
+            - not_decision_maker
+            - no_budget
+            - competitor
+            - timing
+            - price
+            - invalid_business
+            - duplicate
+            - other
+        deal_value_usd:
+          type: number
+        quality_rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        data_flags:
+          type: object
+        notes:
+          type: string
+        decided_at:
+          type: string
+          format: date-time
+    LeadTouchInput:
+      type: object
+      required: [touch_type]
+      properties:
+        touch_type:
+          type: string
+          enum: [call, email, sms, visit, other]
+        result:
+          type: string
+          enum:
+            - answered
+            - voicemail
+            - no_answer
+            - wrong_number
+            - disconnected
+            - gatekeeper
+            - dm_reached
+            - email_sent
+            - email_bounced
+            - email_replied
+            - other
+        contact_name:
+          type: string
+        contact_phone:
+          type: string
+        duration_seconds:
+          type: integer
+        notes:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
         meta:
           type: object
   responses:

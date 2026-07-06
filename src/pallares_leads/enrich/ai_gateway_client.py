@@ -11,6 +11,7 @@ import httpx
 from pydantic import BaseModel
 
 from pallares_leads.costs import load_pricing, usd_for
+from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.settings import Settings
 
 if TYPE_CHECKING:
@@ -241,6 +242,25 @@ def gateway_chat_completion(
                 meta=meta,
             )
             store.commit_cost_events()
+
+        record_capture(
+            settings,
+            "ai_gateway",
+            operation,
+            place_id=place_id,
+            run_id=run_id,
+            request={
+                "model": settings.ai_gateway_model,
+                "messages": body.get("messages"),
+                "operation": operation,
+            },
+            response={
+                "content": content,
+                "usage": usage,
+                "raw": payload,
+            },
+            duration_ms=duration_ms,
+        )
 
         return GatewayCompletionResult(
             content=content if isinstance(content, str) else None,

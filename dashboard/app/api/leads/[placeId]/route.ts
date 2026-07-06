@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isCrmStatus, updateSalesFeedback } from "@/lib/db-write";
-import { getLeadDetail } from "@/lib/db";
+import {
+  insertLeadTouch,
+  isCrmStatus,
+  updateSalesFeedback,
+  upsertLeadOutcome,
+} from "@/lib/db-write";
+import { getLeadDetail, getLeadOutcome, listLeadTouches } from "@/lib/db";
+import type { LeadOutcomeInput, LeadTouchInput } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +20,11 @@ export async function GET(
     if (!lead) {
       return NextResponse.json({ error: "Lead not found" }, { status: 404 });
     }
-    return NextResponse.json({ lead });
+    const [outcome, touches] = await Promise.all([
+      getLeadOutcome(lead.place_id),
+      listLeadTouches(lead.place_id),
+    ]);
+    return NextResponse.json({ lead, outcome, touches });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load lead";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -32,6 +42,8 @@ export async function PATCH(
       status?: unknown;
       feedbackNotes?: unknown;
       addressed?: unknown;
+      outcome?: LeadOutcomeInput;
+      touch?: LeadTouchInput;
     };
     const fields: Parameters<typeof updateSalesFeedback>[1] = {};
     if (body.status !== undefined) {
@@ -45,10 +57,20 @@ export async function PATCH(
     }
     if (typeof body.feedbackNotes === "string") fields.feedbackNotes = body.feedbackNotes;
     if (typeof body.addressed === "boolean") fields.addressed = body.addressed;
-    if (Object.keys(fields).length === 0) {
+
+    if (body.outcome) {
+      await upsertLeadOutcome(id, body.outcome);
+    } else if (Object.keys(fields).length > 0) {
+      await updateSalesFeedback(id, fields);
+    }
+
+    if (body.touch) {
+      await insertLeadTouch(id, body.touch);
+    }
+
+    if (!body.outcome && !body.touch && Object.keys(fields).length === 0) {
       return NextResponse.json({ error: "No valid fields" }, { status: 400 });
     }
-    await updateSalesFeedback(id, fields);
     return NextResponse.json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update lead";

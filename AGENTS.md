@@ -10,6 +10,7 @@
 - Owner-chain county recorder lookups use free grantor/grantee index only — never purchase deed images.
 - Only git commit and push when explicitly requested.
 - Real credentials live in `.env` and `secrets/` — never commit API keys or service account JSON.
+- Product is API-first: the sellable surface is the Partner API; new lead-lifecycle features must land there before or with internal UI; `dashboard/` and `sales-app/` are reference clients only.
 
 ## Learned Workspace Facts
 

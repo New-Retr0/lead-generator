@@ -48,7 +48,15 @@ import {
 } from "@/lib/lead-contacts";
 import { cn, formatCostUnits, formatProvider, formatUsd } from "@/lib/utils";
 import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
-import type { LeadCostByProvider, LeadCostEvent, LeadCosts, LeadDetail, LeadFact } from "@/lib/types";
+import type {
+  LeadCostByProvider,
+  LeadCostEvent,
+  LeadCosts,
+  LeadDetail,
+  LeadFact,
+  LeadOutcome,
+  LeadTouch,
+} from "@/lib/types";
 
 function Section({
   icon: Icon,
@@ -459,6 +467,8 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
 
 function LeadDetailContent({ placeId }: { placeId: string }) {
   const [lead, setLead] = useState<LeadDetail | null>(null);
+  const [outcome, setOutcome] = useState<LeadOutcome | null>(null);
+  const [touches, setTouches] = useState<LeadTouch[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -469,10 +479,22 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
     const run = async () => {
       try {
         const res = await fetch(`/api/leads/${encodeURIComponent(placeId)}`);
-        const data = (await res.json()) as { lead?: LeadDetail };
-        if (!cancelled) setLead(data.lead ?? null);
+        const data = (await res.json()) as {
+          lead?: LeadDetail;
+          outcome?: LeadOutcome | null;
+          touches?: LeadTouch[];
+        };
+        if (!cancelled) {
+          setLead(data.lead ?? null);
+          setOutcome(data.outcome ?? null);
+          setTouches(data.touches ?? []);
+        }
       } catch {
-        if (!cancelled) setLead(null);
+        if (!cancelled) {
+          setLead(null);
+          setOutcome(null);
+          setTouches([]);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -796,6 +818,60 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                     <FactProvenanceRow key={`${fact.fact_kind}-${i}`} fact={fact} />
                   ))}
                 </div>
+              </Section>
+            ) : null}
+
+            {outcome || touches.length > 0 ? (
+              <Section icon={MessageCircle} title="Outcome & activity">
+                {outcome ? (
+                  <div className="glass space-y-2 rounded-xl border border-border/50 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="capitalize">
+                        {outcome.outcome.replace(/_/g, " ")}
+                      </Badge>
+                      {outcome.outcome_reason ? (
+                        <span className="text-muted-foreground">
+                          {outcome.outcome_reason.replace(/_/g, " ")}
+                        </span>
+                      ) : null}
+                      {outcome.deal_value_usd != null ? (
+                        <span className="font-medium tabular-nums">
+                          ${outcome.deal_value_usd.toLocaleString()}
+                        </span>
+                      ) : null}
+                    </div>
+                    {outcome.notes ? (
+                      <p className="text-muted-foreground">{outcome.notes}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No structured outcome yet.</p>
+                )}
+                {touches.length > 0 ? (
+                  <ul className="space-y-2">
+                    {touches.map((touch) => (
+                      <li
+                        key={touch.id}
+                        className="flex flex-wrap items-center gap-2 rounded-lg border border-border/40 px-3 py-2 text-sm"
+                      >
+                        <Badge variant="secondary" className="capitalize">
+                          {touch.touch_type}
+                        </Badge>
+                        {touch.result ? (
+                          <span className="text-muted-foreground capitalize">
+                            {touch.result.replace(/_/g, " ")}
+                          </span>
+                        ) : null}
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {new Date(touch.occurred_at).toLocaleString()}
+                        </span>
+                        {touch.notes ? (
+                          <p className="w-full text-xs text-muted-foreground">{touch.notes}</p>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </Section>
             ) : null}
 

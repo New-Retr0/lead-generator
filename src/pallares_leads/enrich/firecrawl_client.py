@@ -20,6 +20,7 @@ from pallares_leads.enrich.contact_requirements import (
     investigation_meets_bar,
 )
 from pallares_leads.enrich.domain_verify import pick_verified_website_url, verify_website_url
+from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
 from pallares_leads.enrich.firecrawl_types import FirecrawlStageMeta
 from pallares_leads.enrich.google_gaps import is_corporate_locator_url
@@ -81,6 +82,36 @@ class FirecrawlClient:
         self.last_grounding = None
         self.session_rejections = []
         self.session_markdown = {}
+
+    def _archive_response(
+        self,
+        operation: str,
+        *,
+        request: dict[str, Any] | None = None,
+        response: Any = None,
+    ) -> None:
+        if response is None:
+            return
+        payload: Any = response
+        if hasattr(response, "model_dump"):
+            payload = response.model_dump(mode="json")
+        elif hasattr(response, "__dict__") and not isinstance(response, (dict, list, str, int)):
+            payload = {
+                k: v
+                for k, v in response.__dict__.items()
+                if not k.startswith("_")
+                and isinstance(v, (str, int, float, bool, list, dict, type(None)))
+            }
+        record_capture(
+            self._settings,
+            "firecrawl",
+            operation,
+            place_id=self._cost_place_id,
+            run_id=self._cost_run_id,
+            request=request,
+            response=payload,
+            duration_ms=self._last_op_duration_ms,
+        )
 
     def set_cost_context(
         self,
@@ -226,6 +257,7 @@ class FirecrawlClient:
                 elif credits <= 0 and operation == "map":
                     credits = 1
                 self._track_credits_units(credits, operation)
+                self._archive_response(operation, response=result)
                 return result
             except PaymentRequiredError as exc:
                 raise OutOfCreditsError(str(exc)) from exc
@@ -546,6 +578,7 @@ class FirecrawlClient:
                 return None
 
             payload: dict[str, Any] = response.json()
+            self._archive_response("scrape_pdf", request={"url": url}, response=payload)
             self._track_credits(payload, operation="scrape_pdf")
             data = payload.get("data") or {}
             markdown = data.get("markdown")
@@ -676,6 +709,7 @@ class FirecrawlClient:
             run_id=self._cost_run_id,
             place_id=self._cost_place_id or raw.place_id,
             stage="scrape",
+            rejections_sink=self.session_rejections,
         )
 
     def _ground_and_record(
@@ -747,6 +781,7 @@ class FirecrawlClient:
             place_id=self._cost_place_id,
             request_id=self._cost_request_id,
             stage="scrape",
+            rejections_sink=self.session_rejections,
         )
         if not result:
             return None
@@ -946,6 +981,7 @@ class FirecrawlClient:
             place_id=self._cost_place_id,
             request_id=self._cost_request_id,
             stage="tier2_search",
+            rejections_sink=self.session_rejections,
         )
         if result and investigation_meets_bar(result, rules, property_type=raw.property_type)[0]:
             self.last_contact_search_info["matched_url"] = primary_url
