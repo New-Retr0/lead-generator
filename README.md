@@ -12,7 +12,9 @@ Canonical data lives in **Supabase** (`pallares-leads` project). Re-runs skip kn
 cd "C:\Users\Austi\Documents\Projects\lead-generator"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev,ownerchain]"
+pip install -e ".[dev]"
+# add analysis extras (pandas/scikit-learn/scipy) if you run `pallares-leads insights`
+pip install -e ".[analysis]"
 copy .env.example .env
 # Fill in .env — SUPABASE_URL, SUPABASE_DB_URL, API keys
 supabase link   # once
@@ -97,21 +99,25 @@ Firecrawl Agent tier was removed (never fired in production; owner chain replace
 ## Project layout
 
 ```
-config/              markets, categories, campaign, jurisdictions, pricing, search_templates
+config/              markets, categories, campaign, jurisdictions, licensing, pricing, search_templates, learned_score
 src/pallares_leads/
-  discover/          Places, Overpass, mgmt directory harvest
-  enrich/            Firecrawl, owner chain, Browser Use, sales copy
+  discover/          Places (grid tiling), Overpass, county filter, mgmt directory harvest
+  enrich/            Firecrawl, owner chain, Browser Use, sales copy, registries
   request/           NL planner + deterministic fulfiller
-  resolve/           contact hierarchy, confidence, lead_score
-  pipeline/          run orchestration (single-pass discover + enrich), CSV/Sheets export
-  db/                SQLite ledger + cost_events + page_cache
+  resolve/           contact hierarchy, verification, lead_score (heuristic + learned blend)
+  pipeline/          run orchestration (single-pass discover + enrich), campaigns, dedupe
+  db/                LeadStore (Supabase Postgres via psycopg) + local SQLite caches
+  intelligence/      lead_features snapshots + insights analysis
   eval/              stage-traced eval replay
-dashboard/           Next.js + shadcn control plane
-data/
-  pallares.db        canonical lead state
+supabase/            canonical schema (migrations) + partner-api Edge Function
+dashboard/           local Next.js operator console + CRM
+sales-app/           Vercel Developer Console (Supabase Auth + RLS)
+data/                local-only runtime (canonical data lives in Supabase)
+  local_cache.db     page_cache / domain_cache / extraction_cache
+  raw_archive.db     compressed raw API payloads for feature replay + eval
   runs/{run_id}/     manifest.json, raw jsonl, export.csv per run
   exports/           request deliverables
-  evals/             eval replay reports
+  insights/          insight reports from `pallares-leads insights`
 ```
 
 Per-category rules (`min_contact_bar`, `allow_owner_chain`, etc.) live in `config/categories.yaml`.

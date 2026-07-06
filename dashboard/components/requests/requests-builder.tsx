@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { motion } from "motion/react";
 import {
   Building2,
@@ -15,7 +14,6 @@ import {
 import { toast } from "sonner";
 import { AnimatedNumber } from "@/components/animated";
 import { ChipSelect } from "@/components/chip-select";
-import { JobLogPanel } from "@/components/job-log-panel";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -48,8 +46,13 @@ import {
 
 const DEFAULT_BUDGET = { max_firecrawl_credits: 200, max_usd: 10 };
 
-export function RequestsBuilder({ config }: { config: PipelineConfig }) {
-  const router = useRouter();
+export function RequestsBuilder({
+  config,
+  onJobStarted,
+}: {
+  config: PipelineConfig;
+  onJobStarted: (jobId: string) => void;
+}) {
 
   const [count, setCount] = useState(5);
   const [targetKind, setTargetKind] = useState<"property" | "vendor">("property");
@@ -64,7 +67,6 @@ export function RequestsBuilder({ config }: { config: PipelineConfig }) {
   const [corridorRoad, setCorridorRoad] = useState("");
   const [corridorBuffer, setCorridorBuffer] = useState(800);
   const [prompt, setPrompt] = useState("");
-  const [jobId, setJobId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const spec: RequestSpec = useMemo(
@@ -115,7 +117,7 @@ export function RequestsBuilder({ config }: { config: PipelineConfig }) {
         toast.error(data.error ?? "Failed to start request");
         return;
       }
-      setJobId(data.jobId);
+      onJobStarted(data.jobId);
       toast.success(dryRun ? "Estimating request…" : "Request started", {
         description: dryRun
           ? "Parsing and pricing only — no credits spent."
@@ -139,13 +141,6 @@ export function RequestsBuilder({ config }: { config: PipelineConfig }) {
 
   return (
     <>
-      <JobLogPanel
-        jobId={jobId}
-        onDone={(status) => {
-          if (status === "completed") router.refresh();
-        }}
-      />
-
       <div className="grid min-w-0 gap-6 lg:grid-cols-[1fr_300px]">
         <Tabs defaultValue="builder" className="min-w-0">
           <TabsList>

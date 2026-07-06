@@ -8,19 +8,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { AnimatedNumber } from "@/components/animated";
 import { cn } from "@/lib/utils";
 
-const TONE_STYLES = {
-  default: {
-    tile: "from-primary/90 to-[oklch(0.55_0.16_290)] shadow-[0_6px_20px_-6px_oklch(0.5_0.19_262/0.55)]",
-    glow: "bg-primary/12",
-  },
-  success: {
-    tile: "from-success/90 to-[oklch(0.62_0.13_183)] shadow-[0_6px_20px_-6px_oklch(0.55_0.14_152/0.55)]",
-    glow: "bg-success/12",
-  },
-  warning: {
-    tile: "from-warning/90 to-[oklch(0.66_0.16_45)] shadow-[0_6px_20px_-6px_oklch(0.6_0.14_70/0.55)]",
-    glow: "bg-warning/12",
-  },
+const TONE_ICON_STYLES = {
+  default: "border-primary/20 bg-primary/10 text-primary",
+  success: "border-success/20 bg-success/10 text-success",
+  warning: "border-warning/20 bg-warning/10 text-warning",
 } as const;
 
 export type StatCardDetail = { label: string; value: string };
@@ -34,6 +25,7 @@ export function StatCard({
   expandable = false,
   icon: Icon,
   tone = "default",
+  onClick,
 }: {
   label: string;
   value: number;
@@ -42,22 +34,35 @@ export function StatCard({
   details?: StatCardDetail[];
   expandable?: boolean;
   icon: LucideIcon;
-  tone?: keyof typeof TONE_STYLES;
+  tone?: keyof typeof TONE_ICON_STYLES;
+  onClick?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const reduced = useReducedMotion();
-  const styles = TONE_STYLES[tone];
+  const iconStyles = TONE_ICON_STYLES[tone];
   const showExpand = expandable && (details?.length ?? 0) > 0;
+  const clickable = Boolean(onClick);
 
   return (
-    <Card className="hover-lift group relative flex h-full flex-col overflow-hidden py-5">
-      <div
-        className={cn(
-          "absolute -right-10 -top-10 size-32 rounded-full blur-3xl transition-opacity duration-500 group-hover:opacity-100 opacity-60",
-          styles.glow,
-        )}
-        aria-hidden
-      />
+    <Card
+      className={cn(
+        "group relative flex h-full flex-col overflow-hidden py-5",
+        clickable && "hover-lift cursor-pointer",
+      )}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
+    >
       <CardContent className="relative flex flex-1 flex-col justify-between gap-3 px-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -75,12 +80,11 @@ export function StatCard({
           </div>
           <div
             className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-white",
-              "transition-transform duration-500 group-hover:scale-110 group-hover:rotate-3",
-              styles.tile,
+              "flex size-10 shrink-0 items-center justify-center rounded-sm border",
+              iconStyles,
             )}
           >
-            <Icon className="size-4.5" strokeWidth={2.25} />
+            <Icon className="size-4" strokeWidth={1.5} />
           </div>
         </div>
 
@@ -88,7 +92,10 @@ export function StatCard({
           <>
             <button
               type="button"
-              onClick={() => setOpen((o) => !o)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen((o) => !o);
+              }}
               className="inline-flex w-fit items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
             >
               {open ? "Less" : "More"}

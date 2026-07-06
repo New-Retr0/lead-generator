@@ -105,23 +105,23 @@ class Settings(BaseSettings):
     )
     raw_dir: Path = Field(
         default_factory=lambda: _find_project_root() / "data" / "raw",
-        json_schema_extra=_meta("Paths", readonly=True),
+        json_schema_extra=_meta("Paths", readonly=True, help="Raw API response dumps"),
     )
     snapshots_dir: Path = Field(
         default_factory=lambda: _find_project_root() / "data" / "snapshots",
-        json_schema_extra=_meta("Paths", readonly=True),
+        json_schema_extra=_meta("Paths", readonly=True, help="Point-in-time page snapshots"),
     )
     output_dir: Path = Field(
         default_factory=lambda: _find_project_root() / "data" / "output",
-        json_schema_extra=_meta("Paths", readonly=True),
+        json_schema_extra=_meta("Paths", readonly=True, help="CSV/export output"),
     )
     runs_dir: Path = Field(
         default_factory=lambda: _find_project_root() / "data" / "runs",
-        json_schema_extra=_meta("Paths", readonly=True),
+        json_schema_extra=_meta("Paths", readonly=True, help="Per-run artifact folders"),
     )
     exports_dir: Path = Field(
         default_factory=lambda: _find_project_root() / "data" / "exports",
-        json_schema_extra=_meta("Paths", readonly=True),
+        json_schema_extra=_meta("Paths", readonly=True, help="Generated export files"),
     )
     local_cache_path: Path = Field(
         default_factory=lambda: _find_project_root() / "data" / "local_cache.db",

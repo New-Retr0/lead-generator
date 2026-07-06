@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import {
   Building2,
@@ -31,7 +32,7 @@ import {
 } from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn, formatCostUnits, formatProvider, formatUsd } from "@/lib/utils";
+import { cn, formatCostUnits, formatProvider, formatUsd, formatUsdPrecise } from "@/lib/utils";
 import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
 import type {
   RunCostProvider,
@@ -39,6 +40,15 @@ import type {
   RunTimelineLead,
   RunTimelineStage,
 } from "@/lib/types";
+
+const RunPipelinePanel = dynamic(
+  () =>
+    import("@/components/pipeline/run-pipeline-panel").then((m) => m.RunPipelinePanel),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-96 w-full rounded-lg" />,
+  },
+);
 
 type RunDetailResponse = RunDetail & {
   liveJobId?: string | null;
@@ -143,8 +153,8 @@ function LeadTimelineCard({
       <Collapsible defaultOpen={defaultOpen}>
         <div className="glass overflow-hidden rounded-xl">
           <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-accent/30">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/85 to-[oklch(0.55_0.16_290)] text-white shadow-[0_4px_14px_-4px_oklch(0.5_0.19_262/0.6)]">
-              <Building2 className="size-3.5" strokeWidth={2.25} />
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-sm border border-primary/20 bg-primary/10 text-primary">
+              <Building2 className="size-3.5" strokeWidth={1.5} />
             </span>
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-2 text-sm font-semibold leading-tight">
@@ -211,8 +221,8 @@ function ProviderCostCard({
               type="button"
               className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-accent/30"
             >
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">
-                <Icon className="size-4" strokeWidth={2} />
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-primary/20 bg-primary/10 text-primary">
+                <Icon className="size-4" strokeWidth={1.5} />
               </span>
               <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="flex items-baseline justify-between gap-3">
@@ -265,7 +275,7 @@ function ProviderCostCard({
                     </span>
                   </div>
                   <span className="shrink-0 font-mono font-semibold tabular-nums">
-                    {formatUsd(op.usd)}
+                    {formatUsdPrecise(op.usd)}
                   </span>
                 </div>
               ))}
@@ -356,7 +366,7 @@ function RunCostSummary({
               <Odometer value={costs.firecrawlCreditsEst} climbSeconds={1.8} />
             </p>
             <p className="text-xs text-muted-foreground">
-              {formatUsd(creditUsdEst)} at Standard rate
+              {formatUsdPrecise(creditUsdEst)} at Standard rate
             </p>
           </div>
         ) : null}
@@ -625,6 +635,23 @@ export function RunDetailContent({
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-8 p-6">
+          <section className="space-y-3">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <Layers className="size-3.5" />
+              Pipeline replay
+            </h3>
+            {detail ? (
+              <RunPipelinePanel
+                runId={runId}
+                status={detail.run.status}
+                startedAt={detail.run.started_at}
+                finishedAt={detail.run.finished_at}
+              />
+            ) : (
+              <Skeleton className="h-96 w-full rounded-lg" />
+            )}
+          </section>
+
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               <SquareTerminal className="size-3.5" />

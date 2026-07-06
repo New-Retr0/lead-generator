@@ -26,7 +26,7 @@ export async function DELETE(
   if (!isValidJobId(id)) {
     return NextResponse.json({ error: "Invalid job id" }, { status: 400 });
   }
-  const job = cancelJob(id) ?? loadPersistedJob(id);
+  const job = (await cancelJob(id)) ?? loadPersistedJob(id);
   if (!job) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }

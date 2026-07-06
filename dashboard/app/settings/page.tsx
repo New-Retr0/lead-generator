@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { SettingsClient } from "@/components/settings/settings-client";
+import { SettingsPageIntro } from "@/components/settings/settings-page-intro";
 import { fetchConfigFileList, fetchInitialConfigFile, fetchSettingsSchema } from "@/lib/settings-server";
 
 export const metadata: Metadata = {
@@ -21,12 +22,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Pipeline environment variables (.env) and YAML configuration files.
-        </p>
-      </div>
+      <SettingsPageIntro />
       <SettingsClient
         initialSettings={initialSettings}
         initialFiles={initialFiles}

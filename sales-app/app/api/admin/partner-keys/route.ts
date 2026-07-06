@@ -5,6 +5,26 @@ import { createServiceRoleClient } from "@/lib/service-role";
 
 export const dynamic = "force-dynamic";
 
+const ALLOWED_SCOPES = ["leads:read", "leads:feedback"] as const;
+
+function parseScopes(raw: unknown): string[] {
+  if (raw === undefined || raw === null) {
+    return ["leads:read"];
+  }
+  if (!Array.isArray(raw)) {
+    throw new Error("scopes must be an array");
+  }
+  const scopes = raw.map((s) => String(s).trim()).filter(Boolean);
+  if (scopes.length === 0) {
+    throw new Error("scopes must include at least one value");
+  }
+  const invalid = scopes.filter((s) => !ALLOWED_SCOPES.includes(s as (typeof ALLOWED_SCOPES)[number]));
+  if (invalid.length > 0) {
+    throw new Error(`Invalid scopes: ${invalid.join(", ")}. Allowed: ${ALLOWED_SCOPES.join(", ")}`);
+  }
+  return [...new Set(scopes)];
+}
+
 function makePartnerKey(): string {
   return `ppl_${randomBytes(27).toString("base64url")}`;
 }
@@ -36,9 +56,11 @@ export async function POST(req: Request) {
       rate_limit_per_minute?: number;
       daily_row_limit?: number;
       deactivate_existing?: boolean;
+      scopes?: string[];
     };
 
     const partnerName = body.partner_name?.trim() || "Partner";
+    const scopes = parseScopes(body.scopes);
     const rateLimit = Number(body.rate_limit_per_minute ?? 60);
     const dailyRowLimit = Number(body.daily_row_limit ?? 10_000);
     const apiKey = makePartnerKey();
@@ -62,7 +84,7 @@ export async function POST(req: Request) {
         key_prefix: keyPrefix,
         key_hash: keyHash,
         partner_name: partnerName,
-        scopes: ["leads:read"],
+        scopes,
         rate_limit_per_minute: rateLimit,
         daily_row_limit: dailyRowLimit,
       })
@@ -79,7 +101,11 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create partner key";
-    const status = message.includes("Admin access") ? 403 : 500;
+    const status = message.includes("Admin access")
+      ? 403
+      : message.includes("scopes") || message.includes("Invalid scopes")
+        ? 400
+        : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

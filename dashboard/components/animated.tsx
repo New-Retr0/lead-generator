@@ -6,22 +6,58 @@ import { cn } from "@/lib/utils";
 
 type FormatProp = Intl.NumberFormatOptions | ((n: number) => string);
 
-function toIntlFormat(format?: FormatProp): Intl.NumberFormatOptions {
-  if (!format) return { maximumFractionDigits: 0 };
-  if (typeof format !== "function") return format;
-  const sample = format(1234.56);
-  if (sample.includes("$")) {
+const FORMAT_PROBE_VALUES = [0, 1, 42, 1234.56, 0.0009] as const;
+
+const INTL_FORMAT_CANDIDATES: Intl.NumberFormatOptions[] = [
+  { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 },
+  { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 },
+  { style: "currency", currency: "USD", maximumFractionDigits: 2 },
+  { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+  { maximumFractionDigits: 0 },
+];
+
+function matchesIntlOptions(
+  fn: (n: number) => string,
+  options: Intl.NumberFormatOptions,
+): boolean {
+  const intl = new Intl.NumberFormat("en-US", options);
+  return FORMAT_PROBE_VALUES.every((n) => fn(n) === intl.format(n));
+}
+
+function inferFunctionFormat(fn: (n: number) => string): Intl.NumberFormatOptions {
+  for (const options of INTL_FORMAT_CANDIDATES) {
+    if (matchesIntlOptions(fn, options)) return options;
+  }
+
+  const samples = FORMAT_PROBE_VALUES.map(fn);
+  const currencySamples = samples.filter((sample) => sample.includes("$"));
+  if (currencySamples.length > 0) {
+    const microSample = fn(0.0009);
+    const maxDecimals = microSample.includes(".")
+      ? (microSample.split(".")[1]?.replace(/[^0-9]/g, "").length ?? 2)
+      : 2;
     return {
       style: "currency",
       currency: "USD",
       minimumFractionDigits: 2,
-      maximumFractionDigits: 4,
+      maximumFractionDigits: maxDecimals,
     };
   }
-  if (sample.includes(".")) {
-    return { minimumFractionDigits: 2, maximumFractionDigits: 4 };
+
+  if (samples.some((sample) => sample.includes("."))) {
+    return { minimumFractionDigits: 2, maximumFractionDigits: 2 };
   }
   return { maximumFractionDigits: 0 };
+}
+
+function toIntlFormat(format?: FormatProp): Intl.NumberFormatOptions {
+  if (!format) return { maximumFractionDigits: 0 };
+  if (typeof format !== "function") return format;
+  return inferFunctionFormat(format);
+}
+
+function climbTiming(seconds: number): EffectTiming {
+  return { duration: Math.round(seconds * 1000), easing: "ease-out" };
 }
 
 export function AnimatedNumber({
@@ -157,11 +193,13 @@ export function Odometer({
   className?: string;
   climbSeconds?: number;
 }) {
-  void climbSeconds;
+  const timing = climbTiming(climbSeconds);
   return (
     <NumberFlow
       value={value}
       format={toIntlFormat(format) as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
+      transformTiming={timing}
+      spinTiming={timing}
       className={cn("inline-flex font-mono tabular-nums", className)}
       willChange
     />

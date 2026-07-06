@@ -3,18 +3,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { AlertTriangle, Play, Rocket } from "lucide-react";
+import { AlertTriangle, Play } from "lucide-react";
 import ASCIIAnimation from "@/components/console/ascii-animation";
 import { SectionHeading } from "@/components/console/section-heading";
 import { SectionReveal } from "@/components/console/section-reveal";
-import { AnimatedNumber } from "@/components/animated";
+import { Stagger, StaggerItem } from "@/components/animated";
+import {
+  CampaignConfigDialog,
+  type CampaignConfigState,
+} from "@/components/campaigns/campaign-config-dialog";
+import {
+  EstimateBreakdown,
+  type EstimateBreakdownData,
+} from "@/components/campaigns/estimate-breakdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import { Slider } from "@/components/ui/slider";
 import { cn, formatCredits, formatUsd } from "@/lib/utils";
 
 const STATE_CAMPAIGNS = [
@@ -39,26 +44,34 @@ type CreditsData = {
   aiGateway: { balanceUsd: number | null; live: boolean };
 };
 
-type EstimateData = {
-  estimatedCredits: number | null;
-  estimatedUsd: number | null;
-  avgCreditsPerLead: number | null;
-  estimatedLeads: number;
-};
+type EstimateData = EstimateBreakdownData;
 
 type QueuedCampaign = {
   campaign: string;
-  limit: number;
+  config: CampaignConfigState;
   status: "pending" | "running" | "done" | "failed";
   jobId?: string;
 };
 
+const DEFAULT_LIMIT = 20;
+
+function defaultConfigForCampaign(info: CampaignInfo): CampaignConfigState {
+  return {
+    selectedMarkets: info.markets.map((m) => m.key),
+    selectedCategories: [...info.categories],
+    limit: DEFAULT_LIMIT,
+    discoverOnly: false,
+    maxCreditsPerRun: "",
+  };
+}
+
 export function CampaignControl() {
   const [campaigns, setCampaigns] = useState<CampaignInfo[]>([]);
   const [selected, setSelected] = useState<string>("hawaii");
-  const [limit, setLimit] = useState(20);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [stateConfigs, setStateConfigs] = useState<Record<string, CampaignConfigState>>({});
+  const [stateEstimates, setStateEstimates] = useState<Record<string, EstimateData>>({});
   const [credits, setCredits] = useState<CreditsData | null>(null);
-  const [estimate, setEstimate] = useState<EstimateData | null>(null);
   const [queue, setQueue] = useState<QueuedCampaign[]>([]);
   const [launching, setLaunching] = useState(false);
   const activeJobRef = useRef<string | null>(null);
@@ -68,6 +81,8 @@ export function CampaignControl() {
     [campaigns, selected],
   );
 
+  const selectedConfig = stateConfigs[selected];
+
   const loadMeta = useCallback(async () => {
     const [campRes, credRes] = await Promise.all([
       fetch("/api/campaigns"),
@@ -75,8 +90,33 @@ export function CampaignControl() {
     ]);
     const campBody = (await campRes.json()) as { campaigns?: CampaignInfo[] };
     const credBody = (await credRes.json()) as CreditsData;
-    setCampaigns(campBody.campaigns ?? []);
+    const loaded = campBody.campaigns ?? [];
+    setCampaigns(loaded);
     setCredits(credBody);
+    setStateConfigs((prev) => {
+      const next = { ...prev };
+      for (const state of STATE_CAMPAIGNS) {
+        const info = loaded.find((c) => c.key === state.key);
+        if (!info || next[state.key]) continue;
+        next[state.key] = defaultConfigForCampaign(info);
+      }
+      return next;
+    });
+    const hawaii = loaded.find((c) => c.key === "hawaii");
+    if (hawaii) {
+      const cfg = defaultConfigForCampaign(hawaii);
+      const params = new URLSearchParams({
+        campaign: "hawaii",
+        markets: cfg.selectedMarkets.join(","),
+        categories: cfg.selectedCategories.join(","),
+        limit: String(cfg.limit),
+      });
+      void fetch(`/api/campaigns/estimate?${params}`)
+        .then((r) => r.json())
+        .then((body: EstimateData) =>
+          setStateEstimates((prev) => ({ ...prev, hawaii: body })),
+        );
+    }
   }, []);
 
   useEffect(() => {
@@ -84,39 +124,94 @@ export function CampaignControl() {
     void loadMeta();
   }, [loadMeta]);
 
-  useEffect(() => {
-    if (!selectedCampaign) return;
-    const params = new URLSearchParams({
-      campaign: selected,
-      markets: selectedCampaign.markets.map((m) => m.key).join(","),
-      categories: selectedCampaign.categories.join(","),
-      limit: String(limit),
-    });
-    void fetch(`/api/campaigns/estimate?${params}`)
-      .then((r) => r.json())
-      .then((body: EstimateData) => setEstimate(body));
-  }, [selected, selectedCampaign, limit]);
+  const fetchEstimate = useCallback(
+    async (campaignKey: string, config: CampaignConfigState) => {
+      if (config.selectedMarkets.length === 0 || config.selectedCategories.length === 0) {
+        return;
+      }
+      const params = new URLSearchParams({
+        campaign: campaignKey,
+        markets: config.selectedMarkets.join(","),
+        categories: config.selectedCategories.join(","),
+        limit: String(config.limit),
+      });
+      const body = (await fetch(`/api/campaigns/estimate?${params}`).then((r) =>
+        r.json(),
+      )) as EstimateData;
+      setStateEstimates((prev) => ({ ...prev, [campaignKey]: body }));
+    },
+    [],
+  );
+
+  const openState = useCallback(
+    (campaignKey: string) => {
+      setSelected(campaignKey);
+      const config = stateConfigs[campaignKey];
+      if (config) void fetchEstimate(campaignKey, config);
+      setDialogOpen(true);
+    },
+    [stateConfigs, fetchEstimate],
+  );
+
+  const updateStateConfig = useCallback(
+    (campaignKey: string, patch: Partial<CampaignConfigState>) => {
+      setStateConfigs((prev) => {
+        const current = prev[campaignKey];
+        if (!current) return prev;
+        const next = { ...current, ...patch };
+        void fetchEstimate(campaignKey, next);
+        return { ...prev, [campaignKey]: next };
+      });
+    },
+    [fetchEstimate],
+  );
+
+  const estimate = stateEstimates[selected] ?? null;
 
   const budgetPct = useMemo(() => {
     if (!credits?.firecrawl.remaining || !estimate?.estimatedCredits) return 0;
     return Math.min(100, (estimate.estimatedCredits / credits.firecrawl.remaining) * 100);
   }, [credits, estimate]);
 
+  const marketsSelected = useMemo(
+    () =>
+      STATE_CAMPAIGNS.reduce(
+        (n, s) => n + (stateConfigs[s.key]?.selectedMarkets.length ?? 0),
+        0,
+      ),
+    [stateConfigs],
+  );
+
   const launchCampaign = useCallback(
-    async (campaignKey: string, leadLimit: number) => {
+    async (campaignKey: string, config: CampaignConfigState) => {
       const remaining = credits?.firecrawl.remaining;
-      const maxCreditsPerRun =
-        remaining != null ? Math.max(50, Math.floor(remaining / 8)) : undefined;
+      let maxCreditsPerRun: number | undefined;
+      if (config.maxCreditsPerRun !== "" && Number(config.maxCreditsPerRun) > 0) {
+        maxCreditsPerRun = Math.floor(Number(config.maxCreditsPerRun));
+      } else if (remaining != null) {
+        maxCreditsPerRun = Math.max(50, Math.floor(remaining / 8));
+      }
+
+      const body: Record<string, unknown> = {
+        runType: "run-campaign",
+        campaign: campaignKey,
+        limit: config.limit,
+        discoverOnly: config.discoverOnly,
+      };
+      if (config.selectedMarkets.length > 0) {
+        body.market = config.selectedMarkets.join(",");
+      }
+      if (config.selectedCategories.length > 0) {
+        body.category = config.selectedCategories.join(",");
+      }
+      if (maxCreditsPerRun != null) {
+        body.maxCreditsPerRun = maxCreditsPerRun;
+      }
 
       const res = await fetch("/api/jobs/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          runType: "run-campaign",
-          campaign: campaignKey,
-          limit: leadLimit,
-          maxCreditsPerRun,
-        }),
+        body: JSON.stringify(body),
       });
       const data = (await res.json()) as { jobId?: string; error?: string };
       if (!res.ok) {
@@ -140,7 +235,7 @@ export function CampaignControl() {
     );
 
     try {
-      const jobId = await launchCampaign(next.campaign, next.limit);
+      const jobId = await launchCampaign(next.campaign, next.config);
       activeJobRef.current = jobId;
       setQueue((prev) =>
         prev.map((q) =>
@@ -185,190 +280,188 @@ export function CampaignControl() {
     }
   }, [queue, processQueue]);
 
-  const enqueueSelected = () => {
-    if (queue.some((q) => q.campaign === selected && q.status !== "done")) {
+  const enqueueCampaign = (campaignKey: string, config: CampaignConfigState) => {
+    if (queue.some((q) => q.campaign === campaignKey && q.status !== "done")) {
       toast.error("Campaign already queued or running");
-      return;
+      return false;
     }
-    setQueue((prev) => [...prev, { campaign: selected, limit, status: "pending" }]);
-    toast.success("Queued", { description: `${selected} · limit ${limit}` });
+    setQueue((prev) => [...prev, { campaign: campaignKey, config, status: "pending" }]);
+    toast.success("Queued", {
+      description: `${campaignKey} · limit ${config.limit} · ${config.selectedMarkets.length} markets`,
+    });
+    return true;
   };
 
   const enqueueAllStates = () => {
-    const pending = STATE_CAMPAIGNS.filter(
-      (s) => !queue.some((q) => q.campaign === s.key && q.status !== "done"),
-    );
-    setQueue((prev) => [
-      ...prev,
-      ...pending.map((s) => ({ campaign: s.key, limit, status: "pending" as const })),
-    ]);
-    toast.success(`Queued ${pending.length} state campaigns`);
+    const toAdd: QueuedCampaign[] = [];
+    for (const state of STATE_CAMPAIGNS) {
+      const config = stateConfigs[state.key];
+      if (!config) continue;
+      if (queue.some((q) => q.campaign === state.key && q.status !== "done")) continue;
+      toAdd.push({ campaign: state.key, config, status: "pending" });
+    }
+    if (toAdd.length === 0) {
+      toast.error("All states already queued or running");
+      return;
+    }
+    setQueue((prev) => [...prev, ...toAdd]);
+    toast.success(`Queued ${toAdd.length} state campaigns`);
   };
+
+  const selectedStateMeta = STATE_CAMPAIGNS.find((s) => s.key === selected);
 
   return (
     <div className="space-y-8">
-      <div className="relative overflow-hidden rounded-xl border border-border bg-card p-6">
-        <div className="absolute right-0 top-0 h-40 w-40 opacity-20">
-          <ASCIIAnimation frameFolder="cube" frameCount={134} quality="medium" lazy />
+      <section className="relative -mx-4 overflow-hidden md:-mx-8">
+        <ASCIIAnimation
+          frameFolder="planet"
+          frameCount={200}
+          quality="medium"
+          fps={30}
+          className="h-72 w-full md:h-96 [mask-image:radial-gradient(ellipse_70%_90%_at_50%_40%,black_55%,transparent_100%)]"
+          gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
+          lazy
+          ariaLabel="Rotating earth"
+        />
+        <div className="pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-background/90 via-background/40 to-transparent p-6 md:p-10">
+          <SectionHeading index="01" title="Campaign Control" className="mb-2" />
+          <p className="max-w-xl font-mono text-xs tracking-[0.08em] text-muted-foreground">
+            7 states · {marketsSelected} markets selected ·{" "}
+            {estimate?.estimatedCredits != null
+              ? `${formatCredits(estimate.estimatedCredits)} cr estimated`
+              : "select a state to estimate"}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Badge variant="outline" className="pointer-events-auto font-mono text-[10px]">
+              Firecrawl{" "}
+              {credits?.firecrawl.remaining != null
+                ? formatCredits(credits.firecrawl.remaining)
+                : "—"}
+            </Badge>
+            <Badge variant="outline" className="pointer-events-auto font-mono text-[10px]">
+              Gateway{" "}
+              {credits?.aiGateway.balanceUsd != null
+                ? formatUsd(credits.aiGateway.balanceUsd)
+                : "—"}
+            </Badge>
+            {queue.length > 0 ? (
+              <Badge variant="secondary" className="pointer-events-auto font-mono text-[10px]">
+                {queue.filter((q) => q.status !== "done").length} queued
+              </Badge>
+            ) : null}
+          </div>
         </div>
-        <SectionHeading index="01" title="Campaign Control" className="mb-4" />
-        <p className="max-w-xl font-mono text-xs tracking-[0.08em] text-muted-foreground">
-          Credit-aware campaign launcher for HI → OR → WA → CA → NV → AZ → NM expansion.
-        </p>
-      </div>
+      </section>
 
       <SectionReveal>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card className="glass">
-            <CardHeader className="pb-2">
-              <CardTitle className="font-mono text-[10px] uppercase tracking-[0.15em]">
-                Firecrawl credits
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums">
-                <AnimatedNumber value={credits?.firecrawl.remaining ?? 0} />
+        <Card className="glass sm:col-span-2">
+          <CardHeader className="pb-2">
+            <CardTitle className="font-mono text-[10px] uppercase tracking-[0.15em]">
+              Estimated burn — {selectedStateMeta?.label ?? selected}
+            </CardTitle>
+            <CardDescription>
+              {selectedConfig
+                ? `${selectedConfig.selectedMarkets.length} markets × ${selectedConfig.selectedCategories.length} categories × ${selectedConfig.limit} limit`
+                : "Click a state card to configure"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <EstimateBreakdown estimate={estimate} />
+            <Progress
+              value={budgetPct}
+              className={cn("h-2", budgetPct > 80 && "[&>div]:bg-destructive")}
+            />
+            {budgetPct > 80 ? (
+              <p className="flex items-center gap-1 font-mono text-[10px] text-destructive">
+                <AlertTriangle className="size-3" />
+                Estimate exceeds 80% of remaining Firecrawl credits
               </p>
-              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                {credits?.firecrawl.live ? "Live" : "Snapshot"}
-                {credits?.firecrawl.plan
-                  ? ` · plan ${formatCredits(credits.firecrawl.plan)}`
-                  : ""}
-              </p>
-            </CardContent>
-          </Card>
-          <Card className="glass">
-            <CardHeader className="pb-2">
-              <CardTitle className="font-mono text-[10px] uppercase tracking-[0.15em]">
-                AI Gateway
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums">
-                {credits?.aiGateway.balanceUsd != null ? (
-                  <AnimatedNumber value={credits.aiGateway.balanceUsd} format={formatUsd} />
-                ) : (
-                  "—"
-                )}
-              </p>
-              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                {credits?.aiGateway.live ? "Live balance" : "Snapshot / unavailable"}
-              </p>
-            </CardContent>
-          </Card>
-          <Card className="glass sm:col-span-2">
-            <CardHeader className="pb-2">
-              <CardTitle className="font-mono text-[10px] uppercase tracking-[0.15em]">
-                Estimated burn
-              </CardTitle>
-              <CardDescription>
-                {selectedCampaign
-                  ? `${selectedCampaign.markets.length} markets × ${selectedCampaign.categories.length} categories × ${limit} limit`
-                  : "Select a campaign"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-baseline justify-between gap-4">
-                <span className="font-mono text-lg font-bold tabular-nums text-warning">
-                  {estimate?.estimatedCredits != null ? (
-                    <AnimatedNumber value={estimate.estimatedCredits} />
-                  ) : (
-                    "—"
-                  )}{" "}
-                  cr
-                </span>
-                {estimate?.estimatedUsd != null ? (
-                  <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                    ~{formatUsd(estimate.estimatedUsd)}
-                  </span>
-                ) : null}
-              </div>
-              <Progress
-                value={budgetPct}
-                className={cn("h-2", budgetPct > 80 && "[&>div]:bg-destructive")}
-              />
-              {budgetPct > 80 ? (
-                <p className="flex items-center gap-1 font-mono text-[10px] text-destructive">
-                  <AlertTriangle className="size-3" />
-                  Estimate exceeds 80% of remaining Firecrawl credits
-                </p>
-              ) : null}
-            </CardContent>
-          </Card>
-        </div>
+            ) : null}
+          </CardContent>
+        </Card>
       </SectionReveal>
 
       <SectionReveal>
         <SectionHeading index="02" title="State campaigns" className="mb-4" />
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <Stagger className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {STATE_CAMPAIGNS.map((state) => {
             const info = campaigns.find((c) => c.key === state.key);
-            const active = selected === state.key;
+            const config = stateConfigs[state.key];
             const queued = queue.find((q) => q.campaign === state.key);
+            const cardEstimate = stateEstimates[state.key];
+
             return (
-              <button
-                key={state.key}
-                type="button"
-                onClick={() => setSelected(state.key)}
-                className={cn(
-                  "glass rounded-xl border p-4 text-left transition-colors hover:border-primary/30",
-                  active && "border-primary/50 ring-1 ring-primary/20",
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-lg font-bold tracking-[0.15em]">
-                    {state.label}
-                  </span>
-                  {queued ? (
-                    <Badge variant="outline" className="font-mono text-[9px] uppercase">
-                      {queued.status}
-                    </Badge>
+              <StaggerItem key={state.key}>
+                <button
+                  type="button"
+                  onClick={() => openState(state.key)}
+                  className={cn(
+                    "hover-lift glass w-full cursor-pointer rounded-xl border p-4 text-left transition-colors",
+                    selected === state.key && dialogOpen && "border-primary/50 ring-1 ring-primary/20",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-lg font-bold tracking-[0.15em]">
+                      {state.label}
+                    </span>
+                    {queued ? (
+                      <Badge variant="outline" className="font-mono text-[9px] uppercase">
+                        {queued.status}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{state.name}</p>
+                  <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                    {info && config
+                      ? `${config.selectedMarkets.length} markets · ${config.selectedCategories.length} categories · limit ${config.limit}`
+                      : "…"}
+                  </p>
+                  {cardEstimate?.estimatedCredits != null ? (
+                    <p className="mt-2 font-mono text-[10px] tabular-nums text-warning">
+                      {formatCredits(cardEstimate.estimatedCredits)} cr
+                      {cardEstimate.estimatedUsd != null
+                        ? ` · ${formatUsd(cardEstimate.estimatedUsd)}`
+                        : ""}
+                    </p>
                   ) : null}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">{state.name}</p>
-                <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-                  {info ? `${info.markets.length} markets · ${info.categories.length} categories` : "…"}
-                </p>
-              </button>
+                </button>
+              </StaggerItem>
             );
           })}
-        </div>
+        </Stagger>
       </SectionReveal>
+
+      {selectedCampaign && selectedConfig && selectedStateMeta ? (
+        <CampaignConfigDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          stateKey={selected}
+          stateLabel={selectedStateMeta.label}
+          stateName={selectedStateMeta.name}
+          markets={selectedCampaign.markets}
+          categories={selectedCampaign.categories}
+          config={selectedConfig}
+          estimate={estimate}
+          launching={launching}
+          onChange={(patch) => updateStateConfig(selected, patch)}
+          onLaunch={() => {
+            if (selectedConfig) enqueueCampaign(selected, selectedConfig);
+            setDialogOpen(false);
+          }}
+          onQueue={() => {
+            if (selectedConfig) enqueueCampaign(selected, selectedConfig);
+          }}
+        />
+      ) : null}
 
       <SectionReveal>
         <SectionHeading index="03" title="Launch controls" className="mb-4" />
         <Card className="glass">
           <CardContent className="space-y-5 py-6">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                  Lead limit per category
-                </Label>
-                <div className="flex items-center gap-3">
-                  <Slider
-                    min={5}
-                    max={50}
-                    step={5}
-                    value={[limit]}
-                    onValueChange={([v]) => setLimit(v)}
-                    className="flex-1"
-                  />
-                  <Input
-                    type="number"
-                    min={1}
-                    max={500}
-                    value={limit}
-                    onChange={(e) => setLimit(Number(e.target.value) || 20)}
-                    className="w-20 font-mono tabular-nums"
-                  />
-                </div>
-              </div>
-            </div>
+            <p className="font-mono text-xs text-muted-foreground">
+              Click a state card to configure markets and limits, then launch or queue.
+            </p>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={enqueueSelected} disabled={launching}>
-                <Rocket className="size-4" />
-                Launch {selected}
-              </Button>
               <Button variant="outline" onClick={enqueueAllStates} disabled={launching}>
                 Queue all 7 states
               </Button>
@@ -394,7 +487,10 @@ export function CampaignControl() {
                   className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2 text-sm"
                 >
                   <span className="font-mono">{item.campaign}</span>
-                  <span className="text-muted-foreground">limit {item.limit}</span>
+                  <span className="text-muted-foreground">
+                    limit {item.config.limit}
+                    {item.config.discoverOnly ? " · discover only" : ""}
+                  </span>
                   <Badge variant="outline" className="font-mono text-[9px] uppercase">
                     {item.status}
                   </Badge>
@@ -418,28 +514,16 @@ export function CampaignControl() {
           <CardContent className="space-y-3 font-mono text-xs leading-relaxed text-muted-foreground">
             <ol className="list-decimal space-y-2 pl-4">
               <li>
-                Fetch live credits on this page; set limit 20 and{" "}
-                <code className="text-foreground">FIRECRAWL_MAX_CREDITS_PER_RUN</code> ≈ ⅛
-                remaining (set automatically server-side when launching).
+                Fetch live credits on this page; set limit 20 and credit caps ≈ ⅛ remaining.
               </li>
               <li>
                 Launch <strong className="text-foreground">hawaii</strong> first — smallest market
                 count, cheapest quality check.
               </li>
-              <li>
-                After Hawaii completes: review{" "}
-                <code className="text-foreground">pallares-leads db report &lt;run_id&gt;</code> and
-                the Costs page for per-lead credit burn.
-              </li>
+              <li>Review run costs on the Costs page before continuing west.</li>
               <li>
                 Continue sequentially: oregon → washington → california_expansion → nevada →
-                arizona → new_mexico. Adjust limit per state based on burn.
-              </li>
-              <li>
-                CLI fallback:{" "}
-                <code className="text-foreground">
-                  pallares-leads run-campaign --campaign hawaii --limit 20 --no-sheets
-                </code>
+                arizona → new_mexico.
               </li>
             </ol>
           </CardContent>

@@ -44,9 +44,9 @@ class AnimationManager {
 type Quality = "low" | "medium" | "high";
 
 const FALLBACK_ORDER: Record<Quality, Quality[]> = {
-  low: ["low", "high", "medium"],
+  low: ["low", "medium", "high"],
   medium: ["medium", "high", "low"],
-  high: ["high", "low", "medium"],
+  high: ["high", "medium", "low"],
 };
 
 function normalizeFrameFolder(frameFolder: string): string {
@@ -99,7 +99,7 @@ export default function ASCIIAnimation({
   ariaLabel,
   quality = "medium",
   lazy = true,
-  color = "var(--primary)",
+  color = "color-mix(in oklab, var(--foreground) 80%, var(--primary) 20%)",
   gradient,
 }: ASCIIAnimationProps) {
   const [frames, setFrames] = useState<string[]>([]);

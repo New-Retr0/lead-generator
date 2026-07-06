@@ -1,12 +1,25 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { FlaskConical, Layers, Play, Rocket } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Database,
+  RefreshCw,
+  Search,
+  Wrench,
+} from "lucide-react";
 import { toast } from "sonner";
-import { JobLogPanel } from "@/components/job-log-panel";
-import { PageHeader } from "@/components/page-header";
 import { RunStatusBadge } from "@/components/badges";
+import { StatCard } from "@/components/stat-card";
+import { AsciiSpinner } from "@/components/console/ascii-spinner";
+import ASCIIAnimation from "@/components/console/ascii-animation";
+import { SectionHeading } from "@/components/console/section-heading";
+import { SectionReveal } from "@/components/console/section-reveal";
+import { TypedText } from "@/components/console/typed-text";
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +29,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -25,7 +37,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -34,13 +45,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "@/components/ui/toggle-group";
-import type { JobRecord, PipelineConfig, RunRow } from "@/lib/types";
-
-type RunType = "run" | "run-campaign" | "smoke-sample";
+import type { PipelineConfig, RunRow } from "@/lib/types";
+import { formatPct } from "@/lib/utils";
 
 const ALL = "__all__";
 
@@ -52,17 +58,10 @@ export function RunsPageClient({
   config: PipelineConfig;
 }) {
   const [runs, setRuns] = useState(initialRuns);
-  const [jobs, setJobs] = useState<JobRecord[]>([]);
-
-  const [runType, setRunType] = useState<RunType>("run");
-  const [market, setMarket] = useState("");
-  const [category, setCategory] = useState("");
-  const [allCategories, setAllCategories] = useState(false);
-  const [limit, setLimit] = useState(5);
-  const [discoverOnly, setDiscoverOnly] = useState(false);
-
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState(ALL);
+  const [typeFilter, setTypeFilter] = useState(ALL);
+  const [marketFilter, setMarketFilter] = useState(ALL);
+  const [repairing, setRepairing] = useState(false);
   const router = useRouter();
 
   const refreshRuns = () => {
@@ -70,253 +69,191 @@ export function RunsPageClient({
       .then((r) => r.json())
       .then((data) => {
         setRuns(data.runs ?? []);
-        setJobs(data.jobs ?? []);
       });
   };
 
+  const hasRunning = runs.some((r) => r.status === "running");
+
   useEffect(() => {
-    void fetch("/api/runs")
-      .then((r) => r.json())
-      .then((data) => {
-        setJobs(data.jobs ?? []);
-      });
-  }, []);
+    if (!hasRunning) return;
+    const id = window.setInterval(refreshRuns, 10_000);
+    return () => window.clearInterval(id);
+  }, [hasRunning]);
 
-  const marketValue = market || config.markets[0]?.key || "";
-  const categoryValue = category || config.categories[0]?.key || "";
+  const analytics = useMemo(() => {
+    const total = runs.length;
+    const completed = runs.filter((r) => r.status === "completed").length;
+    const running = runs.filter((r) => r.status === "running").length;
+    const failed = runs.filter((r) => r.status === "failed").length;
+    const discovered = runs.reduce((sum, r) => sum + r.discovered_count, 0);
+    const enriched = runs.reduce((sum, r) => sum + r.enriched_count, 0);
+    const completedPct = total > 0 ? (completed / total) * 100 : 0;
+    return { total, completedPct, running, failed, discovered, enriched };
+  }, [runs]);
 
-  const startRun = async () => {
-    setLoading(true);
+  const runTypes = useMemo(
+    () => [...new Set(runs.map((r) => r.run_type))].sort(),
+    [runs],
+  );
+
+  const filteredRuns = useMemo(() => {
+    return runs.filter((run) => {
+      if (statusFilter !== ALL && run.status !== statusFilter) return false;
+      if (typeFilter !== ALL && run.run_type !== typeFilter) return false;
+      if (marketFilter !== ALL && run.market_key !== marketFilter) return false;
+      return true;
+    });
+  }, [runs, statusFilter, typeFilter, marketFilter]);
+
+  const repairStaleRuns = async () => {
+    setRepairing(true);
     try {
-      const body: Record<string, unknown> = {
-        runType,
-        limit: limit || undefined,
-        discoverOnly,
-      };
-      if (runType === "run") {
-        body.market = marketValue;
-        if (allCategories) body.allCategories = true;
-        else body.category = categoryValue;
-      } else {
-        body.campaign = config.campaigns[0]?.key ?? "central_valley";
-        if (marketValue && marketValue !== ALL) body.market = marketValue;
-        if (runType === "run-campaign" && categoryValue && categoryValue !== ALL) {
-          body.category = categoryValue;
-        }
-      }
-      const res = await fetch("/api/jobs/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
+      const res = await fetch("/api/runs/repair", { method: "POST" });
+      const data = (await res.json()) as { repaired?: number; error?: string };
       if (!res.ok) {
-        toast.error(data.error ?? "Failed to start run");
+        toast.error(data.error ?? "Repair failed");
         return;
       }
-      setJobId(data.jobId);
-      toast.success("Run started", { description: "Streaming logs below." });
-      setTimeout(refreshRuns, 2000);
+      toast.success(`Repaired ${data.repaired ?? 0} stale runs`);
+      refreshRuns();
     } finally {
-      setLoading(false);
+      setRepairing(false);
     }
   };
 
-  const validRun =
-    runType !== "run" || (marketValue && (allCategories || categoryValue));
-
-  const runTypeMeta: Record<RunType, { icon: typeof Play; blurb: string }> = {
-    run: { icon: Play, blurb: "One market, one category (or all)." },
-    "run-campaign": {
-      icon: Layers,
-      blurb: "Full campaign matrix with optional filters.",
-    },
-    "smoke-sample": {
-      icon: FlaskConical,
-      blurb: "Small test sample — discover and enrich each place in one pass.",
-    },
-  };
-
-  const activeJob = jobs.find((j) => j.id === jobId);
-
   return (
     <div className="space-y-6">
-      <PageHeader description="Launch single-pass runs — each place is discovered and enriched together — and watch progress in the timeline." />
-
-      <JobLogPanel
-        jobId={jobId}
-        onDone={(status) => {
-          refreshRuns();
-          if (status === "completed") toast.success("Run finished");
-          else if (status === "failed") toast.error("Run failed — check the log");
-        }}
-      />
-
-      <div className="grid min-w-0 gap-6 lg:grid-cols-[1fr_340px]">
-        <Card className="glass hover-lift">
-          <CardHeader>
-            <CardTitle>New run</CardTitle>
-            <CardDescription>{runTypeMeta[runType].blurb}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <ToggleGroup
-              type="single"
-              variant="outline"
-              value={runType}
-              onValueChange={(v) => v && setRunType(v as RunType)}
-              className="w-full"
-            >
-              <ToggleGroupItem value="run" className="flex-1">
-                <Play className="size-3.5" />
-                Single run
-              </ToggleGroupItem>
-              <ToggleGroupItem value="run-campaign" className="flex-1">
-                <Layers className="size-3.5" />
-                Campaign
-              </ToggleGroupItem>
-              <ToggleGroupItem value="smoke-sample" className="flex-1">
-                <FlaskConical className="size-3.5" />
-                Smoke sample
-              </ToggleGroupItem>
-            </ToggleGroup>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Market</Label>
-                <Select value={marketValue} onValueChange={setMarket}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select market" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {runType !== "run" ? (
-                      <SelectItem value={ALL}>All campaign markets</SelectItem>
-                    ) : null}
-                    {config.markets.map((m) => (
-                      <SelectItem key={m.key} value={m.key}>
-                        {m.city}
-                        <span className="text-muted-foreground"> · {m.key}</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {runType !== "smoke-sample" ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Category</Label>
-                    {runType === "run" ? (
-                      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Switch
-                          checked={allCategories}
-                          onCheckedChange={setAllCategories}
-                        />
-                        All categories
-                      </label>
-                    ) : null}
-                  </div>
-                  <Select
-                    value={categoryValue}
-                    onValueChange={setCategory}
-                    disabled={runType === "run" && allCategories}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select category" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {runType === "run-campaign" ? (
-                        <SelectItem value={ALL}>All categories</SelectItem>
-                      ) : null}
-                      {config.categories.map((c) => (
-                        <SelectItem key={c.key} value={c.key}>
-                          {c.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : null}
-
-              <div className="space-y-2">
-                <Label htmlFor="limit">Lead limit per category</Label>
-                <Input
-                  id="limit"
-                  type="number"
-                  min={1}
-                  value={limit}
-                  onChange={(e) => setLimit(Number(e.target.value) || 0)}
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setRunType("run");
-                  setLimit(5);
-                  setDiscoverOnly(false);
-                }}
-              >
-                <FlaskConical className="size-3.5" />
-                Smoke preset (5 leads)
-              </Button>
-              <label className="flex items-center gap-2 rounded-lg border bg-card/60 px-3 py-2 text-sm">
-                <Switch checked={discoverOnly} onCheckedChange={setDiscoverOnly} />
-                Discovery only (free)
-              </label>
-            </div>
-
-            <Button size="lg" onClick={() => void startRun()} disabled={loading || !validRun}>
-              <Rocket className="size-4" />
-              Launch run
-            </Button>
-          </CardContent>
-        </Card>
-
-        {jobs.length > 0 ? (
-          <Card className="glass min-w-0">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Session jobs</CardTitle>
-              <CardDescription>
-                {activeJob ? "Viewing selected job" : "Click to replay timeline"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-1.5">
-              {jobs.map((job) => (
-                <button
-                  key={job.id}
-                  type="button"
-                  className={`flex w-full min-w-0 items-center gap-2 overflow-hidden rounded-lg border px-2.5 py-2 text-left text-xs transition-all ${
-                    jobId === job.id
-                      ? "border-primary/50 bg-primary/10 shadow-[0_0_0_1px_oklch(0.55_0.18_262/0.25)]"
-                      : "border-border/50 bg-card/40 hover:border-primary/40 hover:bg-accent/30"
-                  }`}
-                  onClick={() => setJobId(job.id)}
-                >
-                  <RunStatusBadge status={job.status} />
-                  <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">
-                    {job.args.join(" ")}
-                  </span>
-                </button>
-              ))}
-            </CardContent>
-          </Card>
+      <div className="relative overflow-hidden rounded-xl border border-border">
+        <ASCIIAnimation
+          frameFolder="wave"
+          frameCount={300}
+          quality="medium"
+          fps={18}
+          className="absolute inset-x-0 top-0 h-20 w-full [mask-image:linear-gradient(to_bottom,black_40%,transparent_100%)]"
+          gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
+          lazy
+          ariaLabel="Wave band"
+        />
+        <div className="relative p-6">
+          <SectionHeading index="01" title="Run Analytics" />
+          <PageHeader description="View-only run history and aggregate stats — launch new runs from Requests or Campaigns." />
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <TypedText text="PIPELINE RUNS — view and analyze" />
+        {hasRunning ? (
+          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+            <AsciiSpinner />
+            Auto-refresh
+          </span>
         ) : null}
       </div>
 
+      <SectionReveal>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <StatCard label="Total runs" value={analytics.total} icon={Database} />
+          <StatCard
+            label="Completed"
+            value={Math.round(analytics.completedPct)}
+            format={(n) => formatPct(n)}
+            sub={`${runs.filter((r) => r.status === "completed").length} runs`}
+            icon={CheckCircle2}
+            tone="success"
+          />
+          <StatCard
+            label="Running"
+            value={analytics.running}
+            sub="Live count"
+            icon={Activity}
+            tone={analytics.running > 0 ? "warning" : "default"}
+          />
+          <StatCard
+            label="Failed"
+            value={analytics.failed}
+            icon={AlertTriangle}
+            tone={analytics.failed > 0 ? "warning" : "default"}
+          />
+          <StatCard label="Discovered" value={analytics.discovered} icon={Search} />
+          <StatCard label="Enriched" value={analytics.enriched} icon={CheckCircle2} tone="success" />
+        </div>
+      </SectionReveal>
+
       <Card className="glass min-w-0">
-        <CardHeader>
-          <CardTitle>Run history</CardTitle>
-          <CardDescription>
-            Persisted runs from the lead database. Click a row for live progress and cost summary.
-          </CardDescription>
+        <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <CardTitle>Run history</CardTitle>
+            <CardDescription>
+              Persisted runs from the lead database. Click a row for live progress and cost summary.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Status</Label>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All statuses</SelectItem>
+                  <SelectItem value="running">Running</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Type</Label>
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All types</SelectItem>
+                  {runTypes.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Market</Label>
+              <Select value={marketFilter} onValueChange={setMarketFilter}>
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All markets</SelectItem>
+                  {config.markets.map((m) => (
+                    <SelectItem key={m.key} value={m.key}>
+                      {m.city}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void repairStaleRuns()}
+              disabled={repairing}
+            >
+              {repairing ? <AsciiSpinner className="text-sm" /> : <Wrench className="size-3.5" />}
+              Repair stale runs
+            </Button>
+            <Button variant="ghost" size="sm" onClick={refreshRuns}>
+              <RefreshCw className="size-3.5" />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          {runs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No runs in database yet.</p>
+          {filteredRuns.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {runs.length === 0 ? "No runs in database yet." : "No runs match the current filters."}
+            </p>
           ) : (
             <Table>
               <TableHeader>
@@ -331,7 +268,7 @@ export function RunsPageClient({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {runs.map((run) => (
+                {filteredRuns.map((run) => (
                   <TableRow
                     key={run.run_id}
                     className="cursor-pointer transition-colors hover:bg-accent/25"

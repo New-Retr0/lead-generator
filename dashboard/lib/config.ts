@@ -84,3 +84,16 @@ function loadPipelineConfig(): PipelineConfig {
 }
 
 export const getPipelineConfig = cache(loadPipelineConfig);
+
+type PricingYaml = {
+  firecrawl?: { credit_usd?: number };
+};
+
+export function getFirecrawlCreditUsd(): number {
+  try {
+    const pricing = readYaml<PricingYaml>("pricing.yaml");
+    return pricing.firecrawl?.credit_usd ?? 0.00099;
+  } catch {
+    return 0.00099;
+  }
+}

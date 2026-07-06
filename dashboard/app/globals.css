@@ -29,10 +29,10 @@
   --ring: rgba(255, 92, 57, 0.2);
 
   --chart-1: #ff5c39;
-  --chart-2: #807b72;
-  --chart-3: #34d399;
-  --chart-4: #fbbf24;
-  --chart-5: #6b6b6b;
+  --chart-2: #1a1a1a;
+  --chart-3: #ff8f73;
+  --chart-4: #b23c1d;
+  --chart-5: #a3a3a3;
 
   --sidebar: #121212;
   --sidebar-foreground: #ece9e1;
@@ -89,6 +89,9 @@
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --animate-collapsible-down: collapsible-down 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  --animate-collapsible-up: collapsible-up 0.18s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .dark {
@@ -111,6 +114,12 @@
   --border: #252525;
   --input: #252525;
   --ring: rgba(255, 92, 57, 0.2);
+
+  --chart-1: #ff5c39;
+  --chart-2: #ece9e1;
+  --chart-3: #ff8f73;
+  --chart-4: #c9502c;
+  --chart-5: #6b6b6b;
 
   --sidebar: #0b0b0b;
   --sidebar-foreground: #ece9e1;
@@ -198,13 +207,11 @@
 }
 
 @utility hover-lift {
-  transition:
-    transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
 
   &:hover {
-    transform: translateY(-2px);
-    border-color: rgba(255, 92, 57, 0.2);
+    border-color: color-mix(in oklab, var(--color-border) 55%, var(--color-primary) 45%);
+    box-shadow: 0 6px 24px -16px rgb(0 0 0 / 0.25);
   }
 }
 
@@ -252,7 +259,7 @@
     background: linear-gradient(
       100deg,
       transparent 35%,
-      rgba(255, 92, 57, 0.06) 50%,
+      color-mix(in oklab, var(--color-foreground) 7%, transparent) 50%,
       transparent 65%
     );
     background-size: 220% 100%;
@@ -272,7 +279,9 @@
     .live-ring,
     .cursor-blink,
     .glitch-active,
-    .motion-safe\:animate-pulse {
+    .motion-safe\:animate-pulse,
+    .animate-collapsible-down,
+    .animate-collapsible-up {
       animation: none;
     }
     .hover-lift,
@@ -280,6 +289,28 @@
       transition: none;
       transform: none;
     }
+  }
+}
+
+@keyframes collapsible-down {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes collapsible-up {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
   }
 }
 

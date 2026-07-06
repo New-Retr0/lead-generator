@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { AlertTriangle, Bot, Coins, DollarSign, Sparkles, TrendingUp } from "lucide-react";
+import { AlertTriangle, Bot, Coins, DollarSign, RotateCw, Sparkles, TrendingUp } from "lucide-react";
 import { Globe } from "lucide-react";
+import ASCIIAnimation from "@/components/console/ascii-animation";
+import { AnimatedNumber } from "@/components/animated";
+import { providerLabel } from "@/components/campaigns/estimate-breakdown";
 import { SectionHeading } from "@/components/console/section-heading";
-import { PageHeader } from "@/components/page-header";
 import { Stagger, StaggerItem } from "@/components/animated";
 import { StatCard } from "@/components/stat-card";
 import {
@@ -18,6 +20,12 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Table,
   TableBody,
@@ -26,17 +34,29 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { CostSeries } from "@/lib/types";
+import { buildCostBudget } from "@/lib/cost-budget";
 import {
   balanceLabel,
   formatCostUnits,
   formatCredits,
-  formatFirecrawlLiveBalance,
   formatProvider,
   formatUsd,
   formatUsdCompact,
 } from "@/lib/utils";
+
+const FIRECRAWL_CREDIT_REFERENCE = [
+  { operation: "Scrape / crawl", cost: "1 credit per page" },
+  { operation: "Map", cost: "1 credit" },
+  { operation: "Search", cost: "2 credits per 10 results" },
+  { operation: "JSON mode", cost: "+4 credits per page" },
+  { operation: "PDF", cost: "+1 credit per page" },
+  {
+    operation: "Standard plan",
+    cost: "100,000 cr / $99 mo → $0.00099 per credit",
+  },
+] as const;
 
 const CostsUsdChart = dynamic(
   () => import("@/components/costs/costs-usd-chart").then((m) => m.CostsUsdChart),
@@ -47,6 +67,13 @@ const CostsCreditsChart = dynamic(
   () => import("@/components/costs/costs-credits-chart").then((m) => m.CostsCreditsChart),
   { ssr: false, loading: () => <Skeleton className="h-full w-full" /> },
 );
+
+const PROVIDER_CHIP_COLORS: Record<string, string> = {
+  firecrawl: "var(--chart-1)",
+  browser_use: "var(--chart-3)",
+  ai_gateway: "var(--chart-4)",
+  google_places: "var(--chart-5)",
+};
 
 const RANGES = [7, 30, 90] as const;
 
@@ -63,8 +90,16 @@ export function CostsClient({
 }) {
   const [days, setDays] = useState(initialDays);
   const [fetchedData, setFetchedData] = useState<CostSeries | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [liveCredits, setLiveCredits] = useState<{
-    firecrawl: { remaining: number | null; live: boolean };
+    firecrawl: {
+      remaining: number | null;
+      plan: number | null;
+      used: number | null;
+      billingPeriodStart: string | null;
+      billingPeriodEnd: string | null;
+      live: boolean;
+    };
     aiGateway: { balanceUsd: number | null; live: boolean };
   } | null>(null);
 
@@ -77,11 +112,25 @@ export function CostsClient({
   const data = days === initialDays ? initialData : (fetchedData ?? initialData);
 
   useEffect(() => {
-    if (days === initialDays) return;
+    if (days === initialDays && !fetchedData) return;
     fetch(`/api/costs?days=${days}`)
       .then((r) => r.json())
       .then(setFetchedData);
-  }, [days, initialDays]);
+  }, [days, initialDays, fetchedData]);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const [costBody, credBody] = await Promise.all([
+        fetch(`/api/costs?days=${days}`).then((r) => r.json()),
+        fetch("/api/credits").then((r) => r.json()),
+      ]);
+      setFetchedData(costBody as CostSeries);
+      setLiveCredits(credBody);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [days]);
 
   const totals = useMemo(() => {
     if (!data) {
@@ -102,29 +151,120 @@ export function CostsClient({
   const firecrawlBalance = balanceFor(data, "firecrawl");
   const browserUseBalance = balanceFor(data, "browser_use");
 
+  const budget = useMemo(() => {
+    if (!data) return null;
+    const liveFc = liveCredits?.firecrawl;
+    const balanceInput =
+      liveFc?.plan != null
+        ? {
+            remaining: liveFc.remaining,
+            plan: liveFc.plan,
+            used: liveFc.used,
+            billingPeriodEnd: liveFc.billingPeriodEnd,
+          }
+        : (firecrawlBalance ?? undefined);
+    return buildCostBudget(balanceInput, data.byDay);
+  }, [data, liveCredits, firecrawlBalance]);
+
+  const liveFirecrawlSub = useMemo(() => {
+    const fc = liveCredits?.firecrawl;
+    if (!fc || fc.remaining == null) return "Configure FIRECRAWL_API_KEY for live balance";
+    const parts = [`${formatCredits(fc.remaining)} remaining`];
+    if (fc.used != null && fc.plan != null) {
+      parts.push(`${formatCredits(fc.used)} / ${formatCredits(fc.plan)} used`);
+    } else if (fc.used != null) {
+      parts.push(`${formatCredits(fc.used)} used`);
+    }
+    if (fc.billingPeriodEnd) {
+      parts.push(`refresh ${new Date(fc.billingPeriodEnd).toLocaleDateString()}`);
+    }
+    return `${parts.join(" · ")} · api.firecrawl.dev`;
+  }, [liveCredits]);
+
+  const providerChips = useMemo(() => {
+    if (!data?.byProvider.length) return [];
+    return data.byProvider.map((row) => ({
+      provider: row.provider,
+      usd: row.usd,
+      color: PROVIDER_CHIP_COLORS[row.provider] ?? "var(--muted-foreground)",
+    }));
+  }, [data]);
+
   return (
     <div className="space-y-6">
-      <SectionHeading index="01" title="Costs & Credits" />
-      <PageHeader description="Spend across Firecrawl, Browser Use, AI Gateway, and Google Places — live credits when API keys are configured.">
-        <Tabs value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-          <TabsList>
-            {RANGES.map((r) => (
-              <TabsTrigger key={r} value={String(r)}>
-                {r}d
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </PageHeader>
+      <div className="relative overflow-hidden rounded-xl border border-border">
+        <ASCIIAnimation
+          frameFolder="wave"
+          frameCount={300}
+          quality="medium"
+          fps={30}
+          className="absolute inset-x-0 bottom-0 h-40 w-full [mask-image:linear-gradient(to_top,black_50%,transparent_100%)]"
+          gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
+          lazy
+          ariaLabel="Wave animation"
+        />
+        <div className="relative flex flex-col gap-4 p-6 md:flex-row md:items-end md:justify-between">
+          <div>
+            <SectionHeading index="01" title="Costs & Credits" className="mb-2" />
+            <p className="text-4xl font-bold tabular-nums tracking-tight">
+              <AnimatedNumber value={totals.usd} format={formatUsd} />
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pipeline spend — last {days} days · all providers
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs value={String(days)} onValueChange={(v) => setDays(Number(v))}>
+              <TabsList>
+                {RANGES.map((r) => (
+                  <TabsTrigger key={r} value={String(r)}>
+                    {r}d
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={refreshing}
+              onClick={() => void refreshAll()}
+            >
+              <RotateCw className={refreshing ? "size-4 animate-spin" : "size-4"} />
+              Refresh
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {providerChips.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {providerChips.map((chip) => (
+            <Badge key={chip.provider} variant="outline" className="gap-2 font-mono text-[10px]">
+              <span
+                className="size-2 rounded-full"
+                style={{ backgroundColor: chip.color }}
+              />
+              {providerLabel(chip.provider)} {formatUsd(chip.usd)}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
 
       {liveCredits ? (
         <div className="flex flex-wrap gap-3 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
           <Badge variant="outline">
-            Firecrawl live:{" "}
+            Firecrawl account (live):{" "}
             {liveCredits.firecrawl.remaining != null
               ? formatCredits(liveCredits.firecrawl.remaining)
               : "—"}
+            {liveCredits.firecrawl.live ? "" : " · snapshot"}
           </Badge>
+          {liveCredits.firecrawl.used != null ? (
+            <Badge variant="outline">
+              Used this cycle: {formatCredits(liveCredits.firecrawl.used)}
+            </Badge>
+          ) : null}
           <Badge variant="outline">
             AI Gateway live:{" "}
             {liveCredits.aiGateway.balanceUsd != null
@@ -137,9 +277,10 @@ export function CostsClient({
       <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StaggerItem className="h-full">
           <StatCard
-            label={`Total spend (${days}d)`}
+            label={`Pipeline ledger (${days}d)`}
             value={totals.usd}
             format={(n) => formatUsdCompact(n)}
+            sub="All providers — tracked per tool call"
             icon={DollarSign}
           />
         </StaggerItem>
@@ -148,7 +289,7 @@ export function CostsClient({
             label={`Pipeline Firecrawl (${days}d)`}
             value={totals.firecrawlCredits}
             format={(n) => formatCredits(n)}
-            sub={formatFirecrawlLiveBalance(firecrawlBalance ?? undefined)}
+            sub="Credits from cost_events ledger"
             icon={Coins}
             tone="warning"
           />
@@ -177,24 +318,32 @@ export function CostsClient({
         </StaggerItem>
       </Stagger>
 
-      {data?.budget ? (
-        <Card className={`glass ${data.budget.projectedOverPlan ? "border-amber-500/50" : ""}`}>
+      {budget ? (
+        <Card className={`glass ${budget.projectedOverPlan ? "border-amber-500/50" : ""}`}>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
-              Firecrawl Standard plan budget
-              {data.budget.percentOfPlanUsed != null && data.budget.percentOfPlanUsed >= 80 ? (
+              Firecrawl account (live)
+              {budget.percentOfPlanUsed != null && budget.percentOfPlanUsed >= 80 ? (
                 <Badge variant="destructive" className="gap-1">
                   <AlertTriangle className="size-3" />
-                  {data.budget.percentOfPlanUsed.toFixed(0)}% used
+                  {budget.percentOfPlanUsed.toFixed(0)}% used
                 </Badge>
               ) : null}
             </CardTitle>
             <CardDescription>
-              {formatCredits(data.budget.planCredits)} credits/mo — refresh{" "}
-              {data.budget.billingPeriodEnd
-                ? new Date(data.budget.billingPeriodEnd).toLocaleDateString()
-                : "date unknown"}
+              {budget.planCredits != null
+                ? `${formatCredits(budget.planCredits)} credits/mo`
+                : "Plan size unknown"}
+              {budget.billingPeriodEnd
+                ? ` — refresh ${new Date(budget.billingPeriodEnd).toLocaleDateString()}`
+                : ""}
+              {" · from api.firecrawl.dev"}
             </CardDescription>
+            {liveFirecrawlSub ? (
+              <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                {liveFirecrawlSub}
+              </p>
+            ) : null}
           </CardHeader>
           <CardContent>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -203,13 +352,13 @@ export function CostsClient({
                   Used this cycle
                 </p>
                 <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
-                  {data.budget.usedThisCycle != null
-                    ? formatCredits(data.budget.usedThisCycle)
+                  {budget.usedThisCycle != null
+                    ? formatCredits(budget.usedThisCycle)
                     : "—"}
                 </p>
-                {data.budget.percentOfPlanUsed != null ? (
+                {budget.percentOfPlanUsed != null ? (
                   <p className="text-xs text-muted-foreground">
-                    {data.budget.percentOfPlanUsed.toFixed(1)}% of plan
+                    {budget.percentOfPlanUsed.toFixed(1)}% of plan
                   </p>
                 ) : null}
               </div>
@@ -218,8 +367,8 @@ export function CostsClient({
                   Remaining
                 </p>
                 <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
-                  {data.budget.remainingCredits != null
-                    ? formatCredits(data.budget.remainingCredits)
+                  {budget.remainingCredits != null
+                    ? formatCredits(budget.remainingCredits)
                     : "—"}
                 </p>
               </div>
@@ -228,30 +377,31 @@ export function CostsClient({
                   7-day avg / day
                 </p>
                 <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
-                  {data.budget.dailyAverageCredits != null
-                    ? formatCredits(data.budget.dailyAverageCredits)
-                    : "—"}
+                  {formatCredits(budget.dailyAverageCredits ?? 0)}
                 </p>
+                <p className="text-xs text-muted-foreground">Pipeline ledger ÷ 7 calendar days</p>
               </div>
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Projected cycle end
                 </p>
                 <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
-                  {data.budget.projectedCycleCredits != null
-                    ? formatCredits(data.budget.projectedCycleCredits)
+                  {budget.billingPeriodEnd && budget.projectedCycleCredits != null
+                    ? formatCredits(budget.projectedCycleCredits)
                     : "—"}
                 </p>
-                {data.budget.projectedCycleCredits != null ? (
+                {budget.billingPeriodEnd && budget.projectedCycleCredits != null ? (
                   <p
                     className={
-                      data.budget.projectedOverPlan
+                      budget.projectedOverPlan
                         ? "text-xs font-medium text-amber-600 dark:text-amber-400"
                         : "text-xs text-muted-foreground"
                     }
                   >
-                    {data.budget.projectedOverPlan ? "Over plan" : "Under plan"}
+                    {budget.projectedOverPlan ? "Over plan" : "Under plan"}
                   </p>
+                ) : budget.billingPeriodEnd == null ? (
+                  <p className="text-xs text-muted-foreground">Billing period end unknown</p>
                 ) : null}
               </div>
             </div>
@@ -304,7 +454,7 @@ export function CostsClient({
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="glass hover-lift">
+        <Card className="glass">
           <CardHeader>
             <CardTitle className="text-sm">USD per day by provider</CardTitle>
             <CardDescription>Stacked spend — Browser Use, AI Gateway, Places</CardDescription>
@@ -314,7 +464,7 @@ export function CostsClient({
           </CardContent>
         </Card>
 
-        <Card className="glass hover-lift">
+        <Card className="glass">
           <CardHeader>
             <CardTitle className="text-sm">Firecrawl credits per day</CardTitle>
             <CardDescription>Firecrawl credits from single-pass lead runs</CardDescription>
@@ -325,7 +475,16 @@ export function CostsClient({
         </Card>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <Tabs defaultValue="providers" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="providers">Providers</TabsTrigger>
+          <TabsTrigger value="operations">Operations</TabsTrigger>
+          <TabsTrigger value="runs">Runs</TabsTrigger>
+          <TabsTrigger value="models">Models</TabsTrigger>
+          <TabsTrigger value="markets">Markets</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="providers">
         <Card className="glass">
           <CardHeader>
             <CardTitle className="text-sm">By provider</CardTitle>
@@ -365,7 +524,9 @@ export function CostsClient({
             )}
           </CardContent>
         </Card>
+        </TabsContent>
 
+        <TabsContent value="operations">
         <Card className="glass">
           <CardHeader>
             <CardTitle className="text-sm">Top operations</CardTitle>
@@ -404,9 +565,9 @@ export function CostsClient({
             )}
           </CardContent>
         </Card>
-      </div>
+        </TabsContent>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+        <TabsContent value="runs">
         <Card className="glass">
           <CardHeader>
             <CardTitle className="text-sm">By run</CardTitle>
@@ -429,7 +590,7 @@ export function CostsClient({
                   </TableHeader>
                   <TableBody>
                     {data.byRun.map((row) => (
-                      <TableRow key={row.runId} className="hover:bg-accent/20">
+                      <TableRow key={row.runId} className="hover-lift hover:bg-muted/50">
                         <TableCell>
                           <Link
                             href={`/runs/${encodeURIComponent(row.runId)}`}
@@ -464,7 +625,9 @@ export function CostsClient({
             )}
           </CardContent>
         </Card>
+        </TabsContent>
 
+        <TabsContent value="models">
         <Card className="glass">
           <CardHeader>
             <CardTitle className="text-sm">By model / provider</CardTitle>
@@ -509,8 +672,9 @@ export function CostsClient({
             )}
           </CardContent>
         </Card>
-      </div>
+        </TabsContent>
 
+        <TabsContent value="markets">
       <Card className="glass">
         <CardHeader>
           <CardTitle className="text-sm">By market / category</CardTitle>
@@ -534,7 +698,11 @@ export function CostsClient({
                 <TableBody>
                   {data.byMarket.map((row) => (
                     <TableRow key={`${row.marketKey}-${row.categoryKey}`}>
-                      <TableCell className="font-medium">{row.marketKey ?? "—"}</TableCell>
+                      <TableCell className="font-medium">
+                        <Link href="/data" className="text-primary hover:underline">
+                          {row.marketKey ?? "—"}
+                        </Link>
+                      </TableCell>
                       <TableCell>{row.categoryKey ?? "—"}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.runCount}</TableCell>
                       <TableCell className="text-right tabular-nums">
@@ -551,14 +719,43 @@ export function CostsClient({
           )}
         </CardContent>
       </Card>
+        </TabsContent>
+      </Tabs>
+
+      <Collapsible>
+        <Card className="glass">
+          <CollapsibleTrigger asChild>
+            <CardHeader className="cursor-pointer">
+              <CardTitle className="font-mono text-sm">Firecrawl credit reference</CardTitle>
+              <CardDescription>Per-operation costs from Firecrawl docs (Standard plan)</CardDescription>
+            </CardHeader>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+        <CardContent>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {FIRECRAWL_CREDIT_REFERENCE.map((row) => (
+              <div
+                key={row.operation}
+                className="flex items-baseline justify-between gap-3 rounded-lg border bg-card/50 px-3 py-2 font-mono text-xs"
+              >
+                <span className="text-muted-foreground">{row.operation}</span>
+                <span className="shrink-0 text-right tabular-nums">{row.cost}</span>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
 
       <Card className="glass border-dashed">
         <CardContent className="flex items-start gap-3 py-4 text-sm text-muted-foreground">
           <TrendingUp className="mt-0.5 size-4 shrink-0" />
           <p>
             Browser Use costs are recorded per portal task (SOS, recorder, parcel, LoopNet).
-            Run <span className="font-medium text-foreground">Health check</span> on the overview
-            page to refresh Firecrawl and Browser Use balance snapshots without spending credits.
+            Run <span className="font-medium text-foreground">pallares-leads doctor</span> (or{" "}
+            <span className="font-medium text-foreground">Health check</span> on the overview page)
+            to refresh Firecrawl and Browser Use balance snapshots without spending credits.
           </p>
           <Globe className="mt-0.5 size-4 shrink-0 opacity-0 sm:opacity-100" aria-hidden />
         </CardContent>

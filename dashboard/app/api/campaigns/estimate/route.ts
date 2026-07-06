@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dbAvailable, getSql } from "@/lib/pg";
-import { getPipelineConfig } from "@/lib/config";
+import { getFirecrawlCreditUsd, getPipelineConfig } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +71,26 @@ export async function GET(req: NextRequest) {
 
     const estimatedCredits = Math.round(estimatedLeads * avgCreditsPerLead);
     const estimatedUsd = estimatedLeads * avgUsdPerLead;
+    const creditUsd = getFirecrawlCreditUsd();
+    const estimatedFirecrawlUsd = estimatedCredits * creditUsd;
+
+    let providers: { provider: string; share: number; estimatedUsd: number }[] = [];
+    if (dbAvailable()) {
+      const sql = getSql();
+      const providerRows = await sql`
+        SELECT provider, COALESCE(SUM(usd), 0)::float AS usd
+        FROM cost_events
+        WHERE place_id IS NOT NULL
+        GROUP BY provider
+        ORDER BY usd DESC
+      `;
+      const totalUsdAll = providerRows.reduce((s, r) => s + Number(r.usd), 0);
+      providers = providerRows.map((r) => ({
+        provider: r.provider as string,
+        share: totalUsdAll > 0 ? Number(r.usd) / totalUsdAll : 0,
+        estimatedUsd: totalUsdAll > 0 ? estimatedUsd * (Number(r.usd) / totalUsdAll) : 0,
+      }));
+    }
 
     return NextResponse.json({
       campaign: campaignKey,
@@ -79,10 +99,13 @@ export async function GET(req: NextRequest) {
       limit,
       estimatedLeads,
       estimatedCredits,
+      estimatedFirecrawlUsd,
       estimatedUsd,
+      creditUsd,
       avgCreditsPerLead: Math.round(avgCreditsPerLead * 10) / 10,
       avgUsdPerLead: Math.round(avgUsdPerLead * 1000) / 1000,
       sampleSize,
+      providers,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Estimate failed";

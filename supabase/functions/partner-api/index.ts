@@ -488,9 +488,6 @@ async function handleDetail(placeId: string, key: PartnerKey) {
   });
 }
 
-  });
-}
-
 async function leadExists(placeId: string): Promise<boolean> {
   const decoded = decodeURIComponent(placeId);
   const { data, error: queryError } = await supabase

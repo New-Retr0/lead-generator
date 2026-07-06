@@ -312,6 +312,16 @@ class PipelineQueueWorker:
             self.archive(conn, msg.msg_id)
             return
 
+        if linked_run_id:
+            conn.execute(
+                """
+                update public.runs
+                set status = 'failed', finished_at = now()
+                where run_id = %s and status = 'running'
+                """,
+                (linked_run_id,),
+            )
+
         if attempts >= max_attempts:
             self.update_job(
                 conn,

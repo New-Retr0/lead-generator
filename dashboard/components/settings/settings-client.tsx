@@ -19,6 +19,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import ASCIIAnimation from "@/components/console/ascii-animation";
+import { SectionHeading } from "@/components/console/section-heading";
 
 const GROUP_ORDER = [
   "Credentials",
@@ -31,6 +33,29 @@ const GROUP_ORDER = [
   "Scoring",
   "Paths",
 ] as const;
+
+const GROUP_DESCRIPTIONS: Record<(typeof GROUP_ORDER)[number], string> = {
+  Credentials:
+    "API keys the pipeline calls. Missing keys disable that provider.",
+  Supabase:
+    "Where all lead data lives. Changing SUPABASE_DB_URL requires restart.",
+  Discovery:
+    "Google Places search behavior — radius and page size control how many businesses each query finds (each request costs ~$0.04).",
+  Firecrawl:
+    "Scraping/enrichment engine. Credit caps here are your main cost brake: max_credits_per_run stops one run, session_credit_stop stops everything.",
+  "AI Gateway":
+    "LLM contact extraction + sales copy. Rate/retry knobs protect against 429s.",
+  "Owner Chain":
+    "Deep owner lookups (Browser Use / Firecrawl agent) — the most expensive per-lead step; per-run caps limit spend.",
+  "Caching & Archive":
+    "Local SQLite caches that avoid re-paying for pages already fetched.",
+  Scoring: "How leads are ranked and which make it into exports.",
+  Paths: "Computed locations on disk — read-only.",
+};
+
+function groupAnchorId(group: string): string {
+  return `settings-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
 
 type SchemaProperty = {
   type?: string | string[];
@@ -488,14 +513,58 @@ export function SettingsClient({
         </TabsList>
 
         <TabsContent value="pipeline" className="space-y-4 pt-4">
-          {groupedFields.map(({ group, fields }) => (
-            <Card key={group}>
-              <CardHeader>
-                <CardTitle className="text-base">{group}</CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-2">{fields.map(renderField)}</CardContent>
-            </Card>
-          ))}
+          <div className="relative overflow-hidden rounded-lg border border-border/40 bg-muted/10 p-4">
+            <div className="absolute right-4 top-1/2 hidden h-16 w-32 -translate-y-1/2 opacity-60 md:block">
+              <ASCIIAnimation
+                frameFolder="computer"
+                quality="low"
+                fps={12}
+                lazy
+                ariaLabel="Computer accent"
+              />
+            </div>
+            <p className="max-w-lg font-mono text-xs text-muted-foreground">
+              Pipeline environment variables and runtime knobs. Changes write to{" "}
+              <code className="text-foreground">.env</code> — restart the dev server when prompted.
+            </p>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-[200px_minmax(0,1fr)]">
+            <nav
+              aria-label="Settings sections"
+              className="sticky top-4 z-10 h-fit rounded-lg border border-border/40 bg-background/95 p-2 backdrop-blur"
+            >
+              <p className="mb-2 px-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                Sections
+              </p>
+              <ul className="space-y-0.5">
+                {groupedFields.map(({ group }, index) => (
+                  <li key={group}>
+                    <a
+                      href={`#${groupAnchorId(group)}`}
+                      className="block rounded-md px-2 py-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                    >
+                      [{String(index + 1).padStart(2, "0")}] {group}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+
+            <div className="space-y-4">
+              {groupedFields.map(({ group, fields }, index) => (
+                <Card key={group} id={groupAnchorId(group)} className="scroll-mt-4">
+                  <CardHeader className="space-y-3">
+                    <SectionHeading
+                      index={String(index + 1).padStart(2, "0")}
+                      title={group.toUpperCase()}
+                    />
+                    <CardDescription>{GROUP_DESCRIPTIONS[group as (typeof GROUP_ORDER)[number]] ?? ""}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 md:grid-cols-2">{fields.map(renderField)}</CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
         </TabsContent>
 
         <TabsContent value="config" className="pt-4">

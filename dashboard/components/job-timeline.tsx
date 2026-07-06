@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
   Building2,
@@ -292,28 +292,6 @@ function JobTimelineStream({
   const [now, setNow] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const wasLiveRef = useRef(false);
-  const pendingEventsRef = useRef<JobEvent[]>([]);
-  const pendingLinesRef = useRef<string[]>([]);
-  const flushRafRef = useRef<number | null>(null);
-
-  const flushPending = useCallback(() => {
-    flushRafRef.current = null;
-    if (pendingEventsRef.current.length > 0) {
-      const batch = pendingEventsRef.current;
-      pendingEventsRef.current = [];
-      setEvents((prev) => [...prev, ...batch]);
-    }
-    if (pendingLinesRef.current.length > 0) {
-      const batch = pendingLinesRef.current;
-      pendingLinesRef.current = [];
-      setLines((prev) => [...prev, ...batch]);
-    }
-  }, []);
-
-  const scheduleFlush = useCallback(() => {
-    if (flushRafRef.current != null) return;
-    flushRafRef.current = requestAnimationFrame(flushPending);
-  }, [flushPending]);
 
   useEffect(() => {
     let cancelled = false;
@@ -340,14 +318,12 @@ function JobTimelineStream({
 
     source.addEventListener("log", (event) => {
       const data = JSON.parse(event.data) as { line: string };
-      pendingLinesRef.current.push(data.line);
-      scheduleFlush();
+      setLines((prev) => [...prev, data.line]);
     });
 
     source.addEventListener("event", (event) => {
       const data = JSON.parse(event.data) as JobEvent;
-      pendingEventsRef.current.push(data);
-      scheduleFlush();
+      setEvents((prev) => [...prev, data]);
     });
 
     source.addEventListener("done", (event) => {
@@ -365,12 +341,9 @@ function JobTimelineStream({
 
     return () => {
       cancelled = true;
-      if (flushRafRef.current != null) {
-        cancelAnimationFrame(flushRafRef.current);
-      }
       source.close();
     };
-  }, [jobId, onDone, scheduleFlush]);
+  }, [jobId, onDone]);
 
   useEffect(() => {
     if (!paused) {

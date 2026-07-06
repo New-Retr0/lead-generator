@@ -60,7 +60,8 @@ export async function PATCH(
 
     if (body.outcome) {
       await upsertLeadOutcome(id, body.outcome);
-    } else if (Object.keys(fields).length > 0) {
+    }
+    if (Object.keys(fields).length > 0) {
       await updateSalesFeedback(id, fields);
     }
 

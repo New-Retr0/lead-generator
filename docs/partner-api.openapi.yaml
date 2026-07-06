@@ -241,6 +241,17 @@ components:
           type: array
           items:
             type: string
+        cursor:
+          type: object
+          description: Cursor pagination rules for GET /leads
+          properties:
+            sort:
+              type: array
+              items:
+                type: string
+            mode:
+              type: string
+              enum: [forward-only]
     LeadListItem:
       type: object
       properties:

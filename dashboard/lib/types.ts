@@ -153,6 +153,8 @@ export type RunEventRow = {
   ran: number;
   reason: string | null;
   credits_est: number | null;
+  duration_ms: number | null;
+  meta_json: unknown;
   created_at: string;
 };
 

@@ -6,7 +6,7 @@ from typing import Any
 import yaml
 
 _DEFAULT_PRICING: dict[str, Any] = {
-    "firecrawl": {"credit_usd": 0.01},
+    "firecrawl": {"credit_usd": 0.00099},
     "google_places": {
         "text_search_usd": 0.032,
         "nearby_search_usd": 0.032,

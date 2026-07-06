@@ -3,7 +3,15 @@ import type { CostBudget, CostDayRow, ProviderBalance } from "./types";
 /** Firecrawl Standard plan — $99 / 100k credits (matches config/pricing.yaml). */
 export const FIRECRAWL_CREDIT_USD = 0.00099;
 
-export const FIRECRAWL_PLAN_CREDITS = 100_000;
+/** Labeled assumption only — never used as a silent plan-size default. */
+export const FIRECRAWL_PLAN_CREDITS_ASSUMED = 100_000;
+
+export type FirecrawlBalanceInput = {
+  remaining: number | null;
+  used: number | null;
+  plan: number | null;
+  billingPeriodEnd?: string | null;
+};
 
 function parseBillingPeriodEnd(snapshotJson: unknown): string | null {
   if (snapshotJson == null) return null;
@@ -30,11 +38,11 @@ function parseBillingPeriodEnd(snapshotJson: unknown): string | null {
 }
 
 export function buildCostBudget(
-  firecrawlBalance: ProviderBalance | undefined,
+  firecrawlBalance: ProviderBalance | FirecrawlBalanceInput | undefined,
   byDay: CostDayRow[],
   snapshotJson?: unknown,
 ): CostBudget | null {
-  const plan = firecrawlBalance?.plan ?? FIRECRAWL_PLAN_CREDITS;
+  const plan = firecrawlBalance?.plan ?? null;
   if (plan == null || plan <= 0) return null;
 
   const remaining = firecrawlBalance?.remaining ?? null;
@@ -43,17 +51,18 @@ export function buildCostBudget(
     (remaining != null ? Math.max(plan - remaining, 0) : null);
 
   const billingPeriodEnd =
-    parseBillingPeriodEnd(snapshotJson) ?? firecrawlBalance?.billingPeriodEnd ?? null;
+    firecrawlBalance?.billingPeriodEnd ??
+    parseBillingPeriodEnd(snapshotJson) ??
+    null;
 
   const recentDays = byDay.slice(-7);
   const recentCredits = recentDays.reduce((sum, row) => sum + row.firecrawlCredits, 0);
-  const dailyAverageCredits =
-    recentDays.length > 0 ? recentCredits / recentDays.length : null;
+  const dailyAverageCredits = recentCredits / 7;
 
   let projectedCycleCredits: number | null = null;
   let projectedOverPlan = false;
 
-  if (usedThisCycle != null && dailyAverageCredits != null && billingPeriodEnd) {
+  if (usedThisCycle != null && billingPeriodEnd) {
     const end = new Date(billingPeriodEnd);
     const now = new Date();
     const msLeft = end.getTime() - now.getTime();

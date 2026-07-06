@@ -46,7 +46,7 @@ import {
   type EmailGroup,
   type PhoneGroup,
 } from "@/lib/lead-contacts";
-import { cn, formatCostUnits, formatProvider, formatUsd } from "@/lib/utils";
+import { cn, formatCostUnits, formatProvider, formatUsd, formatUsdPrecise } from "@/lib/utils";
 import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
 import type {
   LeadCostByProvider,
@@ -325,7 +325,7 @@ function CostEventRow({ event }: { event: LeadCostEvent }) {
           <CostMetaDetails event={event} />
         </div>
         <div className="shrink-0 text-right">
-          <p className="font-mono font-semibold tabular-nums">{formatUsd(event.usd)}</p>
+          <p className="font-mono font-semibold tabular-nums">{formatUsdPrecise(event.usd)}</p>
           <p className="text-[10px] text-muted-foreground">{time}</p>
         </div>
       </div>
@@ -390,7 +390,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
           {costs.firecrawlCreditsEst > 0 ? (
             <span className="mt-2 block">
               Run estimated ~{costs.firecrawlCreditsEst} Firecrawl credits (
-              {formatUsd(creditUsdEst)}).
+              {formatUsdPrecise(creditUsdEst)}).
             </span>
           ) : null}
         </p>
@@ -431,7 +431,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
           {costs.firecrawlCreditsEst > 0 ? (
             <p className="flex items-center gap-1 text-xs text-muted-foreground">
               <Coins className="size-3" />
-              ~{costs.firecrawlCreditsEst} credits est. ({formatUsd(creditUsdEst)})
+              ~{costs.firecrawlCreditsEst} credits est. ({formatUsdPrecise(creditUsdEst)})
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">Map/search credit fallbacks</p>

@@ -789,6 +789,8 @@ function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
     ran: row.ran ? 1 : 0,
     reason: row.reason != null ? String(row.reason) : null,
     credits_est: row.credits_est != null ? Number(row.credits_est) : null,
+    duration_ms: row.duration_ms != null ? Number(row.duration_ms) : null,
+    meta_json: row.meta_json ?? null,
     created_at: toIso(row.created_at),
   };
 }
@@ -798,12 +800,39 @@ export async function getRunEvents(runId: string): Promise<RunEventRow[]> {
   const sql = getSql();
 
   const rows = await sql`
-    SELECT id, run_id, place_id, stage, ran, reason, credits_est, created_at
+    SELECT id, run_id, place_id, stage, ran, reason, credits_est, duration_ms, meta_json, created_at
     FROM run_events
     WHERE run_id = ${runId}
     ORDER BY created_at ASC
   `;
   return rows.map((row) => mapRunEventRow(row as Record<string, unknown>));
+}
+
+export async function getRunCostEvents(runId: string) {
+  if (!dbAvailable()) return [];
+  const sql = getSql();
+
+  const rows = await sql`
+    SELECT id, provider, operation, units, unit_type, usd, place_id, model, meta_json, created_at
+    FROM cost_events
+    WHERE run_id = ${runId}
+    ORDER BY created_at ASC
+  `;
+  return rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      id: Number(r.id),
+      provider: String(r.provider),
+      operation: String(r.operation),
+      units: Number(r.units ?? 0),
+      unit_type: String(r.unit_type ?? "units"),
+      usd: Number(r.usd ?? 0),
+      place_id: r.place_id != null ? String(r.place_id) : null,
+      model: r.model != null ? String(r.model) : null,
+      meta_json: r.meta_json ?? null,
+      created_at: toIso(r.created_at),
+    };
+  });
 }
 
 function emptyRunCosts(): RunCosts {
@@ -1137,8 +1166,14 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
   }));
 
   const providerRows = await sql`
-    SELECT provider, unit_type, usd, units, event_count
-    FROM cost_by_provider
+    SELECT provider, unit_type,
+           COALESCE(SUM(usd), 0)::float AS usd,
+           COALESCE(SUM(units), 0)::float AS units,
+           COUNT(*)::bigint AS event_count
+    FROM cost_events
+    WHERE created_at >= ${sinceIso}
+    GROUP BY provider, unit_type
+    ORDER BY usd DESC
   `;
 
   const mergedProviders = new Map<string, CostSeries["byProvider"][number]>();

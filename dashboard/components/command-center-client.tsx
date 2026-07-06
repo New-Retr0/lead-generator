@@ -1,19 +1,28 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Coins, Database, PhoneCall, Sparkles } from "lucide-react";
+import { ArrowRight, Coins, Database, DollarSign, PhoneCall, Sparkles } from "lucide-react";
 import ASCIIAnimation from "@/components/console/ascii-animation";
 import { SectionHeading } from "@/components/console/section-heading";
 import { SectionReveal } from "@/components/console/section-reveal";
 import { TypedText } from "@/components/console/typed-text";
-import { AnimatedNumber } from "@/components/animated";
 import { RunStatusBadge } from "@/components/badges";
 import { OverviewActions } from "@/components/overview/overview-actions";
 import { SpendChartLazy } from "@/components/overview/spend-chart-lazy";
+import {
+  formatCreditBalance,
+  StatDetailDialog,
+  type ProviderSpendRow,
+} from "@/components/overview/stat-detail-dialog";
+import { useSpendProviderSummary } from "@/components/campaigns/estimate-breakdown";
+import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { CostDayRow, RequestRow, RunRow } from "@/lib/types";
-import { formatPct, formatUsd } from "@/lib/utils";
+import { formatCredits, formatPct, formatUsd } from "@/lib/utils";
+
+type StatDialog = "firecrawl" | "gateway" | "leads" | "callable" | "spend" | null;
 
 type CommandCenterProps = {
   stats: {
@@ -22,14 +31,23 @@ type CommandCenterProps = {
     readyToCallRate: number;
     creditsThisMonth: number;
     usdThisWeek: number;
+    enrichedLeads: number;
+    aiGatewayUsdThisMonth: number;
   } | null;
   credits: {
     firecrawlRemaining: number;
     aiGatewayBalance: number | null;
+    firecrawlUsed: number | null;
+    firecrawlPlan: number | null;
+    firecrawlBillingEnd: string | null;
+    firecrawlSnapshotAt: string | null;
+    aiGatewayUsed: number | null;
   } | null;
   runs: RunRow[];
   requests: RequestRow[];
   costDays: CostDayRow[];
+  usdByProvider7d: { provider: string; usd: number }[];
+  usdByProviderMonth: { provider: string; usd: number }[];
   error: string;
 };
 
@@ -39,20 +57,35 @@ export function CommandCenterClient({
   runs,
   requests,
   costDays,
+  usdByProvider7d,
+  usdByProviderMonth,
   error,
 }: CommandCenterProps) {
+  const [dialog, setDialog] = useState<StatDialog>(null);
   const activeRuns = runs.filter((r) => r.status === "running");
+  const spendSubtitle = useSpendProviderSummary(usdByProvider7d);
+
+  const providerSpendRows: ProviderSpendRow[] = usdByProvider7d.map((row) => ({
+    provider: row.provider,
+    usd7d: row.usd,
+    usdMonth:
+      usdByProviderMonth.find((m) => m.provider === row.provider)?.usd ??
+      (row.provider === "ai_gateway" ? (stats?.aiGatewayUsdThisMonth ?? 0) : 0),
+  }));
 
   return (
     <div className="space-y-10">
       <div className="relative overflow-hidden rounded-xl border border-border bg-card p-6 md:p-8">
-        <div className="absolute right-0 top-0 h-48 w-48 opacity-15 md:h-64 md:w-64">
+        <div className="pointer-events-none absolute right-0 top-0 h-56 w-full max-w-md md:h-72 [mask-image:linear-gradient(to_left,black_40%,transparent_100%)]">
           <ASCIIAnimation
-            frameFolder="planet"
-            frameCount={200}
+            frameFolder="cube"
+            frameCount={134}
             quality="medium"
+            fps={30}
+            className="h-full w-full"
+            gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
             lazy
-            ariaLabel="ASCII planet animation"
+            ariaLabel="ASCII cube animation"
           />
         </div>
         <div className="relative max-w-2xl space-y-3">
@@ -77,84 +110,133 @@ export function CommandCenterClient({
         <SectionReveal>
           <SectionHeading index="01" title="System" className="mb-4" />
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <Card className="glass hover-lift">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em]">
-                  <Coins className="size-3.5 text-warning" />
-                  Firecrawl
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold tabular-nums">
-                  <AnimatedNumber value={credits?.firecrawlRemaining ?? 0} />
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">credits remaining</p>
-              </CardContent>
-            </Card>
-            <Card className="glass hover-lift">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em]">
-                  <Sparkles className="size-3.5 text-primary" />
-                  AI Gateway
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold tabular-nums">
-                  {credits?.aiGatewayBalance != null ? (
-                    <AnimatedNumber value={credits.aiGatewayBalance} format={formatUsd} />
-                  ) : (
-                    "—"
-                  )}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">USD balance</p>
-              </CardContent>
-            </Card>
-            <Card className="glass hover-lift">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em]">
-                  <Database className="size-3.5" />
-                  Leads
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold tabular-nums">
-                  <AnimatedNumber value={stats?.totalLeads ?? 0} />
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">in database</p>
-              </CardContent>
-            </Card>
-            <Card className="glass hover-lift">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em]">
-                  <PhoneCall className="size-3.5 text-success" />
-                  Callable
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold tabular-nums">
-                  <AnimatedNumber value={stats?.readyToCall ?? 0} />
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {formatPct(stats?.readyToCallRate ?? 0)} verified
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="glass hover-lift">
-              <CardHeader className="pb-2">
-                <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                  Spend (7d)
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold tabular-nums">
-                  <AnimatedNumber value={stats?.usdThisWeek ?? 0} format={formatUsd} />
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">all providers</p>
-              </CardContent>
-            </Card>
+            <StatCard
+              label="Firecrawl"
+              value={credits?.firecrawlRemaining ?? 0}
+              format={(n) => formatCredits(n)}
+              sub={formatCreditBalance(
+                credits?.firecrawlRemaining ?? null,
+                credits?.firecrawlUsed ?? null,
+                credits?.firecrawlPlan ?? null,
+              )}
+              icon={Coins}
+              tone="warning"
+              onClick={() => setDialog("firecrawl")}
+            />
+            <StatCard
+              label="AI Gateway"
+              value={credits?.aiGatewayBalance ?? 0}
+              format={formatUsd}
+              sub={`${formatUsd(stats?.aiGatewayUsdThisMonth ?? 0)} MTD`}
+              icon={Sparkles}
+              onClick={() => setDialog("gateway")}
+            />
+            <StatCard
+              label="Leads"
+              value={stats?.totalLeads ?? 0}
+              sub={`${stats?.enrichedLeads ?? 0} enriched`}
+              icon={Database}
+              onClick={() => setDialog("leads")}
+            />
+            <StatCard
+              label="Callable"
+              value={stats?.readyToCall ?? 0}
+              sub={`${formatPct(stats?.readyToCallRate ?? 0)} verified`}
+              icon={PhoneCall}
+              tone="success"
+              onClick={() => setDialog("callable")}
+            />
+            <StatCard
+              label="Spend (7d)"
+              value={stats?.usdThisWeek ?? 0}
+              format={formatUsd}
+              sub={spendSubtitle}
+              icon={DollarSign}
+              onClick={() => setDialog("spend")}
+            />
           </div>
         </SectionReveal>
       )}
+
+      <StatDetailDialog
+        open={dialog === "firecrawl"}
+        onOpenChange={(o) => setDialog(o ? "firecrawl" : null)}
+        title="Firecrawl credits"
+        value={credits?.firecrawlRemaining ?? 0}
+        format={(n) => formatCredits(n)}
+        rows={[
+          {
+            label: "Used this cycle",
+            value:
+              credits?.firecrawlUsed != null ? formatCredits(credits.firecrawlUsed) : "—",
+          },
+          {
+            label: "Plan size",
+            value: credits?.firecrawlPlan != null ? formatCredits(credits.firecrawlPlan) : "—",
+          },
+          {
+            label: "Billing period end",
+            value: credits?.firecrawlBillingEnd
+              ? new Date(credits.firecrawlBillingEnd).toLocaleDateString()
+              : "—",
+          },
+          {
+            label: "Snapshot",
+            value: credits?.firecrawlSnapshotAt
+              ? new Date(credits.firecrawlSnapshotAt).toLocaleString()
+              : "—",
+          },
+        ]}
+      />
+      <StatDetailDialog
+        open={dialog === "gateway"}
+        onOpenChange={(o) => setDialog(o ? "gateway" : null)}
+        title="AI Gateway"
+        value={credits?.aiGatewayBalance ?? 0}
+        format={formatUsd}
+        rows={[
+          {
+            label: "Month-to-date spend",
+            value: formatUsd(stats?.aiGatewayUsdThisMonth ?? 0),
+          },
+          {
+            label: "Pipeline credits (Firecrawl MTD)",
+            value: formatCredits(stats?.creditsThisMonth ?? 0),
+          },
+        ]}
+      />
+      <StatDetailDialog
+        open={dialog === "leads"}
+        onOpenChange={(o) => setDialog(o ? "leads" : null)}
+        title="Lead database"
+        value={stats?.totalLeads ?? 0}
+        rows={[
+          { label: "Enriched", value: String(stats?.enrichedLeads ?? 0) },
+          {
+            label: "Not yet enriched",
+            value: String((stats?.totalLeads ?? 0) - (stats?.enrichedLeads ?? 0)),
+          },
+        ]}
+      />
+      <StatDetailDialog
+        open={dialog === "callable"}
+        onOpenChange={(o) => setDialog(o ? "callable" : null)}
+        title="Callable leads"
+        value={stats?.readyToCall ?? 0}
+        description="Leads passing isReadyToCall — verified decision-maker phone on file."
+        rows={[
+          { label: "Verified rate", value: formatPct(stats?.readyToCallRate ?? 0) },
+          { label: "Total leads", value: String(stats?.totalLeads ?? 0) },
+        ]}
+      />
+      <StatDetailDialog
+        open={dialog === "spend"}
+        onOpenChange={(o) => setDialog(o ? "spend" : null)}
+        title="Spend (7 days)"
+        value={stats?.usdThisWeek ?? 0}
+        format={formatUsd}
+        providerRows={providerSpendRows}
+      />
 
       <SectionReveal>
         <SectionHeading index="02" title="Active runs" className="mb-4" />
@@ -162,14 +244,14 @@ export function CommandCenterClient({
           <CardContent className="space-y-2 py-4">
             {activeRuns.length === 0 ? (
               <p className="py-4 text-center font-mono text-xs text-muted-foreground">
-                No active runs — launch from Campaigns or Runs.
+                No active runs — launch from Campaigns or Requests.
               </p>
             ) : (
               activeRuns.map((run) => (
                 <Link
                   key={run.run_id}
                   href={`/runs/${encodeURIComponent(run.run_id)}`}
-                  className="flex items-center gap-3 rounded-lg border border-border/50 px-3 py-2.5 transition-colors hover:border-primary/30 hover:bg-accent/20"
+                  className="flex items-center gap-3 rounded-lg border border-border/50 px-3 py-2.5 transition-colors hover:border-primary/30 hover:bg-muted/50"
                 >
                   <RunStatusBadge status={run.status} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium">
@@ -192,7 +274,7 @@ export function CommandCenterClient({
       <SectionReveal>
         <SectionHeading index="03" title="Recent activity" className="mb-4" />
         <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="glass hover-lift lg:col-span-2">
+          <Card className="glass lg:col-span-2">
             <CardHeader className="flex-row items-center justify-between">
               <div>
                 <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
@@ -213,7 +295,7 @@ export function CommandCenterClient({
               </div>
             </CardContent>
           </Card>
-          <Card className="glass hover-lift">
+          <Card className="glass">
             <CardHeader>
               <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
                 Quick links
@@ -234,7 +316,7 @@ export function CommandCenterClient({
         </div>
 
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
-          <Card className="glass hover-lift">
+          <Card className="glass">
             <CardHeader className="flex-row items-center justify-between">
               <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
                 Recent runs
@@ -251,7 +333,7 @@ export function CommandCenterClient({
                   <Link
                     key={run.run_id}
                     href={`/runs/${encodeURIComponent(run.run_id)}`}
-                    className="flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-2 text-sm hover:border-primary/30"
+                    className="flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-2 text-sm hover:border-primary/30 hover:bg-muted/50"
                   >
                     <RunStatusBadge status={run.status} />
                     <span className="min-w-0 flex-1 truncate">
@@ -262,7 +344,7 @@ export function CommandCenterClient({
               )}
             </CardContent>
           </Card>
-          <Card className="glass hover-lift">
+          <Card className="glass">
             <CardHeader className="flex-row items-center justify-between">
               <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
                 Recent requests
@@ -276,13 +358,14 @@ export function CommandCenterClient({
                 <p className="text-sm text-muted-foreground">No requests yet.</p>
               ) : (
                 requests.slice(0, 5).map((req) => (
-                  <div
+                  <Link
                     key={req.request_id}
-                    className="flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-2 text-sm"
+                    href="/requests"
+                    className="flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-2 text-sm hover:border-primary/30 hover:bg-muted/50"
                   >
                     <RunStatusBadge status={req.status} />
                     <span className="min-w-0 flex-1 truncate">{req.raw_prompt}</span>
-                  </div>
+                  </Link>
                 ))
               )}
             </CardContent>

@@ -20,6 +20,7 @@ export function OverviewActions({
 }) {
   const [doctorJobId, setDoctorJobId] = useState<string | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
+  const [doctorError, setDoctorError] = useState<string | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -30,20 +31,32 @@ export function OverviewActions({
           (j: { status: string; id: string }) => j.status === "running",
         );
         setActiveJobId(running?.id ?? null);
+      })
+      .catch(() => {
+        setActiveJobId(null);
       });
   }, []);
 
   const runDoctor = async () => {
     setDoctorOpen(true);
     setDoctorJobId(null);
-    const res = await fetch("/api/jobs/doctor", { method: "POST" });
-    const data = await res.json();
-    if (res.ok) setDoctorJobId(data.jobId);
+    setDoctorError(null);
+    try {
+      const res = await fetch("/api/jobs/doctor", { method: "POST" });
+      const data = (await res.json()) as { jobId?: string; error?: string };
+      if (!res.ok) {
+        setDoctorError(data.error ?? "Failed to start health check");
+        return;
+      }
+      setDoctorJobId(data.jobId ?? null);
+    } catch (err) {
+      setDoctorError(err instanceof Error ? err.message : "Failed to start health check");
+    }
   };
 
   return (
     <>
-      {activeJobId ? <JobLogPanel jobId={activeJobId} /> : null}
+      {activeJobId ? <JobLogPanel jobId={activeJobId} variant="run" /> : null}
 
       <div className="flex shrink-0 items-center gap-2">
         <Button variant="outline" onClick={() => void runDoctor()}>
@@ -58,21 +71,42 @@ export function OverviewActions({
         </Button>
       </div>
 
-      <Dialog open={doctorOpen} onOpenChange={setDoctorOpen}>
-        <DialogContent className="glass-strong glass-sheen sm:max-w-2xl">
-          <DialogHeader>
+      <Dialog
+        open={doctorOpen}
+        onOpenChange={(open) => {
+          setDoctorOpen(open);
+          if (!open) {
+            setDoctorJobId(null);
+            setDoctorError(null);
+          }
+        }}
+      >
+        <DialogContent className="glass-strong glass-sheen flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>System health check</DialogTitle>
             <DialogDescription>
               Verifies Google Places, Firecrawl, AI Gateway, Browser Use balances, Google Sheets,
               and the lead database.
             </DialogDescription>
           </DialogHeader>
-          <JobLogPanel
-            jobId={doctorJobId}
-            onDone={() => {
-              onDoctorComplete?.();
-            }}
-          />
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {doctorError ? (
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-destructive/40 p-8 text-center">
+                <p className="text-sm text-destructive">{doctorError}</p>
+                <Button variant="outline" size="sm" onClick={() => void runDoctor()}>
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <JobLogPanel
+                jobId={doctorJobId}
+                variant="doctor"
+                onDone={() => {
+                  onDoctorComplete?.();
+                }}
+              />
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </>

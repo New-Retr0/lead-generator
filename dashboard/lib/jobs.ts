@@ -4,6 +4,7 @@ import { EventEmitter } from "events";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { cliChildEnv } from "./env";
+import { dbAvailable, getSql } from "./pg";
 import { formatCliCommand, projectRoot, resolveCli } from "./paths";
 import type { JobEvent, JobRecord, JobStatus } from "./types";
 
@@ -166,7 +167,7 @@ export class JobConcurrencyError extends Error {
   }
 }
 
-export function cancelJob(id: string): JobRecord | null {
+export async function cancelJob(id: string): Promise<JobRecord | null> {
   if (!isValidJobId(id)) return null;
   const job = jobs.get(id);
   const child = childProcesses.get(id);
@@ -177,6 +178,12 @@ export function cancelJob(id: string): JobRecord | null {
     process.kill(child.pid);
   } catch {
     // process may already be gone
+  }
+  const runId = job.events.find((e) => typeof e.run_id === "string")?.run_id;
+  if (runId && dbAvailable()) {
+    const sql = getSql();
+    await sql`update runs set status = 'cancelled', finished_at = now()
+              where run_id = ${runId} and status = 'running'`;
   }
   job.status = "cancelled";
   job.finishedAt = new Date().toISOString();

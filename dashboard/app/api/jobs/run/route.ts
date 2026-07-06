@@ -24,6 +24,23 @@ function parseLimit(value: unknown): number | null {
   return n;
 }
 
+function validateCommaKeys(
+  value: string,
+  keys: Set<string>,
+  label: string,
+): string | null {
+  const tokens = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const token of tokens) {
+    if (!keys.has(token)) {
+      return `Invalid ${label}: ${token}`;
+    }
+  }
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as RunBody;
@@ -65,11 +82,17 @@ export async function POST(req: NextRequest) {
       if (body.campaign && !campaignKeys.has(body.campaign)) {
         return NextResponse.json({ error: "Invalid campaign" }, { status: 400 });
       }
-      if (body.market && !marketKeys.has(body.market)) {
-        return NextResponse.json({ error: "Invalid market" }, { status: 400 });
+      if (body.market) {
+        const marketErr = validateCommaKeys(body.market, marketKeys, "market");
+        if (marketErr) {
+          return NextResponse.json({ error: marketErr }, { status: 400 });
+        }
       }
-      if (body.category && !categoryKeys.has(body.category)) {
-        return NextResponse.json({ error: "Invalid category" }, { status: 400 });
+      if (body.category) {
+        const categoryErr = validateCommaKeys(body.category, categoryKeys, "category");
+        if (categoryErr) {
+          return NextResponse.json({ error: categoryErr }, { status: 400 });
+        }
       }
       if (body.campaign) args.push("--campaign", body.campaign);
       if (body.market) args.push("--market", body.market);
@@ -78,8 +101,11 @@ export async function POST(req: NextRequest) {
       if (body.campaign && !campaignKeys.has(body.campaign)) {
         return NextResponse.json({ error: "Invalid campaign" }, { status: 400 });
       }
-      if (body.market && !marketKeys.has(body.market)) {
-        return NextResponse.json({ error: "Invalid market" }, { status: 400 });
+      if (body.market) {
+        const marketErr = validateCommaKeys(body.market, marketKeys, "market");
+        if (marketErr) {
+          return NextResponse.json({ error: marketErr }, { status: 400 });
+        }
       }
       if (body.campaign) args.push("--campaign", body.campaign);
       if (body.market) args.push("--market", body.market);

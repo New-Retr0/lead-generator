@@ -8,7 +8,9 @@ type CreditsResponse = {
   firecrawl: {
     remaining: number | null;
     plan: number | null;
-    periodEnd: string | null;
+    used: number | null;
+    billingPeriodStart: string | null;
+    billingPeriodEnd: string | null;
     live: boolean;
   };
   aiGateway: {
@@ -32,15 +34,33 @@ async function fetchFirecrawlLive(apiKey: string) {
     data?: {
       remainingCredits?: number;
       planCredits?: number;
+      billingPeriodStart?: string;
       billingPeriodEnd?: string;
     };
   };
   const data = body.data ?? {};
+  const remaining = data.remainingCredits ?? null;
+  const plan = data.planCredits ?? null;
+  const used =
+    remaining != null && plan != null ? Math.max(0, plan - remaining) : null;
   return {
-    remaining: data.remainingCredits ?? null,
-    plan: data.planCredits ?? null,
-    periodEnd: data.billingPeriodEnd ?? null,
+    remaining,
+    plan,
+    used,
+    billingPeriodStart: data.billingPeriodStart ?? null,
+    billingPeriodEnd: data.billingPeriodEnd ?? null,
   };
+}
+
+function firecrawlUsed(
+  remaining: number | null,
+  plan: number | null,
+  snapshotUsed: number | null,
+): number | null {
+  if (remaining != null && plan != null) {
+    return Math.max(0, plan - remaining);
+  }
+  return snapshotUsed;
 }
 
 async function fetchAiGatewayLive(apiKey: string) {
@@ -72,7 +92,13 @@ export async function GET() {
   let firecrawl = {
     remaining: fcSnap?.remaining ?? null,
     plan: fcSnap?.plan ?? null,
-    periodEnd: fcSnap?.billingPeriodEnd ?? null,
+    used: firecrawlUsed(
+      fcSnap?.remaining ?? null,
+      fcSnap?.plan ?? null,
+      fcSnap?.used ?? null,
+    ),
+    billingPeriodStart: null as string | null,
+    billingPeriodEnd: fcSnap?.billingPeriodEnd ?? null,
     live: false,
   };
   let aiGateway = {

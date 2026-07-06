@@ -1,3 +1,4 @@
+import { LiveDot } from "@/components/animated";
 import { Badge } from "@/components/ui/badge";
 
 export function ScoreBadge({ score }: { score: number | null }) {
@@ -28,8 +29,19 @@ export function RunStatusBadge({ status }: { status: string }) {
         ? "warning"
         : status === "failed"
           ? "danger"
-          : "secondary";
-  return <Badge variant={variant}>{status}</Badge>;
+          : status === "cancelled"
+            ? "outline"
+            : status === "firecrawl_credits_exhausted"
+              ? "warning"
+              : "secondary";
+  const label =
+    status === "firecrawl_credits_exhausted" ? "CREDITS CAP" : status.replace(/_/g, " ");
+  return (
+    <Badge variant={variant}>
+      {status === "running" ? <LiveDot tone="warning" className="size-1.5" /> : null}
+      {label}
+    </Badge>
+  );
 }
 
 export function ConfidenceBadge({ confidence }: { confidence: string | null }) {
