@@ -14,6 +14,7 @@ type RunBody = {
   campaign?: string;
   limit?: number;
   discoverOnly?: boolean;
+  maxCreditsPerRun?: number;
 };
 
 function parseLimit(value: unknown): number | null {
@@ -95,7 +96,15 @@ export async function POST(req: NextRequest) {
     if (body.discoverOnly) args.push("--discover-only");
     args.push("--no-sheets");
 
-    const job = startJob("run", args);
+    const extraEnv: Record<string, string> = {};
+    if (body.maxCreditsPerRun != null) {
+      const cap = Number(body.maxCreditsPerRun);
+      if (Number.isFinite(cap) && cap > 0) {
+        extraEnv.FIRECRAWL_MAX_CREDITS_PER_RUN = String(Math.floor(cap));
+      }
+    }
+
+    const job = startJob("run", args, extraEnv);
     return NextResponse.json({ jobId: job.id, job });
   } catch (err) {
     if (err instanceof JobConcurrencyError) {

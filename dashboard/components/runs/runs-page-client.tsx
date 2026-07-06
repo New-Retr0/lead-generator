@@ -1,7 +1,7 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
 import { FlaskConical, Layers, Play, Rocket } from "lucide-react";
 import { toast } from "sonner";
 import { JobLogPanel } from "@/components/job-log-panel";
@@ -40,11 +40,6 @@ import {
 } from "@/components/ui/toggle-group";
 import type { JobRecord, PipelineConfig, RunRow } from "@/lib/types";
 
-const RunDetailModal = dynamic(
-  () => import("@/components/run-detail-modal").then((m) => m.RunDetailModal),
-  { ssr: false },
-);
-
 type RunType = "run" | "run-campaign" | "smoke-sample";
 
 const ALL = "__all__";
@@ -67,8 +62,8 @@ export function RunsPageClient({
   const [discoverOnly, setDiscoverOnly] = useState(false);
 
   const [jobId, setJobId] = useState<string | null>(null);
-  const [detailRunId, setDetailRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
 
   const refreshRuns = () => {
     void fetch("/api/runs")
@@ -340,7 +335,7 @@ export function RunsPageClient({
                   <TableRow
                     key={run.run_id}
                     className="cursor-pointer transition-colors hover:bg-accent/25"
-                    onClick={() => setDetailRunId(run.run_id)}
+                    onClick={() => router.push(`/runs/${encodeURIComponent(run.run_id)}`)}
                   >
                     <TableCell>
                       <RunStatusBadge status={run.status} />
@@ -373,12 +368,6 @@ export function RunsPageClient({
           )}
         </CardContent>
       </Card>
-
-      <RunDetailModal
-        runId={detailRunId}
-        onClose={() => setDetailRunId(null)}
-        onRunFinished={refreshRuns}
-      />
     </div>
   );
 }

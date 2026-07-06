@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
   Building2,
@@ -140,7 +140,13 @@ function groupByLead(events: JobEvent[]): { runEvents: JobEvent[]; leads: LeadGr
   return { runEvents, leads: [...map.values()] };
 }
 
-function EventRow({ event, active }: { event: JobEvent; active?: boolean }) {
+const EventRow = memo(function EventRow({
+  event,
+  active,
+}: {
+  event: JobEvent;
+  active?: boolean;
+}) {
   const meta = metaFor(event);
   const tone = TONE_STYLES[meta.tone];
   const Icon = meta.icon;
@@ -190,9 +196,9 @@ function EventRow({ event, active }: { event: JobEvent; active?: boolean }) {
       </div>
     </SlideIn>
   );
-}
+});
 
-function LeadGroupCard({
+const LeadGroupCard = memo(function LeadGroupCard({
   group,
   defaultOpen,
   nowMs,
@@ -243,7 +249,7 @@ function LeadGroupCard({
             <div className="space-y-0.5 border-t border-border/40 px-1.5 py-1.5">
               {group.events.map((evt, i) => (
                 <EventRow
-                  key={`${evt.ts}-${i}`}
+                  key={`${evt.ts}-${evt.event}-${i}`}
                   event={evt}
                   active={!group.done && i === group.events.length - 1}
                 />
@@ -266,7 +272,9 @@ function LeadGroupCard({
       </Collapsible>
     </SlideIn>
   );
-}
+});
+
+const LOG_CAP = 200;
 
 function JobTimelineStream({
   jobId,
@@ -279,10 +287,33 @@ function JobTimelineStream({
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [status, setStatus] = useState("running");
   const [showRaw, setShowRaw] = useState(false);
+  const [showFullLog, setShowFullLog] = useState(false);
   const [paused, setPaused] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const wasLiveRef = useRef(false);
+  const pendingEventsRef = useRef<JobEvent[]>([]);
+  const pendingLinesRef = useRef<string[]>([]);
+  const flushRafRef = useRef<number | null>(null);
+
+  const flushPending = useCallback(() => {
+    flushRafRef.current = null;
+    if (pendingEventsRef.current.length > 0) {
+      const batch = pendingEventsRef.current;
+      pendingEventsRef.current = [];
+      setEvents((prev) => [...prev, ...batch]);
+    }
+    if (pendingLinesRef.current.length > 0) {
+      const batch = pendingLinesRef.current;
+      pendingLinesRef.current = [];
+      setLines((prev) => [...prev, ...batch]);
+    }
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (flushRafRef.current != null) return;
+    flushRafRef.current = requestAnimationFrame(flushPending);
+  }, [flushPending]);
 
   useEffect(() => {
     let cancelled = false;
@@ -309,12 +340,14 @@ function JobTimelineStream({
 
     source.addEventListener("log", (event) => {
       const data = JSON.parse(event.data) as { line: string };
-      setLines((prev) => [...prev, data.line]);
+      pendingLinesRef.current.push(data.line);
+      scheduleFlush();
     });
 
     source.addEventListener("event", (event) => {
       const data = JSON.parse(event.data) as JobEvent;
-      setEvents((prev) => [...prev, data]);
+      pendingEventsRef.current.push(data);
+      scheduleFlush();
     });
 
     source.addEventListener("done", (event) => {
@@ -332,9 +365,12 @@ function JobTimelineStream({
 
     return () => {
       cancelled = true;
+      if (flushRafRef.current != null) {
+        cancelAnimationFrame(flushRafRef.current);
+      }
       source.close();
     };
-  }, [jobId, onDone]);
+  }, [jobId, onDone, scheduleFlush]);
 
   useEffect(() => {
     if (!paused) {
@@ -364,6 +400,10 @@ function JobTimelineStream({
   }, [events]);
 
   const { runEvents, leads } = useMemo(() => groupByLead(events), [events]);
+  const visibleLines = useMemo(
+    () => (showFullLog ? lines : lines.slice(-LOG_CAP)),
+    [lines, showFullLog],
+  );
   const running = status === "running";
   const staleMs = 5 * 60 * 1000;
   const lastEventTs = events.length
@@ -474,10 +514,23 @@ function JobTimelineStream({
         {/* body */}
         <div className="p-3">
           {showRaw ? (
-            <pre className="max-h-96 overflow-auto rounded-xl border border-white/5 bg-[oklch(0.15_0.02_262)] p-3.5 font-mono text-[11px] leading-relaxed text-[oklch(0.84_0.01_250)] shadow-inner">
-              {lines.join("\n") || "Waiting for output…"}
-              <div ref={bottomRef} />
-            </pre>
+            <div className="space-y-2">
+              {!showFullLog && lines.length > LOG_CAP ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => setShowFullLog(true)}
+                >
+                  View full log ({lines.length} lines)
+                </Button>
+              ) : null}
+              <pre className="max-h-96 overflow-auto rounded-xl border border-white/5 bg-[#0b0b0b] p-3.5 font-mono text-[11px] leading-relaxed text-[#ece9e1] shadow-inner">
+                {visibleLines.join("\n") || "Waiting for output…"}
+                <div ref={bottomRef} />
+              </pre>
+            </div>
           ) : (
             <div className="max-h-96 space-y-2 overflow-auto pr-1">
               {events.length === 0 ? (

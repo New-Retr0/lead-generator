@@ -38,7 +38,8 @@ export default function RootLayout({
     >
       <body className="min-h-full" suppressHydrationWarning>
         <ThemeProvider>
-          <div className="ambient-tint pointer-events-none fixed inset-0 -z-10" aria-hidden />
+          <div className="dot-grid pointer-events-none fixed inset-0 -z-10" aria-hidden />
+          <div className="noise-overlay pointer-events-none fixed inset-0 -z-10" aria-hidden />
           <SidebarProvider>
             <AppSidebar />
             <SidebarInset className="min-w-0 overflow-x-clip">

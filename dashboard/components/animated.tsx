@@ -1,14 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  animate,
-  motion,
-  useMotionValue,
-  useMotionValueEvent,
-  useTransform,
-} from "motion/react";
+import NumberFlow from "@number-flow/react";
+import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
+
+type FormatProp = Intl.NumberFormatOptions | ((n: number) => string);
+
+function toIntlFormat(format?: FormatProp): Intl.NumberFormatOptions {
+  if (!format) return { maximumFractionDigits: 0 };
+  if (typeof format !== "function") return format;
+  const sample = format(1234.56);
+  if (sample.includes("$")) {
+    return {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    };
+  }
+  if (sample.includes(".")) {
+    return { minimumFractionDigits: 2, maximumFractionDigits: 4 };
+  }
+  return { maximumFractionDigits: 0 };
+}
 
 export function AnimatedNumber({
   value,
@@ -16,23 +30,17 @@ export function AnimatedNumber({
   className,
 }: {
   value: number;
-  format?: (n: number) => string;
+  format?: FormatProp;
   className?: string;
 }) {
-  const motionValue = useMotionValue(0);
-  const text = useTransform(motionValue, (v) =>
-    format ? format(v) : Math.round(v).toLocaleString(),
+  return (
+    <NumberFlow
+      value={value}
+      format={toIntlFormat(format) as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
+      className={cn("font-mono tabular-nums", className)}
+      willChange
+    />
   );
-
-  useEffect(() => {
-    const controls = animate(motionValue, value, {
-      duration: 0.8,
-      ease: [0.16, 1, 0.3, 1],
-    });
-    return () => controls.stop();
-  }, [value, motionValue]);
-
-  return <motion.span className={className}>{text}</motion.span>;
 }
 
 const containerVariants = {
@@ -135,49 +143,8 @@ export function SlideIn({
   );
 }
 
-const ODOMETER_DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
-const DIGIT_EM = 1.2;
-
-function OdometerChar({ char }: { char: string }) {
-  if (!/^\d$/.test(char)) {
-    return (
-      <span
-        className="inline-block"
-        style={{ height: `${DIGIT_EM}em`, lineHeight: `${DIGIT_EM}em` }}
-      >
-        {char}
-      </span>
-    );
-  }
-  const n = Number(char);
-  return (
-    <span
-      className="relative inline-block overflow-hidden"
-      style={{ width: "1ch", height: `${DIGIT_EM}em` }}
-    >
-      <motion.span
-        className="absolute inset-x-0 top-0 flex flex-col items-center"
-        animate={{ y: `${-n * DIGIT_EM}em` }}
-        transition={{ type: "spring", stiffness: 320, damping: 34 }}
-      >
-        {ODOMETER_DIGITS.map((d) => (
-          <span
-            key={d}
-            className="flex items-center justify-center"
-            style={{ height: `${DIGIT_EM}em`, lineHeight: `${DIGIT_EM}em` }}
-          >
-            {d}
-          </span>
-        ))}
-      </motion.span>
-    </span>
-  );
-}
-
 /**
- * Odometer-style rolling counter. Climbs smoothly from its current displayed
- * value to the target, rolling each digit like a meter — queued increases keep
- * the number visibly ticking up.
+ * Odometer-style rolling counter — NumberFlow digit spin with optional currency formatting.
  */
 export function Odometer({
   value,
@@ -186,36 +153,18 @@ export function Odometer({
   climbSeconds = 1.8,
 }: {
   value: number;
-  format?: (n: number) => string;
+  format?: FormatProp;
   className?: string;
   climbSeconds?: number;
 }) {
-  const motionValue = useMotionValue(0);
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    const controls = animate(motionValue, value, {
-      duration: climbSeconds,
-      ease: [0.22, 0.9, 0.32, 1],
-    });
-    return () => controls.stop();
-  }, [value, motionValue, climbSeconds]);
-
-  useMotionValueEvent(motionValue, "change", (v) => setDisplay(v));
-
-  const finalText = format ? format(value) : Math.round(value).toLocaleString();
-  const text = format ? format(display) : Math.round(display).toLocaleString();
-  const chars = text.split("");
-
+  void climbSeconds;
   return (
-    <span className={cn("inline-flex tabular-nums", className)}>
-      <span className="sr-only">{finalText}</span>
-      <span aria-hidden className="inline-flex">
-        {chars.map((ch, i) => (
-          <OdometerChar key={chars.length - i} char={ch} />
-        ))}
-      </span>
-    </span>
+    <NumberFlow
+      value={value}
+      format={toIntlFormat(format) as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
+      className={cn("inline-flex font-mono tabular-nums", className)}
+      willChange
+    />
   );
 }
 

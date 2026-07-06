@@ -190,6 +190,7 @@ export function cancelJob(id: string): JobRecord | null {
 export function startJob(
   kind: JobRecord["kind"],
   args: string[],
+  extraEnv?: Record<string, string>,
 ): JobRecord {
   if (runningJobCount() >= MAX_CONCURRENT_JOBS) {
     throw new JobConcurrencyError();
@@ -214,7 +215,7 @@ export function startJob(
 
   const child = spawn(command, [...baseArgs, ...args], {
     cwd,
-    env: cliChildEnv(),
+    env: { ...cliChildEnv(), ...extraEnv },
     shell: false,
     windowsHide: true,
   });

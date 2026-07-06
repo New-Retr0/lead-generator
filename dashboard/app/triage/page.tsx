@@ -1,11 +1,5 @@
-import { TriageClient } from "@/components/triage/triage-client";
-import { getPipelineConfig } from "@/lib/config";
-import { listLeads } from "@/lib/db";
+import { redirect } from "next/navigation";
 
-export default async function TriagePage() {
-  const [leads, config] = await Promise.all([
-    listLeads({ dudsOnly: true, limit: 200 }),
-    getPipelineConfig(),
-  ]);
-  return <TriageClient initialLeads={leads} config={config} />;
+export default function TriageRedirect() {
+  redirect("/data?tab=triage");
 }

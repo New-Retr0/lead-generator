@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import dynamic from "next/dynamic";
 import { AlertTriangle, Bot, Coins, DollarSign, Sparkles, TrendingUp } from "lucide-react";
 import { Globe } from "lucide-react";
+import { SectionHeading } from "@/components/console/section-heading";
 import { PageHeader } from "@/components/page-header";
 import { Stagger, StaggerItem } from "@/components/animated";
 import { StatCard } from "@/components/stat-card";
@@ -16,7 +18,6 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -47,11 +48,6 @@ const CostsCreditsChart = dynamic(
   { ssr: false, loading: () => <Skeleton className="h-full w-full" /> },
 );
 
-const RunDetailModal = dynamic(
-  () => import("@/components/run-detail-modal").then((m) => m.RunDetailModal),
-  { ssr: false },
-);
-
 const RANGES = [7, 30, 90] as const;
 
 function balanceFor(series: CostSeries | null, provider: string) {
@@ -67,7 +63,16 @@ export function CostsClient({
 }) {
   const [days, setDays] = useState(initialDays);
   const [fetchedData, setFetchedData] = useState<CostSeries | null>(null);
-  const [detailRunId, setDetailRunId] = useState<string | null>(null);
+  const [liveCredits, setLiveCredits] = useState<{
+    firecrawl: { remaining: number | null; live: boolean };
+    aiGateway: { balanceUsd: number | null; live: boolean };
+  } | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/credits")
+      .then((r) => r.json())
+      .then((body) => setLiveCredits(body));
+  }, []);
 
   const data = days === initialDays ? initialData : (fetchedData ?? initialData);
 
@@ -99,7 +104,8 @@ export function CostsClient({
 
   return (
     <div className="space-y-6">
-      <PageHeader description="Spend across Firecrawl, Browser Use, AI Gateway, and Google Places — balances from the latest doctor/run snapshots.">
+      <SectionHeading index="01" title="Costs & Credits" />
+      <PageHeader description="Spend across Firecrawl, Browser Use, AI Gateway, and Google Places — live credits when API keys are configured.">
         <Tabs value={String(days)} onValueChange={(v) => setDays(Number(v))}>
           <TabsList>
             {RANGES.map((r) => (
@@ -110,6 +116,23 @@ export function CostsClient({
           </TabsList>
         </Tabs>
       </PageHeader>
+
+      {liveCredits ? (
+        <div className="flex flex-wrap gap-3 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+          <Badge variant="outline">
+            Firecrawl live:{" "}
+            {liveCredits.firecrawl.remaining != null
+              ? formatCredits(liveCredits.firecrawl.remaining)
+              : "—"}
+          </Badge>
+          <Badge variant="outline">
+            AI Gateway live:{" "}
+            {liveCredits.aiGateway.balanceUsd != null
+              ? formatUsd(liveCredits.aiGateway.balanceUsd)
+              : "—"}
+          </Badge>
+        </div>
+      ) : null}
 
       <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StaggerItem className="h-full">
@@ -406,23 +429,15 @@ export function CostsClient({
                   </TableHeader>
                   <TableBody>
                     {data.byRun.map((row) => (
-                      <TableRow
-                        key={row.runId}
-                        className="cursor-pointer"
-                        onClick={() => setDetailRunId(row.runId)}
-                      >
+                      <TableRow key={row.runId} className="hover:bg-accent/20">
                         <TableCell>
-                          <Button
-                            variant="link"
-                            className="h-auto p-0 text-left font-medium"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDetailRunId(row.runId);
-                            }}
+                          <Link
+                            href={`/runs/${encodeURIComponent(row.runId)}`}
+                            className="font-medium text-primary hover:underline"
                           >
                             {row.marketKey ?? row.runType}
                             {row.categoryKey ? ` · ${row.categoryKey}` : ""}
-                          </Button>
+                          </Link>
                           <p className="text-xs text-muted-foreground">
                             {row.startedAt.slice(0, 16).replace("T", " ")}
                           </p>
@@ -548,8 +563,6 @@ export function CostsClient({
           <Globe className="mt-0.5 size-4 shrink-0 opacity-0 sm:opacity-100" aria-hidden />
         </CardContent>
       </Card>
-
-      <RunDetailModal runId={detailRunId} onClose={() => setDetailRunId(null)} />
     </div>
   );
 }

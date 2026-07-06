@@ -8,27 +8,35 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 const titles: Record<string, string> = {
-  "/": "Overview",
-  "/requests": "Lead Requests",
+  "/": "Command Center",
+  "/campaigns": "Campaign Control",
   "/runs": "Runs",
-  "/leads": "Leads",
-  "/triage": "Triage",
-  "/duds": "Triage",
-  "/costs": "Costs",
+  "/requests": "Requests",
+  "/data": "Lead Data",
+  "/costs": "Costs & Credits",
+  "/settings": "Settings",
 };
+
+function titleForPath(pathname: string): string {
+  if (titles[pathname]) return titles[pathname];
+  if (pathname.startsWith("/runs/")) return "Live Run";
+  return "PALLARES Leads";
+}
 
 export function SiteHeader() {
   const pathname = usePathname();
-  const title = titles[pathname] ?? "PALLARES Leads";
+  const title = titleForPath(pathname);
   const { theme, setTheme } = useTheme();
 
   return (
     <header className="glass-strong sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 rounded-none border-b border-border/50 px-4 md:px-8">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-1 !h-4" />
-      <h1 className="text-sm font-semibold tracking-tight">{title}</h1>
+      <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em]">
+        {title}
+      </h1>
       <div className="ml-auto flex items-center gap-2">
-        <span className="hidden items-center gap-2 rounded-full border border-success/25 bg-success/8 px-2.5 py-1 text-xs text-muted-foreground sm:flex">
+        <span className="hidden items-center gap-2 rounded-full border border-success/25 bg-success/8 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground sm:flex">
           <span className="relative inline-flex size-1.5">
             <span
               className="absolute inline-flex size-full rounded-full bg-success"
@@ -36,7 +44,7 @@ export function SiteHeader() {
             />
             <span className="relative inline-flex size-1.5 rounded-full bg-success" />
           </span>
-          Lead engine
+          Pipeline
         </span>
         <Button
           type="button"

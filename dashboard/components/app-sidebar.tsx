@@ -2,17 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { motion } from "motion/react";
 import {
-  BarChart3,
-  ContactRound,
+  Database,
   Droplets,
   LayoutDashboard,
   MessageSquareText,
-  PhoneCall,
   PlayCircle,
   Receipt,
+  Rocket,
   Settings2,
-  ShieldAlert,
 } from "lucide-react";
 import {
   Sidebar,
@@ -20,38 +19,20 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 
-const groups = [
-  {
-    label: "Pipeline",
-    items: [
-      { href: "/", label: "Overview", icon: LayoutDashboard },
-      { href: "/requests", label: "Lead Requests", icon: MessageSquareText },
-      { href: "/runs", label: "Runs", icon: PlayCircle },
-    ],
-  },
-  {
-    label: "Sales",
-    items: [
-      { href: "/crm", label: "CRM", icon: ContactRound },
-      { href: "/leads", label: "Leads", icon: PhoneCall },
-      { href: "/triage", label: "Triage", icon: ShieldAlert },
-    ],
-  },
-  {
-    label: "Operations",
-    items: [
-      { href: "/insights", label: "Insights", icon: BarChart3 },
-      { href: "/costs", label: "Costs", icon: Receipt },
-      { href: "/settings", label: "Settings", icon: Settings2 },
-    ],
-  },
+const navItems = [
+  { href: "/", label: "Command Center", icon: LayoutDashboard },
+  { href: "/campaigns", label: "Campaigns", icon: Rocket },
+  { href: "/runs", label: "Runs", icon: PlayCircle },
+  { href: "/requests", label: "Requests", icon: MessageSquareText },
+  { href: "/data", label: "Data", icon: Database },
+  { href: "/costs", label: "Costs", icon: Receipt },
+  { href: "/settings", label: "Settings", icon: Settings2 },
 ];
 
 export function AppSidebar() {
@@ -64,15 +45,15 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <Link href="/">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-sidebar-primary to-[oklch(0.55_0.16_300)] text-sidebar-primary-foreground shadow-[0_4px_16px_-4px_oklch(0.58_0.18_262/0.7)]">
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                   <Droplets className="size-4" />
                 </div>
                 <div className="grid flex-1 text-left leading-tight">
-                  <span className="truncate text-sm font-bold tracking-wide">
+                  <span className="truncate font-mono text-xs font-bold tracking-[0.15em]">
                     PALLARES
                   </span>
-                  <span className="truncate text-xs text-sidebar-foreground/60">
-                    Lead Engine
+                  <span className="truncate font-mono text-[10px] tracking-[0.12em] text-sidebar-foreground/60">
+                    Dev Console
                   </span>
                 </div>
               </Link>
@@ -82,34 +63,45 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {groups.map((group) => (
-          <SidebarGroup key={group.label}>
-            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {group.items.map((item) => (
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {navItems.map((item) => {
+                const active =
+                  item.href === "/"
+                    ? pathname === "/"
+                    : pathname === item.href || pathname.startsWith(`${item.href}/`);
+                return (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton
                       asChild
-                      isActive={pathname === item.href}
+                      isActive={active}
                       tooltip={item.label}
+                      className="relative font-mono text-[10px] uppercase tracking-[0.12em]"
                     >
                       <Link href={item.href}>
                         <item.icon />
                         <span>{item.label}</span>
+                        {active ? (
+                          <motion.span
+                            layoutId="nav-indicator"
+                            className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-primary"
+                            transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                          />
+                        ) : null}
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        ))}
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter>
-        <p className="truncate px-2 pb-1 text-[10px] uppercase tracking-widest text-sidebar-foreground/40 group-data-[collapsible=icon]:hidden">
-          Central Valley · CA
+        <p className="truncate px-2 pb-1 font-mono text-[9px] uppercase tracking-[0.2em] text-sidebar-foreground/40 group-data-[collapsible=icon]:hidden">
+          Pipeline Ops
         </p>
       </SidebarFooter>
     </Sidebar>
