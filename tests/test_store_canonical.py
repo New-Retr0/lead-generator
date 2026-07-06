@@ -50,12 +50,23 @@ def test_run_events_and_report(store: LeadStore) -> None:
         place_id="places/a",
         stage="scrape_json",
         ran=True,
-        credits_est=5,
+        credits_est=0,
+    )
+    store.record_cost_event(
+        provider="firecrawl",
+        operation="scrape_json",
+        units=5,
+        unit_type="credits",
+        usd=0.05,
+        run_id=run_id,
+        place_id="places/a",
     )
     store.commit_events()
+    store.commit_cost_events()
     store.finish_run(run_id, discovered_count=1, skipped_known_count=0, enriched_count=1)
     report = store.run_report(run_id)
     assert report["credits_est_total"] == 5
+    assert report["credits_actual_total"] == 5
     assert "scrape_json" in report["by_stage"]
 
 
@@ -73,6 +84,6 @@ def test_sales_feedback(store: LeadStore) -> None:
         feedback_notes="Called — interested",
         sales_ready=True,
     )
-    rows = store.list_sales_feedback()
+    rows = [row for row in store.list_sales_feedback(limit=500) if row["place_id"] == "places/a"]
     assert len(rows) == 1
     assert bool(rows[0]["addressed"]) is True

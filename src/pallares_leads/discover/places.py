@@ -10,6 +10,8 @@ from pallares_leads.config_loader import CategoryConfig, MarketConfig
 from pallares_leads.costs import load_pricing, usd_for
 from pallares_leads.schemas import RawLead
 from pallares_leads.settings import Settings
+from pallares_leads.utils.geo import market_bbox, tile_circles
+from pallares_leads.utils.http_retry import request_with_retry
 from pallares_leads.utils.normalize import normalize_phone, normalize_website, parse_city_state_zip
 
 if TYPE_CHECKING:
@@ -51,7 +53,7 @@ class PlacesClient:
         self._run_id = run_id
         self.request_count = 0
 
-    def _record_request(self, operation: str) -> None:
+    def _record_request(self, operation: str, *, duration_ms: int) -> None:
         self.request_count += 1
         if not self._store:
             return
@@ -70,6 +72,7 @@ class PlacesClient:
             unit_type="requests",
             usd=cost_usd,
             run_id=self._run_id,
+            meta={"duration_ms": duration_ms, "stage": "discovery"},
         )
 
     def _headers(self, field_mask: str) -> dict[str, str]:
@@ -80,12 +83,20 @@ class PlacesClient:
         }
 
     @staticmethod
-    def _location_bias(market: MarketConfig) -> dict[str, Any] | None:
-        lat = market.get("latitude")
-        lng = market.get("longitude")
+    def _location_bias(
+        market: MarketConfig,
+        *,
+        center_lat: float | None = None,
+        center_lng: float | None = None,
+        radius_m: float | None = None,
+    ) -> dict[str, Any] | None:
+        lat = center_lat if center_lat is not None else market.get("latitude")
+        lng = center_lng if center_lng is not None else market.get("longitude")
         if lat is None or lng is None:
             return None
-        radius = float(market.get("search_radius_m") or 15_000)
+        radius = float(
+            radius_m if radius_m is not None else market.get("search_radius_m") or 15_000
+        )
         return {
             "circle": {
                 "center": {"latitude": lat, "longitude": lng},
@@ -122,6 +133,9 @@ class PlacesClient:
         market: MarketConfig,
         included_type: str | None = None,
         page_token: str | None = None,
+        center_lat: float | None = None,
+        center_lng: float | None = None,
+        radius_m: float | None = None,
     ) -> dict[str, Any]:
         city = market["city"]
         state = market["state"]
@@ -131,7 +145,12 @@ class PlacesClient:
             "languageCode": "en",
             "regionCode": "US",
         }
-        bias = self._location_bias(market)
+        bias = self._location_bias(
+            market,
+            center_lat=center_lat,
+            center_lng=center_lng,
+            radius_m=radius_m,
+        )
         if bias:
             body["locationBias"] = bias
         if included_type:
@@ -140,13 +159,17 @@ class PlacesClient:
             body["pageToken"] = page_token
 
         with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                f"{self.BASE_URL}/places:searchText",
-                headers=self._headers(SEARCH_FIELD_MASK),
-                json=body,
+            started = time.perf_counter()
+            response = request_with_retry(
+                lambda: client.post(
+                    f"{self.BASE_URL}/places:searchText",
+                    headers=self._headers(SEARCH_FIELD_MASK),
+                    json=body,
+                ),
+                label="Places searchText",
             )
             response.raise_for_status()
-            self._record_request("text_search")
+            self._record_request("text_search", duration_ms=int((time.perf_counter() - started) * 1000))
             return response.json()
 
     def search_nearby(
@@ -154,13 +177,18 @@ class PlacesClient:
         *,
         market: MarketConfig,
         included_types: list[str],
+        center_lat: float | None = None,
+        center_lng: float | None = None,
+        radius_m: float | None = None,
     ) -> dict[str, Any]:
-        lat = market.get("latitude")
-        lng = market.get("longitude")
+        lat = center_lat if center_lat is not None else market.get("latitude")
+        lng = center_lng if center_lng is not None else market.get("longitude")
         if lat is None or lng is None:
             return {"places": []}
 
-        radius = float(market.get("search_radius_m") or 15_000)
+        radius = float(
+            radius_m if radius_m is not None else market.get("search_radius_m") or 15_000
+        )
         body: dict[str, Any] = {
             "includedTypes": included_types[:5],
             "maxResultCount": 20,
@@ -175,13 +203,20 @@ class PlacesClient:
         }
 
         with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                f"{self.BASE_URL}/places:searchNearby",
-                headers=self._headers(NEARBY_FIELD_MASK),
-                json=body,
+            started = time.perf_counter()
+            response = request_with_retry(
+                lambda: client.post(
+                    f"{self.BASE_URL}/places:searchNearby",
+                    headers=self._headers(NEARBY_FIELD_MASK),
+                    json=body,
+                ),
+                label="Places searchNearby",
             )
             response.raise_for_status()
-            self._record_request("nearby_search")
+            self._record_request(
+                "nearby_search",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
             return response.json()
 
     @staticmethod
@@ -268,6 +303,121 @@ class PlacesClient:
                 seen_ids.add(lead.place_id)
                 leads.append(lead)
 
+    def _market_bbox(self, market: MarketConfig) -> tuple[float, float, float, float] | None:
+        raw_bbox = market.get("bbox")
+        if raw_bbox and len(raw_bbox) == 4:
+            return tuple(float(v) for v in raw_bbox)  # type: ignore[return-value]
+        lat = market.get("latitude")
+        lng = market.get("longitude")
+        if lat is None or lng is None:
+            return None
+        radius = float(market.get("search_radius_m") or 15_000)
+        return market_bbox(lat, lng, radius)
+
+    def _discovery_centers(self, market: MarketConfig) -> list[tuple[float, float, float | None]]:
+        """Return (lat, lng, tile_radius_m) search centers for a market."""
+        grid_radius = market.get("grid_radius_m")
+        if not grid_radius:
+            lat = market.get("latitude")
+            lng = market.get("longitude")
+            if lat is None or lng is None:
+                return []
+            return [(lat, lng, None)]
+
+        bbox = self._market_bbox(market)
+        if bbox is None:
+            lat = market.get("latitude")
+            lng = market.get("longitude")
+            if lat is None or lng is None:
+                return []
+            return [(lat, lng, float(grid_radius))]
+
+        tile_radius = float(grid_radius)
+        return [(lat, lng, tile_radius) for lat, lng in tile_circles(bbox, tile_radius)]
+
+    def _run_query_loop(
+        self,
+        *,
+        market: MarketConfig,
+        property_type: str,
+        lead_category: str,
+        queries: list[str],
+        included_type: str | None,
+        nearby_types: list[str],
+        market_key: str,
+        limit: int | None,
+        seen_ids: set[str],
+        leads: list[RawLead],
+        center_lat: float | None = None,
+        center_lng: float | None = None,
+        radius_m: float | None = None,
+    ) -> bool:
+        """Run nearby + text searches for one tile. Returns True when limit reached."""
+        if nearby_types:
+            try:
+                nearby_payload = self.search_nearby(
+                    market=market,
+                    included_types=nearby_types,
+                    center_lat=center_lat,
+                    center_lng=center_lng,
+                    radius_m=radius_m,
+                )
+                self._collect_from_payload(
+                    nearby_payload,
+                    property_type=property_type,
+                    lead_category=lead_category,
+                    discovery_query=f"nearby:{','.join(nearby_types[:3])}",
+                    market_key=market_key,
+                    market=market,
+                    seen_ids=seen_ids,
+                    leads=leads,
+                )
+            except httpx.HTTPStatusError as exc:
+                logger.error("Nearby search failed: %s", exc.response.text[:300])
+
+        if limit and len(leads) >= limit:
+            return True
+
+        for query in queries:
+            page_token: str | None = None
+            for _page in range(MAX_PAGES):
+                try:
+                    payload = self.search_text(
+                        query,
+                        market=market,
+                        included_type=included_type,
+                        page_token=page_token,
+                        center_lat=center_lat,
+                        center_lng=center_lng,
+                        radius_m=radius_m,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    logger.error("Text search failed for %r: %s", query, exc.response.text[:300])
+                    break
+
+                self._collect_from_payload(
+                    payload,
+                    property_type=property_type,
+                    lead_category=lead_category,
+                    discovery_query=query,
+                    market_key=market_key,
+                    market=market,
+                    seen_ids=seen_ids,
+                    leads=leads,
+                )
+
+                if limit and len(leads) >= limit:
+                    return True
+
+                page_token = payload.get("nextPageToken")
+                if not page_token:
+                    break
+                time.sleep(PAGE_DELAY_S)
+
+            if limit and len(leads) >= limit:
+                return True
+        return False
+
     def discover_category(
         self,
         *,
@@ -287,68 +437,27 @@ class PlacesClient:
         leads: list[RawLead] = []
         seen_ids: set[str] = set()
 
-        if nearby_types:
-            try:
-                nearby_payload = self.search_nearby(market=market, included_types=nearby_types)
-                self._collect_from_payload(
-                    nearby_payload,
-                    property_type=property_type,
-                    lead_category=lead_category,
-                    discovery_query=f"nearby:{','.join(nearby_types[:3])}",
-                    market_key=market_key,
-                    market=market,
-                    seen_ids=seen_ids,
-                    leads=leads,
-                )
-            except httpx.HTTPStatusError as exc:
-                logger.error("Nearby search failed: %s", exc.response.text[:300])
+        centers = self._discovery_centers(market)
+        if not centers:
+            logger.warning("No discovery centers for market %s — missing lat/lng/bbox", market_key)
+            return leads
 
-        if limit and len(leads) >= limit:
-            logger.info(
-                "Discovered %d places (limit %d) for %s / %s in %s, %s",
-                len(leads[:limit]),
-                limit,
-                market_key,
-                property_type,
-                city,
-                state,
-            )
-            return leads[:limit]
-
-        for query in queries:
-            page_token: str | None = None
-            for _page in range(MAX_PAGES):
-                try:
-                    payload = self.search_text(
-                        query,
-                        market=market,
-                        included_type=included_type,
-                        page_token=page_token,
-                    )
-                except httpx.HTTPStatusError as exc:
-                    logger.error("Text search failed for %r: %s", query, exc.response.text[:300])
-                    break
-
-                self._collect_from_payload(
-                    payload,
-                    property_type=property_type,
-                    lead_category=lead_category,
-                    discovery_query=query,
-                    market_key=market_key,
-                    market=market,
-                    seen_ids=seen_ids,
-                    leads=leads,
-                )
-
-                if limit and len(leads) >= limit:
-                    break
-
-                page_token = payload.get("nextPageToken")
-                if not page_token:
-                    break
-                time.sleep(PAGE_DELAY_S)
-
-            if limit and len(leads) >= limit:
+        for center_lat, center_lng, tile_radius in centers:
+            if self._run_query_loop(
+                market=market,
+                property_type=property_type,
+                lead_category=lead_category,
+                queries=queries,
+                included_type=included_type,
+                nearby_types=nearby_types,
+                market_key=market_key,
+                limit=limit,
+                seen_ids=seen_ids,
+                leads=leads,
+                center_lat=center_lat,
+                center_lng=center_lng,
+                radius_m=tile_radius,
+            ):
                 break
 
         if limit and len(leads) > limit:
@@ -357,13 +466,15 @@ class PlacesClient:
         if self._store and self.request_count:
             self._store.commit_cost_events()
 
+        tile_note = f", {len(centers)} tile(s)" if market.get("grid_radius_m") else ""
         logger.info(
-            "Discovered %d unique places for %s / %s in %s, %s (%d Places API request(s))",
+            "Discovered %d unique places for %s / %s in %s, %s (%d Places API request(s)%s)",
             len(leads),
             market_key,
             property_type,
             city,
             state,
             self.request_count,
+            tile_note,
         )
         return leads

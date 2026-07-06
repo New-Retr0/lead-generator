@@ -147,6 +147,7 @@ def test_gateway_fills_empty_copy_after_markdown_fallback(
     mock_fc.scrape_site.return_value = [
         ("https://example-mall.com/contact", "Call us at (559) 638-2222"),
     ]
+    mock_fc.search_contact_gap.return_value = None
     mock_fc.pick_broker_pdf_url.return_value = None
     mock_generate.return_value = SalesCopyResult(
         why_call="Reedley strip mall with visible parking-lot frontage on Main St.",

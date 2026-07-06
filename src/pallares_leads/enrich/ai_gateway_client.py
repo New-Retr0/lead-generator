@@ -96,6 +96,7 @@ class GatewayCompletionResult(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    duration_ms: int = 0
 
 
 def gateway_chat_completion(
@@ -112,6 +113,7 @@ def gateway_chat_completion(
     response_format: dict[str, Any] | None = None,
     prompt_version: str | None = None,
     temperature: float | None = None,
+    stage: str | None = None,
 ) -> GatewayCompletionResult | None:
     if not gateway_configured(settings):
         return None
@@ -139,6 +141,7 @@ def gateway_chat_completion(
     }
 
     global _last_call_monotonic
+    call_started = time.perf_counter()
 
     with httpx.Client(timeout=timeout) as client:
         response: httpx.Response | None = None
@@ -198,6 +201,7 @@ def gateway_chat_completion(
             )
             return None
 
+        duration_ms = int((time.perf_counter() - call_started) * 1000)
         payload: dict[str, Any] = response.json()
         content = payload.get("choices", [{}])[0].get("message", {}).get("content")
         usage = payload.get("usage") or {}
@@ -218,9 +222,12 @@ def gateway_chat_completion(
             meta: dict[str, Any] = {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
+                "duration_ms": duration_ms,
             }
             if prompt_version:
                 meta["prompt_version"] = prompt_version
+            if stage:
+                meta["stage"] = stage
             store.record_cost_event(
                 provider="ai_gateway",
                 operation=operation,
@@ -240,6 +247,7 @@ def gateway_chat_completion(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            duration_ms=duration_ms,
         )
 
 

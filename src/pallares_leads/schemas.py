@@ -119,10 +119,12 @@ class EnrichedLead(RawLead):
 
     def sales_status(self) -> str:
         has_outreach = bool(self._callable_contacts())
-        if self.investigation_status == InvestigationStatus.ENRICHED and has_outreach:
-            return "Ready to call"
-        if self.main_phone and has_outreach:
-            return "Ready to call"
+        verified_enough = self.verification_level in ("verified", "partial")
+        if has_outreach and verified_enough:
+            if self.investigation_status == InvestigationStatus.ENRICHED:
+                return "Ready to call"
+            if self.main_phone:
+                return "Ready to call"
         return "Needs research"
 
     def _callable_contacts(self) -> list[SiteContact]:

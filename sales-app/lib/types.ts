@@ -154,6 +154,8 @@ export type RunEventRow = {
   ran: number;
   reason: string | null;
   credits_est: number | null;
+  duration_ms?: number | null;
+  meta_json?: unknown;
   created_at: string;
 };
 
@@ -162,8 +164,62 @@ export type ProviderBalance = {
   remaining: number | null;
   used: number | null;
   plan: number | null;
+  billingPeriodEnd: string | null;
   unitLabel: string;
   snapshotAt: string | null;
+};
+
+export type CostBudget = {
+  planCredits: number;
+  remainingCredits: number | null;
+  usedThisCycle: number | null;
+  billingPeriodEnd: string | null;
+  dailyAverageCredits: number | null;
+  projectedCycleCredits: number | null;
+  projectedOverPlan: boolean;
+  percentOfPlanUsed: number | null;
+  planTier: "standard";
+};
+
+export type CostByRunRow = {
+  runId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  runType: string;
+  marketKey: string | null;
+  categoryKey: string | null;
+  enrichedCount: number;
+  status: string;
+  usd: number;
+  firecrawlCredits: number;
+  eventCount: number;
+  usdPerEnrichedLead: number | null;
+};
+
+export type CostByModelRow = {
+  provider: string;
+  model: string;
+  operation: string;
+  unitType: string;
+  units: number;
+  usd: number;
+  eventCount: number;
+};
+
+export type CostByMarketRow = {
+  marketKey: string | null;
+  categoryKey: string | null;
+  usd: number;
+  firecrawlCredits: number;
+  runCount: number;
+  eventCount: number;
+};
+
+export type CostByHourRow = {
+  hour: string;
+  usd: number;
+  firecrawlCredits: number;
+  eventCount: number;
 };
 
 export type OverviewStats = {
@@ -208,6 +264,11 @@ export type CostSeries = {
     count: number;
     unitType: string;
   }[];
+  byRun: CostByRunRow[];
+  byModel: CostByModelRow[];
+  byMarket: CostByMarketRow[];
+  byHour: CostByHourRow[];
+  budget: CostBudget | null;
   balances: ProviderBalance[];
 };
 
@@ -315,6 +376,26 @@ export type PipelineJob = {
   finished_at: string | null;
 };
 
+export type QueueMetrics = {
+  queue_name: string | null;
+  queue_depth: number;
+  queue_visible_depth: number;
+  oldest_msg_age_sec: number | null;
+  newest_msg_age_sec: number | null;
+  total_messages: number;
+  scrape_time: string | null;
+  running_jobs: number;
+  queued_jobs: number;
+};
+
+export type WorkerHeartbeat = {
+  worker_id: string;
+  hostname: string | null;
+  last_seen: string;
+  current_job_id: string | null;
+  status: string;
+};
+
 export type JobStatus =
   | "pending"
   | "running"
@@ -391,7 +472,7 @@ export function estimateRequestCost(spec: {
   usd: number;
 } {
   const perLeadCredits = 13;
-  const creditUsd = 0.00533;
+  const creditUsd = 0.00099;
   const discoveryCredits = spec.categories.length * spec.market_keys.length * 2;
   const enrichCredits = spec.count * perLeadCredits;
   const total = discoveryCredits + enrichCredits;
@@ -402,3 +483,54 @@ export function estimateRequestCost(spec: {
     usd: Math.min(total * creditUsd, spec.budget.max_usd),
   };
 }
+
+export type StageTrendRow = {
+  day: string;
+  stage: string;
+  avgDurationMs: number | null;
+  p95DurationMs: number | null;
+  runCount: number;
+  eventCount: number;
+};
+
+export type OpTrendRow = {
+  day: string;
+  provider: string;
+  operation: string;
+  usd: number;
+  units: number;
+  callCount: number;
+  avgDurationMs: number | null;
+};
+
+export type RunEfficiencyRow = {
+  day: string;
+  runCount: number;
+  leadsEnriched: number;
+  totalUsd: number;
+  usdPerEnrichedLead: number | null;
+  avgLeadDurationMs: number | null;
+  firecrawlCreditsPerLead: number | null;
+};
+
+export type StageStatsByRunRow = {
+  runId: string;
+  stage: string;
+  eventCount: number;
+  ranCount: number;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+  p95DurationMs: number | null;
+  marketKey: string | null;
+  categoryKey: string | null;
+  startedAt: string;
+};
+
+export type PipelineTrends = {
+  stageTrends: StageTrendRow[];
+  opTrends: OpTrendRow[];
+  runEfficiency: RunEfficiencyRow[];
+  stageStatsByRun: StageStatsByRunRow[];
+  viewsAvailable: boolean;
+};
+

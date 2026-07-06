@@ -3,6 +3,33 @@
 #      pallares-leads smoke-sample --all-markets
 #      pallares-leads run-campaign --limit 20
 
+_expansion_categories: &expansion_categories
+  - gas_station
+  - fast_food
+  - strip_mall
+  - outdoor_mall
+  - shopping_center
+  - coffee_drive_thru
+  - grocery
+  - medical_plaza
+  - pharmacy
+  - bank
+  - industrial
+  - big_box
+  - auto_dealer
+  - dollar_store
+  - restaurant
+  - parking
+  - parking_small
+  - parking_large_private
+  - hotel
+  - thrift_store
+  - community_facility
+  - amusement_facility
+  - public_agency
+  - hoa
+  - property_manager
+
 campaigns:
   central_valley:
     description: Central Valley commercial exterior cleaning targets
@@ -41,3 +68,105 @@ campaigns:
     # property_manager searches Fresno County, not individual cities
     county_overrides:
       property_manager: fresno_county
+
+  hawaii:
+    description: Hawaii commercial exterior cleaning targets
+    markets:
+      - honolulu_hi
+      - pearl_city_hi
+      - hilo_hi
+      - kailua_hi
+    categories: *expansion_categories
+
+  oregon:
+    description: Oregon commercial exterior cleaning targets
+    markets:
+      - portland_or
+      - salem_or
+      - eugene_or
+      - gresham_or
+      - hillsboro_or
+      - beaverton_or
+      - bend_or
+      - medford_or
+      - springfield_or
+      - corvallis_or
+      - albany_or
+      - tigard_or
+    categories: *expansion_categories
+
+  washington:
+    description: Washington commercial exterior cleaning targets
+    markets:
+      - seattle_wa
+      - spokane_wa
+      - tacoma_wa
+      - vancouver_wa
+      - bellevue_wa
+      - kent_wa
+      - everett_wa
+      - renton_wa
+      - spokane_valley_wa
+      - federal_way_wa
+      - yakima_wa
+      - bellingham_wa
+      - kirkland_wa
+    categories: *expansion_categories
+
+  arizona:
+    description: Arizona commercial exterior cleaning targets
+    markets:
+      - phoenix_az
+      - tucson_az
+      - mesa_az
+      - chandler_az
+      - scottsdale_az
+      - glendale_az
+      - gilbert_az
+      - tempe_az
+      - peoria_az
+      - surprise_az
+    categories: *expansion_categories
+
+  nevada:
+    description: Nevada commercial exterior cleaning targets
+    markets:
+      - las_vegas_nv
+      - henderson_nv
+      - reno_nv
+      - north_las_vegas_nv
+      - sparks_nv
+      - carson_city_nv
+    categories: *expansion_categories
+
+  new_mexico:
+    description: New Mexico commercial exterior cleaning targets
+    markets:
+      - albuquerque_nm
+      - las_cruces_nm
+      - rio_rancho_nm
+      - santa_fe_nm
+      - roswell_nm
+    categories: *expansion_categories
+
+  california_expansion:
+    description: California expansion markets excluding LA and Orange counties
+    exclude_counties:
+      - los_angeles_ca
+      - orange_ca
+    markets:
+      - san_diego_ca
+      - san_jose_ca
+      - san_francisco_ca
+      - sacramento_ca
+      - oakland_ca
+      - bakersfield_ca
+      - stockton_ca
+      - riverside_ca
+      - chula_vista_ca
+      - modesto_ca
+      - fremont_ca
+      - san_bernardino_ca
+      - oxnard_ca
+      - moreno_valley_ca
+    categories: *expansion_categories

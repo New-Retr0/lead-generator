@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from pallares_leads.enrich.firecrawl_client import FirecrawlClient
+from pallares_leads.enrich.firecrawl_client import FirecrawlClient, _SHARED_MAP_CACHE
 from pallares_leads.enrich.sales_copy import (
     SalesCopyResult,
     generate_sales_copy,
@@ -56,68 +56,62 @@ def test_pick_broker_pdf_url_prefers_broker_domains() -> None:
 
 
 def test_map_cache_reuses_results() -> None:
+    from pallares_leads.enrich.firecrawl_client import _SHARED_MAP_CACHE
+
+    _SHARED_MAP_CACHE.clear()
     settings = Settings(firecrawl_api_key="test-key")
     fc = FirecrawlClient(settings)
-    fc._map_cache["https://example.com"] = ["https://example.com/contact"]
+    _SHARED_MAP_CACHE["https://example.com"] = ["https://example.com/contact"]
 
-    with patch("pallares_leads.enrich.firecrawl_client.httpx.Client") as mock_client_cls:
+    with patch.object(FirecrawlClient, "_sdk_call_with_retry") as mock_sdk:
         links = fc.map_contact_urls("https://example.com/contact-us", limit=5)
 
     assert links == ["https://example.com/contact"]
-    mock_client_cls.assert_not_called()
+    mock_sdk.assert_not_called()
+    _SHARED_MAP_CACHE.clear()
 
 
-@patch("pallares_leads.enrich.firecrawl_client.httpx.Client")
-def test_scrape_lead_uses_map_then_json(mock_client_cls: MagicMock) -> None:
-    settings = Settings(firecrawl_api_key="test-key")
-    client = mock_client_cls.return_value.__enter__.return_value
+@patch("pallares_leads.enrich.firecrawl_client.gateway_extract_contacts")
+@patch.object(FirecrawlClient, "_sdk_call_with_retry")
+def test_scrape_lead_uses_homepage_then_gateway(mock_sdk, mock_extract) -> None:
+    settings = Settings(firecrawl_api_key="test-key", ai_gateway_api_key="gw", ai_gateway_model="m")
+    raw = _raw_lead()
 
-    map_response = MagicMock()
-    map_response.status_code = 200
-    map_response.json.return_value = {
-        "links": ["https://example.com/contact", "https://example.com/menu"],
-    }
+    homepage = MagicMock()
+    homepage.markdown = "Call us at (559) 638-3333."
+    homepage.links = ["https://example.com/contact", "https://example.com/menu"]
 
-    scrape_response = MagicMock()
-    scrape_response.status_code = 200
-    scrape_response.json.return_value = {
-        "success": True,
-        "data": {
-            "markdown": "Call us at (559) 638-3333 for catering.",
-            "json": {
-                "contact_phone": "(559) 638-3333",
-                "exterior_signals": "parking lot",
-            },
-        },
-    }
+    from pallares_leads.enrich.schema import LeadInvestigationResult
 
-    client.post.side_effect = [map_response, scrape_response]
+    mock_extract.return_value = LeadInvestigationResult(
+        contact_phone="(559) 638-3333",
+        exterior_signals="parking lot",
+    )
+    mock_sdk.return_value = homepage
 
     fc = FirecrawlClient(settings)
-    result = fc.scrape_lead(_raw_lead())
+    result = fc.scrape_lead(raw)
 
     assert result is not None
     assert result.contact_phone == "(559) 638-3333"
-    assert client.post.call_count == 2
-    json_call = client.post.call_args_list[1].kwargs["json"]
-    assert json_call["url"] == "https://example.com/contact"
-    assert json_call["formats"] == ["markdown", "json"]
-    assert json_call["jsonOptions"]["schema"]["properties"]["contact_phone"]
+    mock_extract.assert_called_once()
 
 
-@patch("pallares_leads.enrich.firecrawl_client.httpx.Client")
-def test_scrape_site_runs_markdown_scrapes_in_parallel(mock_client_cls: MagicMock) -> None:
+def test_scrape_site_runs_markdown_scrapes_in_parallel() -> None:
+    from pallares_leads.enrich import firecrawl_client as fc_mod
+
     settings = Settings(firecrawl_api_key="test-key", firecrawl_max_concurrency=5)
     fc = FirecrawlClient(settings)
-    fc._map_cache["https://example.com"] = [
-        "https://example.com",
-        "https://example.com/contact",
-        "https://example.com/about",
-    ]
+    with fc_mod._MAP_CACHE_LOCK:
+        fc_mod._SHARED_MAP_CACHE["https://example.com"] = [
+            "https://example.com",
+            "https://example.com/contact",
+            "https://example.com/about",
+        ]
 
     call_count = {"n": 0}
 
-    def fake_scrape(url: str) -> str | None:
+    def fake_scrape(url: str, *, formats=None) -> str | None:
         call_count["n"] += 1
         return f"content for {url}"
 
@@ -127,6 +121,7 @@ def test_scrape_site_runs_markdown_scrapes_in_parallel(mock_client_cls: MagicMoc
     assert len(pages) == 3
     assert call_count["n"] == 3
     assert mock_scrape.call_count == 3
+    fc_mod._SHARED_MAP_CACHE.clear()
 
 
 @patch("pallares_leads.enrich.firecrawl_client.httpx.Client")

@@ -18,4 +18,14 @@ mkdirSync(dest, { recursive: true });
 for (const file of ["markets.yaml", "categories.yaml", "campaign.yaml"]) {
   cpSync(path.join(src, file), path.join(dest, file));
 }
+
+const docsSrc = path.resolve(process.cwd(), "..", "docs");
+const docsDest = path.resolve(process.cwd(), "docs");
+if (existsSync(path.join(docsSrc, "partner-api.openapi.yaml"))) {
+  mkdirSync(docsDest, { recursive: true });
+  cpSync(
+    path.join(docsSrc, "partner-api.openapi.yaml"),
+    path.join(docsDest, "partner-api.openapi.yaml"),
+  );
+}
 console.log("copy-config: bundled config/*.yaml for deployment");

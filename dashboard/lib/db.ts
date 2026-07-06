@@ -1,4 +1,5 @@
 import { cache } from "react";
+import { buildCostBudget } from "./cost-budget";
 import { dbAvailable, getSql } from "./pg";
 import type {
   CostSeries,
@@ -80,11 +81,17 @@ function parseFirecrawlSnapshotBalance(
   snapshotJson: unknown,
   remaining: number | null,
   used: number | null,
-): { remaining: number | null; used: number | null; plan: number | null } {
+): {
+  remaining: number | null;
+  used: number | null;
+  plan: number | null;
+  billingPeriodEnd: string | null;
+} {
   const payload = snapshotPayload(snapshotJson);
   let plan: number | null = null;
   let snapRemaining: number | null = null;
   let snapUsed: number | null = null;
+  let billingPeriodEnd: string | null = null;
 
   if (payload) {
     try {
@@ -101,6 +108,8 @@ function parseFirecrawlSnapshotBalance(
         usedRaw = plan - snapRemaining;
       }
       snapUsed = usedRaw != null ? Number(usedRaw) : null;
+      const billingRaw = data.billingPeriodEnd ?? data.billing_period_end;
+      billingPeriodEnd = billingRaw != null ? String(billingRaw) : null;
     } catch {
       // fall through with DB columns only
     }
@@ -110,6 +119,7 @@ function parseFirecrawlSnapshotBalance(
     remaining: remaining ?? snapRemaining,
     used: used ?? snapUsed,
     plan,
+    billingPeriodEnd,
   };
 }
 
@@ -136,12 +146,14 @@ export const getCreditBalances = cache(async function getCreditBalances(): Promi
             remaining: row.remaining_credits as number | null,
             used: row.used_credits as number | null,
             plan: null,
+            billingPeriodEnd: null,
           };
     return {
       provider: String(row.provider),
       remaining: parsed.remaining,
       used: parsed.used,
       plan: parsed.plan,
+      billingPeriodEnd: parsed.billingPeriodEnd,
       unitLabel: balanceUnitLabel(String(row.provider)),
       snapshotAt: toIsoOrNull(row.created_at),
     };
@@ -1081,7 +1093,17 @@ export const listRequests = cache(async function listRequests(limit = 50): Promi
 
 export const getCostSeries = cache(async function getCostSeries(days = 30): Promise<CostSeries> {
   if (!dbAvailable()) {
-    return { byDay: [], byProvider: [], byOperation: [], balances: [] };
+    return {
+      byDay: [],
+      byProvider: [],
+      byOperation: [],
+      byRun: [],
+      byModel: [],
+      byMarket: [],
+      byHour: [],
+      budget: null,
+      balances: [],
+    };
   }
   const sql = getSql();
 
@@ -1150,6 +1172,46 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
     LIMIT 20
   `;
 
+  const byRunRows = await sql`
+    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+           enriched_count, status, usd, firecrawl_credits, event_count, usd_per_enriched_lead
+    FROM cost_by_run
+    WHERE started_at >= ${sinceIso}
+    ORDER BY started_at DESC
+    LIMIT 50
+  `;
+
+  const byModelRows = await sql`
+    SELECT provider, model, operation, unit_type, units, usd, event_count
+    FROM cost_by_model
+    ORDER BY usd DESC
+    LIMIT 30
+  `;
+
+  const byMarketRows = await sql`
+    SELECT market_key, category_key, usd, firecrawl_credits, run_count, event_count
+    FROM cost_by_market
+    ORDER BY usd DESC
+    LIMIT 30
+  `;
+
+  const byHourRows = await sql`
+    SELECT hour, usd, firecrawl_credits, event_count
+    FROM cost_by_hour
+    ORDER BY hour
+  `;
+
+  const snapshotRows = await sql`
+    SELECT snapshot_json
+    FROM credit_snapshots
+    WHERE provider = 'firecrawl'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+
+  const balances = await getCreditBalances();
+  const firecrawlBalance = balances.find((b) => b.provider === "firecrawl");
+
   return {
     byDay,
     byProvider,
@@ -1160,7 +1222,50 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
       count: Number(row.count),
       unitType: String(row.unit_type),
     })),
-    balances: await getCreditBalances(),
+    byRun: byRunRows.map((row) => ({
+      runId: String(row.run_id),
+      startedAt: toIso(row.started_at),
+      finishedAt: toIsoOrNull(row.finished_at),
+      runType: String(row.run_type),
+      marketKey: row.market_key != null ? String(row.market_key) : null,
+      categoryKey: row.category_key != null ? String(row.category_key) : null,
+      enrichedCount: Number(row.enriched_count),
+      status: String(row.status),
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      eventCount: Number(row.event_count),
+      usdPerEnrichedLead:
+        row.usd_per_enriched_lead != null ? Number(row.usd_per_enriched_lead) : null,
+    })),
+    byModel: byModelRows.map((row) => ({
+      provider: String(row.provider),
+      model: String(row.model),
+      operation: String(row.operation),
+      unitType: String(row.unit_type),
+      units: Number(row.units),
+      usd: Number(row.usd),
+      eventCount: Number(row.event_count),
+    })),
+    byMarket: byMarketRows.map((row) => ({
+      marketKey: row.market_key != null ? String(row.market_key) : null,
+      categoryKey: row.category_key != null ? String(row.category_key) : null,
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      runCount: Number(row.run_count),
+      eventCount: Number(row.event_count),
+    })),
+    byHour: byHourRows.map((row) => ({
+      hour: toIso(row.hour),
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      eventCount: Number(row.event_count),
+    })),
+    budget: buildCostBudget(
+      firecrawlBalance,
+      byDay,
+      snapshotRows[0]?.snapshot_json,
+    ),
+    balances,
   };
 });
 

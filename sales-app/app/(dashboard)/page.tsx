@@ -3,6 +3,10 @@ import Link from "next/link";
 import { Activity, ArrowRight } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { OverviewStatCards } from "@/components/overview/overview-stat-cards";
+import {
+  CreditBurnWidget,
+  QueueStatusWidget,
+} from "@/components/overview/console-live-widgets";
 import { SpendChartLazy } from "@/components/overview/spend-chart-lazy";
 import { RunStatusBadge } from "@/components/badges";
 import { Button } from "@/components/ui/button";
@@ -121,7 +125,8 @@ export default async function OverviewPage() {
           </CardContent>
         </Card>
       ) : (
-        <OverviewStatCards
+        <>
+          <OverviewStatCards
           totalLeads={stats?.totalLeads ?? 0}
           enrichedLeads={stats?.enrichedLeads ?? 0}
           totalLeadsDetails={totalLeadsDetails}
@@ -138,6 +143,7 @@ export default async function OverviewPage() {
           spendSub={formatOverviewSpendSub(stats?.usdByProvider ?? [])}
           spendDetails={spendDetails}
         />
+        </>
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -197,6 +203,11 @@ export default async function OverviewPage() {
             )}
           </CardContent>
         </Card>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <QueueStatusWidget />
+        <CreditBurnWidget />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">

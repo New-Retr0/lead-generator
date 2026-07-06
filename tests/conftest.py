@@ -4,35 +4,54 @@ import os
 from pathlib import Path
 
 import pytest
+from dotenv import load_dotenv
 
 from pallares_leads.db.store import LeadStore
 
-_TRUNCATE_SQL = """
-TRUNCATE TABLE
-  cost_events,
-  run_events,
-  credit_snapshots,
-  sales_feedback,
-  owner_records,
-  enrichment_profiles,
-  lead_facts,
-  request_leads,
-  lead_requests,
-  leads,
-  runs
-RESTART IDENTITY CASCADE
-"""
+load_dotenv()
+load_dotenv(".env.local")
+
+_TRUNCATE_TABLES = (
+    "cost_events",
+    "run_events",
+    "credit_snapshots",
+    "sales_feedback",
+    "owner_records",
+    "enrichment_profiles",
+    "lead_facts",
+    "request_leads",
+    "lead_requests",
+    "leads",
+    "runs",
+)
+
+
+def _db_url() -> str:
+    url = os.getenv("SUPABASE_DB_URL", "")
+    if url:
+        return url
+    from pallares_leads.settings import get_settings
+
+    return get_settings().supabase_db_url or ""
 
 
 def _is_test_database() -> bool:
-    url = os.getenv("SUPABASE_DB_URL", "")
+    url = _db_url()
+    if not url:
+        return False
     return any(token in url for token in ("localhost", "127.0.0.1", "pallares_test"))
 
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("SUPABASE_DB_URL") or not _is_test_database(),
-    reason="SUPABASE_DB_URL must point at a local CI test database",
-)
+_DB_SKIP_REASON = "SUPABASE_DB_URL must point at a local CI test database"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if _db_url() and _is_test_database():
+        return
+    skip_db = pytest.mark.skip(reason=_DB_SKIP_REASON)
+    for item in items:
+        if "store" in getattr(item, "fixturenames", ()):
+            item.add_marker(skip_db)
 
 
 def _reset_store_data(store: LeadStore) -> None:
@@ -40,11 +59,18 @@ def _reset_store_data(store: LeadStore) -> None:
         return
     with store._lock:
         try:
-            store._conn.execute(_TRUNCATE_SQL)
+            tables = ", ".join(_TRUNCATE_TABLES)
+            store._conn.execute(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE")
             store._conn.commit()
         except Exception:
             store._raw_conn.rollback()
-            raise
+            for table in _TRUNCATE_TABLES:
+                try:
+                    store._conn.execute(f"DELETE FROM {table}")
+                except Exception:
+                    store._raw_conn.rollback()
+                    continue
+            store._conn.commit()
 
 
 @pytest.fixture

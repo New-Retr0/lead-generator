@@ -119,3 +119,45 @@ def market_bbox(
         lat + lat_delta,
         lon + lon_delta,
     )
+
+
+def tile_circles(
+    bbox: tuple[float, float, float, float],
+    radius_m: float,
+) -> list[tuple[float, float]]:
+    """Hex-packed circle centers covering a bbox for tiled Places discovery.
+
+    Each center is suitable as the center of a locationBias circle with *radius_m*.
+    Row spacing uses sqrt(3)/2 overlap so adjacent tiles share coverage.
+    """
+    if radius_m <= 0:
+        return []
+
+    south, west, north, east = bbox
+    ref_lat = (south + north) / 2.0
+    lat_scale = _meters_per_degree_lat(ref_lat)
+    lon_scale = _meters_per_degree_lon(ref_lat)
+
+    row_step_m = radius_m * math.sqrt(3)
+    col_step_m = radius_m * 1.5
+    row_step = row_step_m / lat_scale
+    col_step = col_step_m / lon_scale
+    row_offset = (radius_m * 0.75) / lon_scale
+
+    centers: list[tuple[float, float]] = []
+    lat = south + row_step / 2.0
+    row = 0
+    while lat <= north + 1e-9:
+        lon_start = west + (row_offset if row % 2 else 0.0) + col_step / 2.0
+        lon = lon_start
+        while lon <= east + 1e-9:
+            centers.append((lat, lon))
+            lon += col_step
+        lat += row_step
+        row += 1
+
+    if not centers:
+        center_lat = (south + north) / 2.0
+        center_lon = (west + east) / 2.0
+        centers.append((center_lat, center_lon))
+    return centers

@@ -64,16 +64,25 @@ def resolve_market_for_category(
 def iter_campaign_jobs(
     campaign: CampaignConfig,
     *,
+    markets: dict[str, MarketConfig] | None = None,
     market_filter: list[str] | None = None,
     category_filter: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Return (display_market_key, category_key) pairs for a campaign run."""
-    markets = campaign["markets"]
+    market_keys = campaign["markets"]
     categories = campaign["categories"]
     overrides = campaign.get("county_overrides") or {}
+    exclude_counties = campaign.get("exclude_counties") or []
 
     if market_filter:
-        markets = [m for m in markets if m in market_filter]
+        market_keys = [m for m in market_keys if m in market_filter]
+
+    if exclude_counties and markets:
+        market_keys = [
+            key
+            for key in market_keys
+            if markets.get(key, {}).get("county") not in exclude_counties
+        ]
 
     if category_filter:
         categories = [c for c in categories if c in category_filter]
@@ -81,13 +90,18 @@ def iter_campaign_jobs(
     jobs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    for market_key in markets:
+    for market_key in market_keys:
         for category_key in categories:
             if category_key in overrides:
                 # County-level category runs once per campaign, not per city
-                if market_key != markets[0]:
+                if market_key != market_keys[0]:
                     continue
-                job_key = (overrides[category_key], category_key)
+                override_key = overrides[category_key]
+                if exclude_counties and markets:
+                    county = markets.get(override_key, {}).get("county")
+                    if county in exclude_counties:
+                        continue
+                job_key = (override_key, category_key)
             else:
                 job_key = (market_key, category_key)
 
@@ -125,9 +139,11 @@ def run_campaign(
     summary = CampaignSummary()
     jobs = iter_campaign_jobs(
         campaign,
+        markets=markets,
         market_filter=market_filter,
         category_filter=category_filter,
     )
+    exclude_counties = campaign.get("exclude_counties")
 
     logger.info(
         "Campaign %r: %d job(s), limit=%s, enrich=%s, skip_known=%s",
@@ -173,6 +189,7 @@ def run_campaign(
                     force_refresh=force_refresh,
                     refresh_after_days=refresh_after_days,
                     store=store,
+                    exclude_counties=exclude_counties,
                 )
                 lead_count = limit or 0
                 if out_path and not dry_run:

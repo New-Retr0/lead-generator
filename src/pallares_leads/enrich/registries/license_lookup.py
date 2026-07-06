@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from pallares_leads.enrich.search_templates import render_search_template
+from pallares_leads.enrich.verify import ground_name
 from pallares_leads.schemas import LeadFact, RawLead
 
 logger = logging.getLogger(__name__)
@@ -179,8 +180,10 @@ def parse_license_record(markdown: str, url: str, cfg: LicenseLookupConfig) -> L
     return record
 
 
-def license_record_to_facts(record: LicenseRecord) -> list[LeadFact]:
+def license_record_to_facts(record: LicenseRecord, *, page_text: str = "") -> list[LeadFact]:
     facts: list[LeadFact] = []
+    officer = record.designated_officer or record.licensee_name
+    officer_verified = bool(officer) and (not page_text or ground_name(officer, page_text))
     if record.license_id or record.status:
         facts.append(
             LeadFact(
@@ -191,17 +194,16 @@ def license_record_to_facts(record: LicenseRecord) -> list[LeadFact]:
                     "license_type": record.license_type,
                     "status": record.status,
                     "expiration": record.expiration,
-                    "designated_officer": record.designated_officer or record.licensee_name,
+                    "designated_officer": officer,
                 },
                 source_kind="state_license",
                 source_url=record.url,
                 method="deterministic_parse",
                 quote=record.quotes.get("designated_officer")
                 or record.quotes.get("licensee", ""),
-                verification="verified",
+                verification="verified" if officer_verified or not officer else "unverified",
             )
         )
-    officer = record.designated_officer or record.licensee_name
     if officer:
         facts.append(
             LeadFact(
@@ -216,16 +218,19 @@ def license_record_to_facts(record: LicenseRecord) -> list[LeadFact]:
                 method="deterministic_parse",
                 quote=record.quotes.get("designated_officer")
                 or record.quotes.get("licensee", officer),
-                verification="verified",
+                verification="verified" if officer_verified else "unverified",
             )
         )
     return facts
 
 
-def license_contacts(record: LicenseRecord) -> list[tuple[str, str, str]]:
-    """Return (name, title, quote) tuples for site_contacts merge."""
+def license_contacts(
+    record: LicenseRecord, *, page_text: str = ""
+) -> list[tuple[str, str, str, bool]]:
+    """Return (name, title, quote, grounded) tuples for site_contacts merge."""
     officer = record.designated_officer or record.licensee_name
     if not officer:
         return []
     quote = record.quotes.get("designated_officer") or record.quotes.get("licensee", officer)
-    return [(officer, "Designated Officer/Broker", quote)]
+    verified = not page_text or ground_name(officer, page_text)
+    return [(officer, "Designated Officer/Broker", quote, verified)]

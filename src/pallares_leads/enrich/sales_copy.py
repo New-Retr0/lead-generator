@@ -236,6 +236,7 @@ def generate_sales_copy(
             operation="sales_copy",
             response_format=_sales_copy_response_format(),
             prompt_version=PROMPT_VERSION,
+            stage="sales_copy",
         )
         if not completion or not completion.content:
             return None

@@ -4,6 +4,30 @@ states:
     sos_business_search:
       adapter: ca_bizfile
       url: https://bizfileonline.sos.ca.gov/search/business
+  hi:
+    sos_business_search:
+      adapter: hi_business_reg
+      url: https://hbe.ehawaii.gov/documents/search.html
+  or:
+    sos_business_search:
+      adapter: or_sos
+      url: https://sos.oregon.gov/business/Pages/find.aspx
+  wa:
+    sos_business_search:
+      adapter: wa_ccfs
+      url: https://ccfs.sos.wa.gov/
+  nm:
+    sos_business_search:
+      adapter: nm_sos
+      url: https://portal.sos.state.nm.us/BFS/online/CorporationBusinessSearch
+  nv:
+    sos_business_search:
+      adapter: nv_sos
+      url: https://esos.nv.gov/EntitySearch/OnlineEntitySearch
+  az:
+    sos_business_search:
+      adapter: az_cc
+      url: https://ecorp.azcc.gov/EntitySearch/Index
 
 counties:
   fresno_ca:
@@ -29,15 +53,92 @@ counties:
       url: https://assr.parcelquest.com/impl/TULAssr
       owner_names_online: limited
       free_search_cap: 25
+
+  san_diego_ca:
+    state: ca
+    recorder:
+      adapter: tyler_eagle
+      url: https://arcc.sdcounty.ca.gov/Pages/RecordedDocuments.aspx
+    parcel_portal:
+      adapter: sd_assessor
+      url: https://wps.sandiegocounty.gov/arcgis/rest/services/AssessorPublic/MapServer
+      owner_names_online: limited
+
+  sacramento_ca:
+    state: ca
+    recorder:
+      adapter: tyler_eagle
+      url: https://recorder.saccounty.gov/Pages/RecordedDocuments.aspx
+    parcel_portal:
+      adapter: sac_assessor
+      url: https://assessorparcelviewer.saccounty.gov/jsviewer/assessor.html
+      owner_names_online: limited
+
+  maricopa_az:
+    state: az
+    recorder:
+      adapter: tyler_eagle
+      url: https://recorder.maricopa.gov/recording/document-search.html
+    parcel_portal:
+      adapter: maricopa_assessor
+      url: https://mcassessor.maricopa.gov/
+      owner_names_online: true
+
+  clark_nv:
+    state: nv
+    recorder:
+      adapter: clark_recorder
+      url: https://www.clarkcountynv.gov/government/elected_officials/county_recorder/records_search.php
+    parcel_portal:
+      adapter: clark_assessor
+      url: https://maps.clarkcountynv.gov/assessor/AssessorParcelDetail/ParcelDetail.aspx
+      owner_names_online: true
+
+  king_wa:
+    state: wa
+    recorder:
+      adapter: king_recorder
+      url: https://kingcounty.gov/depts/records-licensing/recorders-office/records-search.aspx
+    parcel_portal:
+      adapter: king_assessor
+      url: https://blue.kingcounty.com/Assessor/eRealProperty/default.aspx
+      owner_names_online: true
+
+  multnomah_or:
+    state: or
+    recorder:
+      adapter: multnomah_recorder
+      url: https://multco.us/records/property-records
+    parcel_portal:
+      adapter: multnomah_assessor
+      url: https://multco.us/assessment-taxation/property-search
+      owner_names_online: true
+
+  honolulu_hi:
+    state: hi
+    recorder:
+      adapter: honolulu_recorder
+      url: https://boc.hawaii.gov/records/
+    parcel_portal:
+      adapter: honolulu_assessor
+      url: https://qpublic.schneidercorp.com/Application.aspx?App=HonoluluHI
+      owner_names_online: limited
+
+  bernalillo_nm:
+    state: nm
+    recorder:
+      adapter: bernalillo_recorder
+      url: https://www.bernco.gov/clerk/recording-division/
+    parcel_portal:
+      adapter: bernalillo_assessor
+      url: https://assessor.bernco.gov/
+      owner_names_online: true
+
   # Stubs: no portals configured — owner-chain recorder/parcel stages skip gracefully.
   los_angeles_ca:
     state: ca
   orange_ca:
     state: ca
-  clark_nv:
-    state: nv
-  bernalillo_nm:
-    state: nm
   jackson_mo:
     state: mo
 

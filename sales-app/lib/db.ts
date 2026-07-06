@@ -26,7 +26,10 @@ import type {
   RunTimelineStage,
   SiteContact,
   SourceCheck,
+  PipelineTrends,
 } from "./types";
+
+import { buildCostBudget } from "./cost-budget";
 
 export { dbAvailable };
 
@@ -83,11 +86,17 @@ function parseFirecrawlSnapshotBalance(
   snapshotJson: unknown,
   remaining: number | null,
   used: number | null,
-): { remaining: number | null; used: number | null; plan: number | null } {
+): {
+  remaining: number | null;
+  used: number | null;
+  plan: number | null;
+  billingPeriodEnd: string | null;
+} {
   const payload = snapshotPayload(snapshotJson);
   let plan: number | null = null;
   let snapRemaining: number | null = null;
   let snapUsed: number | null = null;
+  let billingPeriodEnd: string | null = null;
 
   if (payload) {
     try {
@@ -104,6 +113,8 @@ function parseFirecrawlSnapshotBalance(
         usedRaw = plan - snapRemaining;
       }
       snapUsed = usedRaw != null ? Number(usedRaw) : null;
+      const billingRaw = data.billingPeriodEnd ?? data.billing_period_end;
+      billingPeriodEnd = billingRaw != null ? String(billingRaw) : null;
     } catch {
       // fall through with DB columns only
     }
@@ -113,6 +124,7 @@ function parseFirecrawlSnapshotBalance(
     remaining: remaining ?? snapRemaining,
     used: used ?? snapUsed,
     plan,
+    billingPeriodEnd,
   };
 }
 
@@ -140,12 +152,14 @@ export const getCreditBalances = cache(async function getCreditBalances(): Promi
             remaining: row.remaining_credits as number | null,
             used: row.used_credits as number | null,
             plan: null,
+            billingPeriodEnd: null,
           };
     return {
       provider: String(row.provider),
       remaining: parsed.remaining,
       used: parsed.used,
       plan: parsed.plan,
+      billingPeriodEnd: parsed.billingPeriodEnd,
       unitLabel: balanceUnitLabel(String(row.provider)),
       snapshotAt: toIsoOrNull(row.created_at),
     };
@@ -788,6 +802,8 @@ function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
     ran: row.ran ? 1 : 0,
     reason: row.reason != null ? String(row.reason) : null,
     credits_est: row.credits_est != null ? Number(row.credits_est) : null,
+    duration_ms: row.duration_ms != null ? Number(row.duration_ms) : null,
+    meta_json: row.meta_json,
     created_at: toIso(row.created_at),
   };
 }
@@ -798,7 +814,7 @@ export async function getRunEvents(runId: string): Promise<RunEventRow[]> {
   const sql = getSql();
 
   const rows = await sql`
-    SELECT id, run_id, place_id, stage, ran, reason, credits_est, created_at
+    SELECT id, run_id, place_id, stage, ran, reason, credits_est, duration_ms, meta_json, created_at
     FROM run_events
     WHERE run_id = ${runId}
     ORDER BY created_at ASC
@@ -1151,7 +1167,17 @@ export const listPipelineJobs = cache(async function listPipelineJobs(
 export const getCostSeries = cache(async function getCostSeries(days = 30): Promise<CostSeries> {
   if (shouldUseSupabaseReads()) return supabaseReads.getCostSeries(days);
   if (!dbAvailable()) {
-    return { byDay: [], byProvider: [], byOperation: [], balances: [] };
+    return {
+      byDay: [],
+      byProvider: [],
+      byOperation: [],
+      byRun: [],
+      byModel: [],
+      byMarket: [],
+      byHour: [],
+      budget: null,
+      balances: [],
+    };
   }
   const sql = getSql();
 
@@ -1220,6 +1246,46 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
     LIMIT 20
   `;
 
+  const byRunRows = await sql`
+    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+           enriched_count, status, usd, firecrawl_credits, event_count, usd_per_enriched_lead
+    FROM cost_by_run
+    WHERE started_at >= ${sinceIso}
+    ORDER BY started_at DESC
+    LIMIT 50
+  `;
+
+  const byModelRows = await sql`
+    SELECT provider, model, operation, unit_type, units, usd, event_count
+    FROM cost_by_model
+    ORDER BY usd DESC
+    LIMIT 30
+  `;
+
+  const byMarketRows = await sql`
+    SELECT market_key, category_key, usd, firecrawl_credits, run_count, event_count
+    FROM cost_by_market
+    ORDER BY usd DESC
+    LIMIT 30
+  `;
+
+  const byHourRows = await sql`
+    SELECT hour, usd, firecrawl_credits, event_count
+    FROM cost_by_hour
+    ORDER BY hour
+  `;
+
+  const snapshotRows = await sql`
+    SELECT snapshot_json
+    FROM credit_snapshots
+    WHERE provider = 'firecrawl'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+
+  const balances = await getCreditBalances();
+  const firecrawlBalance = balances.find((b) => b.provider === "firecrawl");
+
   return {
     byDay,
     byProvider,
@@ -1230,7 +1296,50 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
       count: Number(row.count),
       unitType: String(row.unit_type),
     })),
-    balances: await getCreditBalances(),
+    byRun: byRunRows.map((row) => ({
+      runId: String(row.run_id),
+      startedAt: toIso(row.started_at),
+      finishedAt: toIsoOrNull(row.finished_at),
+      runType: String(row.run_type),
+      marketKey: row.market_key != null ? String(row.market_key) : null,
+      categoryKey: row.category_key != null ? String(row.category_key) : null,
+      enrichedCount: Number(row.enriched_count),
+      status: String(row.status),
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      eventCount: Number(row.event_count),
+      usdPerEnrichedLead:
+        row.usd_per_enriched_lead != null ? Number(row.usd_per_enriched_lead) : null,
+    })),
+    byModel: byModelRows.map((row) => ({
+      provider: String(row.provider),
+      model: String(row.model),
+      operation: String(row.operation),
+      unitType: String(row.unit_type),
+      units: Number(row.units),
+      usd: Number(row.usd),
+      eventCount: Number(row.event_count),
+    })),
+    byMarket: byMarketRows.map((row) => ({
+      marketKey: row.market_key != null ? String(row.market_key) : null,
+      categoryKey: row.category_key != null ? String(row.category_key) : null,
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      runCount: Number(row.run_count),
+      eventCount: Number(row.event_count),
+    })),
+    byHour: byHourRows.map((row) => ({
+      hour: toIso(row.hour),
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      eventCount: Number(row.event_count),
+    })),
+    budget: buildCostBudget(
+      firecrawlBalance,
+      byDay,
+      snapshotRows[0]?.snapshot_json,
+    ),
+    balances,
   };
 });
 
@@ -1258,3 +1367,327 @@ export const listFilterOptions = cache(async function listFilterOptions(): Promi
     categories: categoryRows.map((r) => String(r.category_key)),
   };
 });
+
+export type LiveRunContext = supabaseReads.LiveRunContext;
+export type QueueMetrics = supabaseReads.QueueMetrics;
+export type WorkerHeartbeat = supabaseReads.WorkerHeartbeat;
+
+export async function getLiveRunContext(runId: string): Promise<LiveRunContext> {
+  if (shouldUseSupabaseReads()) return supabaseReads.getLiveRunContext(runId);
+  if (!dbAvailable()) {
+    return { liveJobId: null, liveNames: {}, liveDiscovered: null };
+  }
+  const sql = getSql();
+  const jobRows = await sql`
+    SELECT id FROM pipeline_jobs
+    WHERE run_id = ${runId} AND status IN ('running', 'queued')
+    ORDER BY started_at DESC NULLS LAST
+    LIMIT 1
+  `;
+  const events = await getRunEvents(runId);
+  const liveNames: Record<string, string> = {};
+  let liveDiscovered: number | null = null;
+  for (const row of events) {
+    const meta =
+      row.meta_json && typeof row.meta_json === "object" && !Array.isArray(row.meta_json)
+        ? (row.meta_json as Record<string, unknown>)
+        : {};
+    if (row.place_id && typeof meta.business === "string") {
+      liveNames[row.place_id] = meta.business;
+    }
+    if (row.stage === "discovery_done" && typeof meta.count === "number") {
+      liveDiscovered = meta.count;
+    }
+  }
+  return {
+    liveJobId: jobRows[0]?.id != null ? String(jobRows[0].id) : null,
+    liveNames,
+    liveDiscovered,
+  };
+}
+
+export async function getQueueMetrics(): Promise<QueueMetrics> {
+  if (shouldUseSupabaseReads()) return supabaseReads.getQueueMetrics();
+  if (!dbAvailable()) {
+    return {
+      queue_name: "pipeline_jobs",
+      queue_depth: 0,
+      queue_visible_depth: 0,
+      oldest_msg_age_sec: null,
+      newest_msg_age_sec: null,
+      total_messages: 0,
+      scrape_time: null,
+      running_jobs: 0,
+      queued_jobs: 0,
+    };
+  }
+  const sql = getSql();
+  const rows = await sql`select public.get_pipeline_queue_metrics() as metrics`;
+  const row = (rows[0]?.metrics ?? {}) as Record<string, unknown>;
+  return {
+    queue_name: row.queue_name != null ? String(row.queue_name) : null,
+    queue_depth: Number(row.queue_depth ?? 0),
+    queue_visible_depth: Number(row.queue_visible_depth ?? 0),
+    oldest_msg_age_sec:
+      row.oldest_msg_age_sec != null ? Number(row.oldest_msg_age_sec) : null,
+    newest_msg_age_sec:
+      row.newest_msg_age_sec != null ? Number(row.newest_msg_age_sec) : null,
+    total_messages: Number(row.total_messages ?? 0),
+    scrape_time: row.scrape_time != null ? String(row.scrape_time) : null,
+    running_jobs: Number(row.running_jobs ?? 0),
+    queued_jobs: Number(row.queued_jobs ?? 0),
+  };
+}
+
+export async function listWorkerHeartbeats(limit = 10): Promise<WorkerHeartbeat[]> {
+  if (shouldUseSupabaseReads()) return supabaseReads.listWorkerHeartbeats(limit);
+  if (!dbAvailable()) return [];
+  const sql = getSql();
+  const rows = await sql`
+    SELECT worker_id, hostname, last_seen, current_job_id, status
+    FROM worker_status
+    ORDER BY last_seen DESC
+    LIMIT ${limit}
+  `;
+  return rows.map((row) => ({
+    worker_id: String(row.worker_id),
+    hostname: (row.hostname as string | null) ?? null,
+    last_seen: toIso(row.last_seen),
+    current_job_id: (row.current_job_id as string | null) ?? null,
+    status: String(row.status),
+  }));
+}
+
+export async function getRunCostEvents(runId: string) {
+  if (shouldUseSupabaseReads()) return supabaseReads.getRunCostEvents(runId);
+  if (!dbAvailable()) return [];
+  const sql = getSql();
+  return sql`
+    SELECT id, provider, operation, usd, model, units, unit_type, place_id, meta_json, created_at
+    FROM cost_events
+    WHERE run_id = ${runId}
+    ORDER BY created_at ASC
+  `;
+}
+
+export async function getPipelineJob(jobId: string) {
+  if (shouldUseSupabaseReads()) return supabaseReads.getPipelineJob(jobId);
+  if (!dbAvailable()) return null;
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, kind, payload, status, attempts, max_attempts, command, error, logs,
+           run_id, created_at, updated_at, started_at, finished_at
+    FROM pipeline_jobs
+    WHERE id = ${jobId}
+  `;
+  return rows[0] ?? null;
+}
+
+export async function getPipelineTrends(
+  days = 30,
+  filters?: { market?: string; category?: string },
+): Promise<PipelineTrends> {
+  if (shouldUseSupabaseReads()) {
+    return supabaseReads.getPipelineTrends(days, filters);
+  }
+  if (!dbAvailable()) {
+    return {
+      stageTrends: [],
+      opTrends: [],
+      runEfficiency: [],
+      stageStatsByRun: [],
+      viewsAvailable: false,
+    };
+  }
+  const sql = getSql();
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const sinceIso = since.toISOString();
+
+  try {
+    if (days > 90) {
+      const marketFilter = filters?.market ? sql`AND market_key = ${filters.market}` : sql``;
+      const categoryFilter = filters?.category
+        ? sql`AND category_key = ${filters.category}`
+        : sql``;
+
+      const stageRollup = await sql`
+        SELECT day, stage, avg_duration_ms, p95_duration_ms, event_count, ran_count
+        FROM pipeline_daily_rollup
+        WHERE day >= ${sinceIso}::date
+          AND stage <> ''
+          AND provider = ''
+          AND operation = ''
+          ${marketFilter}
+          ${categoryFilter}
+        ORDER BY day ASC, stage ASC
+      `;
+
+      const opRollup = await sql`
+        SELECT day, provider, operation, usd, units, event_count, avg_duration_ms
+        FROM pipeline_daily_rollup
+        WHERE day >= ${sinceIso}::date
+          AND provider <> ''
+          ${marketFilter}
+          ${categoryFilter}
+        ORDER BY day ASC, provider ASC, operation ASC
+      `;
+
+      const effRollup = await sql`
+        SELECT day, event_count, leads_enriched, usd, units, avg_duration_ms
+        FROM pipeline_daily_rollup
+        WHERE day >= ${sinceIso}::date
+          AND stage = ''
+          AND provider = ''
+          AND operation = ''
+          ${marketFilter}
+          ${categoryFilter}
+        ORDER BY day ASC
+      `;
+
+      return {
+        stageTrends: stageRollup.map((row) => ({
+          day: toIso(row.day).slice(0, 10),
+          stage: String(row.stage),
+          avgDurationMs:
+            row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+          p95DurationMs:
+            row.p95_duration_ms != null ? Number(row.p95_duration_ms) : null,
+          runCount: Number(row.ran_count ?? 0),
+          eventCount: Number(row.event_count ?? 0),
+        })),
+        opTrends: opRollup.map((row) => ({
+          day: toIso(row.day).slice(0, 10),
+          provider: String(row.provider),
+          operation: String(row.operation),
+          usd: Number(row.usd ?? 0),
+          units: Number(row.units ?? 0),
+          callCount: Number(row.event_count ?? 0),
+          avgDurationMs:
+            row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+        })),
+        runEfficiency: effRollup.map((row) => ({
+          day: toIso(row.day).slice(0, 10),
+          runCount: Number(row.event_count ?? 0),
+          leadsEnriched: Number(row.leads_enriched ?? 0),
+          totalUsd: Number(row.usd ?? 0),
+          usdPerEnrichedLead:
+            Number(row.leads_enriched ?? 0) > 0
+              ? Number(row.usd ?? 0) / Number(row.leads_enriched)
+              : null,
+          avgLeadDurationMs:
+            row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+          firecrawlCreditsPerLead:
+            Number(row.leads_enriched ?? 0) > 0
+              ? Number(row.units ?? 0) / Number(row.leads_enriched)
+              : null,
+        })),
+        stageStatsByRun: [],
+        viewsAvailable: true,
+      };
+    }
+
+    const marketFilter = filters?.market ? sql`AND market_key = ${filters.market}` : sql``;
+    const categoryFilter = filters?.category
+      ? sql`AND category_key = ${filters.category}`
+      : sql``;
+
+    const stageTrends = await sql`
+      SELECT day, stage, avg_duration_ms, p95_duration_ms, run_count, event_count
+      FROM stage_trends_by_day
+      WHERE day >= ${sinceIso}::date
+      ORDER BY day ASC, stage ASC
+    `;
+
+    const opTrends = await sql`
+      SELECT day, provider, operation, usd, units, call_count, avg_duration_ms
+      FROM op_trends_by_day
+      WHERE day >= ${sinceIso}::date
+      ORDER BY day ASC, provider ASC, operation ASC
+    `;
+
+    const runEfficiency = await sql`
+      SELECT day, run_count, leads_enriched, total_usd, usd_per_enriched_lead,
+             avg_lead_duration_ms, firecrawl_credits_per_lead
+      FROM run_efficiency_by_day
+      WHERE day >= ${sinceIso}::date
+      ORDER BY day ASC
+    `;
+
+    const stageStatsByRun = await sql`
+      SELECT run_id, stage, event_count, ran_count, avg_duration_ms, max_duration_ms,
+             p95_duration_ms, market_key, category_key, started_at
+      FROM stage_stats_by_run
+      WHERE started_at >= ${sinceIso}
+        ${marketFilter}
+        ${categoryFilter}
+      ORDER BY started_at DESC
+      LIMIT 500
+    `;
+
+    return {
+      stageTrends: stageTrends.map((row) => ({
+        day: toIso(row.day).slice(0, 10),
+        stage: String(row.stage),
+        avgDurationMs:
+          row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+        p95DurationMs:
+          row.p95_duration_ms != null ? Number(row.p95_duration_ms) : null,
+        runCount: Number(row.run_count ?? 0),
+        eventCount: Number(row.event_count ?? 0),
+      })),
+      opTrends: opTrends.map((row) => ({
+        day: toIso(row.day).slice(0, 10),
+        provider: String(row.provider),
+        operation: String(row.operation),
+        usd: Number(row.usd ?? 0),
+        units: Number(row.units ?? 0),
+        callCount: Number(row.call_count ?? 0),
+        avgDurationMs:
+          row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+      })),
+      runEfficiency: runEfficiency.map((row) => ({
+        day: toIso(row.day).slice(0, 10),
+        runCount: Number(row.run_count ?? 0),
+        leadsEnriched: Number(row.leads_enriched ?? 0),
+        totalUsd: Number(row.total_usd ?? 0),
+        usdPerEnrichedLead:
+          row.usd_per_enriched_lead != null
+            ? Number(row.usd_per_enriched_lead)
+            : null,
+        avgLeadDurationMs:
+          row.avg_lead_duration_ms != null
+            ? Number(row.avg_lead_duration_ms)
+            : null,
+        firecrawlCreditsPerLead:
+          row.firecrawl_credits_per_lead != null
+            ? Number(row.firecrawl_credits_per_lead)
+            : null,
+      })),
+      stageStatsByRun: stageStatsByRun.map((row) => ({
+        runId: String(row.run_id),
+        stage: String(row.stage),
+        eventCount: Number(row.event_count ?? 0),
+        ranCount: Number(row.ran_count ?? 0),
+        avgDurationMs:
+          row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+        maxDurationMs:
+          row.max_duration_ms != null ? Number(row.max_duration_ms) : null,
+        p95DurationMs:
+          row.p95_duration_ms != null ? Number(row.p95_duration_ms) : null,
+        marketKey: (row.market_key as string | null) ?? null,
+        categoryKey: (row.category_key as string | null) ?? null,
+        startedAt: toIso(row.started_at),
+      })),
+      viewsAvailable: true,
+    };
+  } catch {
+    return {
+      stageTrends: [],
+      opTrends: [],
+      runEfficiency: [],
+      stageStatsByRun: [],
+      viewsAvailable: false,
+    };
+  }
+}

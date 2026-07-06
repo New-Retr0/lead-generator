@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { Bot, Coins, DollarSign, Sparkles, TrendingUp } from "lucide-react";
+import { AlertTriangle, Bot, Coins, DollarSign, Sparkles, TrendingUp } from "lucide-react";
 import { Globe } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Stagger, StaggerItem } from "@/components/animated";
@@ -15,6 +15,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -45,6 +47,11 @@ const CostsCreditsChart = dynamic(
   { ssr: false, loading: () => <Skeleton className="h-full w-full" /> },
 );
 
+const RunDetailModal = dynamic(
+  () => import("@/components/run-detail-modal").then((m) => m.RunDetailModal),
+  { ssr: false },
+);
+
 const RANGES = [7, 30, 90] as const;
 
 function balanceFor(series: CostSeries | null, provider: string) {
@@ -60,6 +67,7 @@ export function CostsClient({
 }) {
   const [days, setDays] = useState(initialDays);
   const [fetchedData, setFetchedData] = useState<CostSeries | null>(null);
+  const [detailRunId, setDetailRunId] = useState<string | null>(null);
 
   const data = days === initialDays ? initialData : (fetchedData ?? initialData);
 
@@ -145,6 +153,88 @@ export function CostsClient({
           />
         </StaggerItem>
       </Stagger>
+
+      {data?.budget ? (
+        <Card className={`glass ${data.budget.projectedOverPlan ? "border-amber-500/50" : ""}`}>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              Firecrawl Standard plan budget
+              {data.budget.percentOfPlanUsed != null && data.budget.percentOfPlanUsed >= 80 ? (
+                <Badge variant="destructive" className="gap-1">
+                  <AlertTriangle className="size-3" />
+                  {data.budget.percentOfPlanUsed.toFixed(0)}% used
+                </Badge>
+              ) : null}
+            </CardTitle>
+            <CardDescription>
+              {formatCredits(data.budget.planCredits)} credits/mo — refresh{" "}
+              {data.budget.billingPeriodEnd
+                ? new Date(data.budget.billingPeriodEnd).toLocaleDateString()
+                : "date unknown"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Used this cycle
+                </p>
+                <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
+                  {data.budget.usedThisCycle != null
+                    ? formatCredits(data.budget.usedThisCycle)
+                    : "—"}
+                </p>
+                {data.budget.percentOfPlanUsed != null ? (
+                  <p className="text-xs text-muted-foreground">
+                    {data.budget.percentOfPlanUsed.toFixed(1)}% of plan
+                  </p>
+                ) : null}
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Remaining
+                </p>
+                <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
+                  {data.budget.remainingCredits != null
+                    ? formatCredits(data.budget.remainingCredits)
+                    : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  7-day avg / day
+                </p>
+                <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
+                  {data.budget.dailyAverageCredits != null
+                    ? formatCredits(data.budget.dailyAverageCredits)
+                    : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Projected cycle end
+                </p>
+                <p className="mt-1 font-mono text-2xl font-bold tabular-nums">
+                  {data.budget.projectedCycleCredits != null
+                    ? formatCredits(data.budget.projectedCycleCredits)
+                    : "—"}
+                </p>
+                {data.budget.projectedCycleCredits != null ? (
+                  <p
+                    className={
+                      data.budget.projectedOverPlan
+                        ? "text-xs font-medium text-amber-600 dark:text-amber-400"
+                        : "text-xs text-muted-foreground"
+                    }
+                  >
+                    {data.budget.projectedOverPlan ? "Over plan" : "Under plan"}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {(data?.balances.length ?? 0) > 0 ? (
         <Card className="glass">
@@ -293,6 +383,160 @@ export function CostsClient({
         </Card>
       </div>
 
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="glass">
+          <CardHeader>
+            <CardTitle className="text-sm">By run</CardTitle>
+            <CardDescription>Per-run spend — click a row for stage breakdown</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!data || data.byRun.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No runs with costs in range.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Run</TableHead>
+                      <TableHead className="text-right">Leads</TableHead>
+                      <TableHead className="text-right">Credits</TableHead>
+                      <TableHead className="text-right">USD</TableHead>
+                      <TableHead className="text-right">$/lead</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.byRun.map((row) => (
+                      <TableRow
+                        key={row.runId}
+                        className="cursor-pointer"
+                        onClick={() => setDetailRunId(row.runId)}
+                      >
+                        <TableCell>
+                          <Button
+                            variant="link"
+                            className="h-auto p-0 text-left font-medium"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDetailRunId(row.runId);
+                            }}
+                          >
+                            {row.marketKey ?? row.runType}
+                            {row.categoryKey ? ` · ${row.categoryKey}` : ""}
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            {row.startedAt.slice(0, 16).replace("T", " ")}
+                          </p>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {row.enrichedCount}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatCredits(row.firecrawlCredits)}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums">
+                          {formatUsd(row.usd)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {row.usdPerEnrichedLead != null
+                            ? formatUsd(row.usdPerEnrichedLead)
+                            : "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="glass">
+          <CardHeader>
+            <CardTitle className="text-sm">By model / provider</CardTitle>
+            <CardDescription>AI Gateway models vs Firecrawl vs Browser Use</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!data || data.byModel.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No model-level costs yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Provider / model</TableHead>
+                      <TableHead className="text-right">Calls</TableHead>
+                      <TableHead className="text-right">Units</TableHead>
+                      <TableHead className="text-right">USD</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.byModel.map((row) => (
+                      <TableRow key={`${row.provider}-${row.model}-${row.operation}`}>
+                        <TableCell>
+                          <span className="font-medium">{formatProvider(row.provider)}</span>
+                          {row.model ? (
+                            <span className="text-xs text-muted-foreground"> · {row.model}</span>
+                          ) : null}
+                          <p className="text-xs text-muted-foreground">{row.operation}</p>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{row.eventCount}</TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {formatCostUnits(row.provider, row.units, row.unitType)}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold tabular-nums">
+                          {formatUsd(row.usd)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="glass">
+        <CardHeader>
+          <CardTitle className="text-sm">By market / category</CardTitle>
+          <CardDescription>Where spend is going — last 90 days rollup</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!data || data.byMarket.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No market-level costs yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Market</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead className="text-right">Runs</TableHead>
+                    <TableHead className="text-right">Credits</TableHead>
+                    <TableHead className="text-right">USD</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.byMarket.map((row) => (
+                    <TableRow key={`${row.marketKey}-${row.categoryKey}`}>
+                      <TableCell className="font-medium">{row.marketKey ?? "—"}</TableCell>
+                      <TableCell>{row.categoryKey ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{row.runCount}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCredits(row.firecrawlCredits)}
+                      </TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">
+                        {formatUsd(row.usd)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card className="glass border-dashed">
         <CardContent className="flex items-start gap-3 py-4 text-sm text-muted-foreground">
           <TrendingUp className="mt-0.5 size-4 shrink-0" />
@@ -304,6 +548,8 @@ export function CostsClient({
           <Globe className="mt-0.5 size-4 shrink-0 opacity-0 sm:opacity-100" aria-hidden />
         </CardContent>
       </Card>
+
+      <RunDetailModal runId={detailRunId} onClose={() => setDetailRunId(null)} />
     </div>
   );
 }

@@ -58,3 +58,15 @@ license_lookups:
     agency: ID DOPL
     pm_license_required: false
     adapter: none
+  HI:
+    agency: Hawaii REB
+    search_url: "https://pvl.ehawaii.gov/pvlsearch/app"
+    serp_site: "pvl.ehawaii.gov"
+    pm_license_required: true
+    adapter: generic
+  NM:
+    agency: NM RLD
+    search_url: "https://www.rld.nm.gov/boards-and-commissions/individual-boards-and-commissions/real-estate-commission/real-estate-commission-licensee-search/"
+    serp_site: "rld.nm.gov"
+    pm_license_required: true
+    adapter: generic

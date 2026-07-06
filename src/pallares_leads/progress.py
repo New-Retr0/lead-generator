@@ -8,22 +8,65 @@ from __future__ import annotations
 
 import json
 import os
+from contextvars import ContextVar
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pallares_leads.db.store import LeadStore
+
+_progress_store: ContextVar[LeadStore | None] = ContextVar("_progress_store", default=None)
+_progress_run_id: ContextVar[str | None] = ContextVar("_progress_run_id", default=None)
 
 
 def _enabled() -> bool:
     return os.environ.get("PALLARES_LOG_JSON", "").strip().lower() in {"1", "true", "yes"}
 
 
+def bind_progress(store: LeadStore | None, *, run_id: str | None = None) -> None:
+    """Attach the active store (and optional run id) for incremental run_events writes."""
+    _progress_store.set(store)
+    if run_id is not None:
+        _progress_run_id.set(run_id)
+
+
 def emit(event: str, **fields: Any) -> None:
     """Print one structured progress line (JSON when enabled, else human text)."""
+    ts = datetime.now(tz=UTC).isoformat()
     payload = {
         "t": "evt",
-        "ts": datetime.now(tz=UTC).isoformat(),
+        "ts": ts,
         "event": event,
         **{k: v for k, v in fields.items() if v is not None},
     }
+    run_id = fields.get("run_id") or _progress_run_id.get()
+    store = _progress_store.get()
+    if store and run_id:
+        store.record_progress_event(
+            run_id=str(run_id),
+            event=event,
+            ts=ts,
+            place_id=fields.get("place_id"),
+            business=fields.get("business"),
+            credits=fields.get("credits"),
+            duration_ms=fields.get("duration_ms"),
+            reason=fields.get("reason"),
+            extra={
+                k: v
+                for k, v in fields.items()
+                if k
+                not in {
+                    "run_id",
+                    "place_id",
+                    "business",
+                    "credits",
+                    "duration_ms",
+                    "reason",
+                }
+                and v is not None
+            },
+        )
+
     if _enabled():
         print(json.dumps(payload, ensure_ascii=False), flush=True)
         return

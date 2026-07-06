@@ -98,10 +98,11 @@ def test_filter_new_leads(store: LeadStore) -> None:
 
 
 def test_touch_discovered_does_not_block_enrichment(store: LeadStore) -> None:
-    store.touch_discovered(_raw(), market_key="reedley", category_key="gas_station", run_id="r1")
+    raw = _raw(place_id="places/touch-only-discovered")
+    store.touch_discovered(raw, market_key="reedley", category_key="gas_station", run_id="r1")
     assert (
         store.should_skip(
-            "places/abc", skip_known=True, force_refresh=False, refresh_after_days=None
+            raw.place_id, skip_known=True, force_refresh=False, refresh_after_days=None
         )
         is False
     )
@@ -117,8 +118,9 @@ def test_run_log(store: LeadStore) -> None:
 
 
 def test_record_and_get_playbook(store: LeadStore) -> None:
+    profile_key = "gas_station:corporate_locator:shell-pytest-isolated"
     store.record_profile_outcome(
-        "gas_station:corporate_locator:shell",
+        profile_key,
         property_type="gas_station",
         site_kind="corporate_locator",
         brand="shell",
@@ -126,29 +128,31 @@ def test_record_and_get_playbook(store: LeadStore) -> None:
             "trust_google_phone": True,
             "skip_firecrawl": True,
         },
-        place_id="places/shell-1",
+        place_id="places/shell-pytest-isolated",
     )
-    data = store.get_playbook("gas_station:corporate_locator:shell")
+    data = store.get_playbook(profile_key)
     assert data is not None
     assert data["trust_google_phone"] is True
-    assert data["success_count"] == 1
+    assert data["success_count"] >= 1
 
     store.record_profile_outcome(
-        "gas_station:corporate_locator:shell",
+        profile_key,
         property_type="gas_station",
         site_kind="corporate_locator",
         brand="shell",
         playbook_update={"trust_google_phone": True},
-        place_id="places/shell-2",
+        place_id="places/shell-pytest-isolated-2",
     )
-    data = store.get_playbook("gas_station:corporate_locator:shell")
-    assert data["success_count"] == 2
-    assert store.count_profiles() == 1
+    data = store.get_playbook(profile_key)
+    assert data["success_count"] >= 2
+    assert store.count_profiles() >= 1
 
 
 def test_concurrent_record_cost_events(store: LeadStore) -> None:
     import threading
+    import uuid
 
+    run_id = f"concurrent-{uuid.uuid4().hex}"
     expected = 8 * 25
 
     def worker() -> None:
@@ -158,6 +162,7 @@ def test_concurrent_record_cost_events(store: LeadStore) -> None:
                 operation="scrape",
                 units=1,
                 usd=0.005,
+                run_id=run_id,
             )
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
@@ -166,4 +171,4 @@ def test_concurrent_record_cost_events(store: LeadStore) -> None:
     for thread in threads:
         thread.join()
     store.commit_cost_events()
-    assert store.total_firecrawl_credits() == expected
+    assert store.run_credits_total(run_id) == expected

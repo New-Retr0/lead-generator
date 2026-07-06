@@ -1,0 +1,71 @@
+city,state,county,county_key,latitude,longitude,population
+Honolulu,HI,Honolulu,honolulu_hi,21.3069,-157.8583,350964
+Pearl City,HI,Honolulu,honolulu_hi,21.3972,-157.9753,45295
+Hilo,HI,Hawaii,hawaii_hi,19.7297,-155.0900,44263
+Kailua,HI,Honolulu,honolulu_hi,21.4022,-157.7394,40178
+Portland,OR,Multnomah,multnomah_or,45.5152,-122.6784,652503
+Salem,OR,Marion,marion_or,44.9429,-123.0351,177723
+Eugene,OR,Lane,lane_or,44.0521,-123.0868,176654
+Gresham,OR,Multnomah,multnomah_or,45.5001,-122.4302,114247
+Hillsboro,OR,Washington,washington_or,45.5229,-122.9898,106894
+Beaverton,OR,Washington,washington_or,45.4871,-122.8037,97590
+Bend,OR,Deschutes,deschutes_or,44.0582,-121.3153,99178
+Medford,OR,Jackson,jackson_or,42.3265,-122.8756,85824
+Springfield,OR,Lane,lane_or,44.0462,-123.0220,61765
+Corvallis,OR,Benton,benton_or,44.5646,-123.2620,59222
+Albany,OR,Linn,linn_or,44.6365,-123.1059,56472
+Tigard,OR,Washington,washington_or,45.4315,-122.7715,54539
+Seattle,WA,King,king_wa,47.6062,-122.3321,737015
+Spokane,WA,Spokane,spokane_wa,47.6588,-117.4260,228989
+Tacoma,WA,Pierce,pierce_wa,47.2529,-122.4443,219346
+Vancouver,WA,Clark,clark_wa,45.6387,-122.6615,190915
+Bellevue,WA,King,king_wa,47.6101,-122.2015,151854
+Kent,WA,King,king_wa,47.3809,-122.2348,136380
+Everett,WA,Snohomish,snohomish_wa,47.9790,-122.2021,110629
+Renton,WA,King,king_wa,47.4829,-122.2171,106785
+Spokane Valley,WA,Spokane,spokane_wa,47.6733,-117.2394,102976
+Federal Way,WA,King,king_wa,47.3223,-122.3126,101014
+Yakima,WA,Yakima,yakima_wa,46.6021,-120.5059,96868
+Bellingham,WA,Whatcom,whatcom_wa,48.7519,-122.4787,91482
+Kirkland,WA,King,king_wa,47.6769,-122.2060,92175
+Phoenix,AZ,Maricopa,maricopa_az,33.4484,-112.0740,1608139
+Tucson,AZ,Pima,pima_az,32.2226,-110.9747,542629
+Mesa,AZ,Maricopa,maricopa_az,33.4152,-111.8315,504258
+Chandler,AZ,Maricopa,maricopa_az,33.3062,-111.8413,275987
+Scottsdale,AZ,Maricopa,maricopa_az,33.4942,-111.9261,241361
+Glendale,AZ,Maricopa,maricopa_az,33.5387,-112.1860,248325
+Gilbert,AZ,Maricopa,maricopa_az,33.3528,-111.7890,267918
+Tempe,AZ,Maricopa,maricopa_az,33.4255,-111.9400,180587
+Peoria,AZ,Maricopa,maricopa_az,33.5806,-112.2374,190985
+Surprise,AZ,Maricopa,maricopa_az,33.6292,-112.3679,141664
+Las Vegas,NV,Clark,clark_nv,36.1699,-115.1398,641903
+Henderson,NV,Clark,clark_nv,36.0395,-114.9817,317610
+Reno,NV,Washoe,washoe_nv,39.5296,-119.8138,264165
+North Las Vegas,NV,Clark,clark_nv,36.1989,-115.1175,262527
+Sparks,NV,Washoe,washoe_nv,39.5349,-119.7527,108445
+Carson City,NV,Carson City,carson_city_nv,39.1638,-119.7674,58639
+Albuquerque,NM,Bernalillo,bernalillo_nm,35.0844,-106.6504,564559
+Las Cruces,NM,Doña Ana,dona_ana_nm,32.3199,-106.7637,111385
+Rio Rancho,NM,Sandoval,sandoval_nm,35.2328,-106.6630,104046
+Santa Fe,NM,Santa Fe,santa_fe_nm,35.6870,-105.9378,87505
+Roswell,NM,Chaves,chaves_nm,33.3943,-104.5230,48422
+San Diego,CA,San Diego,san_diego_ca,32.7157,-117.1611,1386932
+San Jose,CA,Santa Clara,santa_clara_ca,37.3382,-121.8863,1013240
+San Francisco,CA,San Francisco,san_francisco_ca,37.7749,-122.4194,873965
+Fresno,CA,Fresno,fresno_ca,36.7378,-119.7871,542107
+Sacramento,CA,Sacramento,sacramento_ca,38.5816,-121.4944,524943
+Long Beach,CA,Los Angeles,los_angeles_ca,33.7701,-118.1937,466742
+Oakland,CA,Alameda,alameda_ca,37.8044,-122.2712,440646
+Bakersfield,CA,Kern,kern_ca,35.3733,-119.0187,403455
+Anaheim,CA,Orange,orange_ca,33.8366,-117.9143,346824
+Stockton,CA,San Joaquin,san_joaquin_ca,37.9577,-121.2908,320804
+Riverside,CA,Riverside,riverside_ca,33.9533,-117.3962,314998
+Irvine,CA,Orange,orange_ca,33.6846,-117.8265,307670
+Chula Vista,CA,San Diego,san_diego_ca,32.6401,-117.0842,275487
+Modesto,CA,Stanislaus,stanislaus_ca,37.6391,-120.9969,218464
+Fremont,CA,Alameda,alameda_ca,37.5485,-121.9886,230504
+San Bernardino,CA,San Bernardino,san_bernardino_ca,34.1083,-117.2898,222101
+Santa Clarita,CA,Los Angeles,los_angeles_ca,34.3917,-118.5426,228673
+Oxnard,CA,Ventura,ventura_ca,34.1975,-119.1771,202063
+Moreno Valley,CA,Riverside,riverside_ca,33.9425,-117.2297,208634
+Huntington Beach,CA,Orange,orange_ca,33.6603,-117.9992,198711

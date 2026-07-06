@@ -1,5 +1,7 @@
-import { KeyRound, Link2, ShieldCheck } from "lucide-react";
+import Link from "next/link";
+import { ExternalLink, KeyRound, Link2, ScrollText, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { PartnerKeyAdminPanel } from "@/components/partner-api/partner-key-admin";
 import {
   Card,
   CardContent,
@@ -7,13 +9,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { getAuthenticatedUser, isAdminUser } from "@/lib/admin";
 
 const baseUrl = "https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1";
 
-export default function PartnerApiPage() {
+export default async function PartnerApiPage() {
+  let isAdmin = false;
+  try {
+    const user = await getAuthenticatedUser();
+    isAdmin = isAdminUser(user);
+  } catch {
+    isAdmin = false;
+  }
+
   return (
     <div className="space-y-6">
-      <PageHeader description="Ben's integration uses a dedicated partner key and sanitized lead payloads. Supabase service keys never leave your control." />
+      <PageHeader description="Partner pull-sync API for Pallares.us ingestion — OpenAPI spec, auth, and eligibility rules." />
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
@@ -34,24 +46,51 @@ export default function PartnerApiPage() {
               Auth
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <code className="text-xs text-muted-foreground">Authorization: Bearer ppl_...</code>
+          <CardContent className="space-y-1 text-xs text-muted-foreground">
+            <code>Authorization: Bearer ppl_...</code>
+            <p>or</p>
+            <code>x-api-key: ppl_...</code>
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
               <ShieldCheck className="size-4 text-muted-foreground" />
-              Scope
+              Eligibility
             </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Read-only access to approved callable lead fields.
+              Enriched leads with verified/partial verification and a callable phone only.
             </p>
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ScrollText className="size-4 text-muted-foreground" />
+              OpenAPI
+            </CardTitle>
+            <CardDescription>Machine-readable contract for integrators.</CardDescription>
+          </div>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/api/partner-api/openapi" target="_blank">
+              View YAML
+              <ExternalLink className="size-3.5" />
+            </Link>
+          </Button>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          See also{" "}
+          <code className="text-xs">docs/partner-api.md</code> in the repo for narrative sync
+          guidance and examples.
+        </CardContent>
+      </Card>
+
+      {isAdmin ? <PartnerKeyAdminPanel /> : null}
 
       <Card>
         <CardHeader>
@@ -66,46 +105,20 @@ GET /leads?type=vendor&updated_since=2026-06-01T00:00:00Z
 GET /leads?cursor=<next_cursor>
 GET /leads/{place_id}`}</pre>
           <p className="text-muted-foreground">
-            List responses include <code>page.next_cursor</code>. Ben should keep requesting
-            with that cursor until <code>has_more</code> is false, then resume later with
-            the last stored cursor or an <code>updated_since</code> timestamp.
+            List responses include <code>page.next_cursor</code>. Resume with that cursor until{" "}
+            <code>has_more</code> is false, or restart from <code>updated_since</code>.
           </p>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">Included fields</CardTitle>
-          <CardDescription>Lean list payload, richer detail payload.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 text-sm md:grid-cols-2">
-          <div>
-            <h2 className="mb-2 font-medium">List</h2>
-            <p className="text-muted-foreground">
-              Lead id, type, business, category, market, address, website, maps URL,
-              callable phone, best contact, score, confidence, verification, need
-              signals, talking points, and enrichment timestamps.
-            </p>
-          </div>
-          <div>
-            <h2 className="mb-2 font-medium">Detail</h2>
-            <p className="text-muted-foreground">
-              List fields plus site contacts, evidence URLs, grouped facts, score
-              breakdown, coordinates, and relevant notes.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Excluded</CardTitle>
+          <CardTitle className="text-sm">Excluded from partner sync</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Costs, credit usage, run timelines, raw enriched JSON, CRM feedback,
-            request internals, failed developer triage, and service credentials are not
-            exposed through the partner API.
+            Low-confidence leads, unverified contacts, phone-less records, costs, run timelines,
+            raw enriched JSON, CRM feedback, and service credentials.
           </p>
         </CardContent>
       </Card>

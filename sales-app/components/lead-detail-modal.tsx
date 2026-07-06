@@ -48,6 +48,7 @@ import {
   type PhoneGroup,
 } from "@/lib/lead-contacts";
 import { cn, formatCostUnits, formatProvider, formatUsd } from "@/lib/utils";
+import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
 import type { LeadCostByProvider, LeadCostEvent, LeadCosts, LeadDetail, LeadFact } from "@/lib/types";
 
 function Section({
@@ -465,7 +466,7 @@ function ProviderCostGroup({ group }: { group: LeadCostByProvider }) {
 }
 
 function LeadCostSection({ costs }: { costs: LeadCosts }) {
-  const creditUsdEst = costs.firecrawlCreditsEst * 0.00533;
+  const creditUsdEst = costs.firecrawlCreditsEst * FIRECRAWL_CREDIT_USD;
 
   if (costs.eventCount === 0) {
     return (

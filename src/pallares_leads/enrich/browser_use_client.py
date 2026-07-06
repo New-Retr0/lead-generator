@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from pallares_leads.enrich.task_templates import (
-    CA_BIZFILE_TASK,
     LOOPNET_TASK,
     PARCELQUEST_TASK,
+    SOS_BIZFILE_TASK,
     TYLER_EAGLE_TASK,
     render_task,
 )
@@ -25,10 +26,31 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE_STATE_KEY = "browser_use_owner_chain_workspace_id"
 
+_STATE_DISPLAY_NAMES: dict[str, str] = {
+    "ca": "California",
+    "hi": "Hawaii",
+    "or": "Oregon",
+    "wa": "Washington",
+    "nm": "New Mexico",
+    "nv": "Nevada",
+    "az": "Arizona",
+}
+
+
+def _state_display_name_for_county(county_cfg: CountyJurisdictionConfig) -> str:
+    return _STATE_DISPLAY_NAMES.get(county_cfg.state.lower(), county_cfg.state.upper())
+
 
 class OfficerRecord(BaseModel):
     name: str = ""
     title: str = ""
+
+
+class SosEntityCandidate(BaseModel):
+    entity_name: str = ""
+    entity_number: str = ""
+    status: str = ""
+    principal_address: str = ""
 
 
 class SosEntityResult(BaseModel):
@@ -38,6 +60,7 @@ class SosEntityResult(BaseModel):
     registered_agent: str = ""
     principal_address: str = ""
     officers: list[OfficerRecord] = Field(default_factory=list)
+    search_candidates: list[SosEntityCandidate] = Field(default_factory=list)
 
 
 class RecorderPartyMatch(BaseModel):
@@ -111,13 +134,28 @@ class BrowserUseClient:
         self,
         entity_name: str,
         state_cfg: StateJurisdictionConfig,
+        *,
+        state_code: str = "",
+        collect_candidates: bool = False,
     ) -> SosEntityResult | None:
         if not entity_name.strip():
             return None
         if not self.is_available():
             logger.debug("Skipping SOS lookup: %s", self.last_skip_reason)
             return None
-        task = render_task(CA_BIZFILE_TASK, entity_name=entity_name.strip())
+        state_name = _STATE_DISPLAY_NAMES.get(state_code.lower(), "state")
+        task = render_task(
+            SOS_BIZFILE_TASK,
+            portal_url=state_cfg.sos_business_search.url,
+            entity_name=entity_name.strip(),
+            state_name=state_name,
+        )
+        if collect_candidates:
+            task += (
+                " If the search results page lists multiple entities, populate search_candidates "
+                "with up to 5 rows (entity_name, entity_number, status, principal_address) before "
+                "opening the best match."
+            )
         return self._run_cloud_task(task, SosEntityResult, stage="sos_entity_lookup")
 
     def recorder_party_search(
@@ -157,6 +195,7 @@ class BrowserUseClient:
             parcel_url=portal.url,
             address=address.strip(),
             city=city.strip(),
+            state_name=_state_display_name_for_county(county_cfg),
         )
         return self._run_cloud_task(task, ParcelOwnerResult, stage="parcel_owner_lookup")
 
@@ -164,16 +203,19 @@ class BrowserUseClient:
         self,
         search_query: str,
         city: str,
+        state: str = "",
     ) -> LoopNetResult | None:
         if not search_query.strip():
             return None
         if not self.is_available():
             logger.debug("Skipping LoopNet lookup: %s", self.last_skip_reason)
             return None
+        state_name = _STATE_DISPLAY_NAMES.get(state.lower(), state or "United States")
         task = render_task(
             LOOPNET_TASK,
             search_query=search_query.strip(),
             city=city.strip(),
+            state_name=state_name,
         )
         return self._run_cloud_task(task, LoopNetResult, stage="loopnet_listing_lookup")
 
@@ -267,11 +309,13 @@ class BrowserUseClient:
             workspace_id=workspace_id,
         )
         timeout_s = self.settings.browser_use_task_timeout_s
+        started = time.perf_counter()
         if timeout_s > 0:
             result = await asyncio.wait_for(run_coro, timeout=timeout_s)
         else:
             result = await run_coro
-        self._record_task_cost(result, stage=stage)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        self._record_task_cost(result, stage=stage, duration_ms=duration_ms)
         output = getattr(result, "output", None)
         if output is None:
             return None
@@ -281,7 +325,9 @@ class BrowserUseClient:
             return schema.model_validate(output)
         return schema.model_validate(output)
 
-    def _record_task_cost(self, result: Any, *, stage: str) -> None:
+    def _record_task_cost(
+        self, result: Any, *, stage: str, duration_ms: int | None = None
+    ) -> None:
         """Persist one cost event per cloud task so every stage shows up in cost_events."""
         cost = float(
             getattr(result, "total_cost_usd", 0.0) or getattr(result, "llm_cost_usd", 0.0) or 0.0
@@ -299,7 +345,10 @@ class BrowserUseClient:
             "llm_cost_usd": float(getattr(result, "llm_cost_usd", 0.0) or 0.0),
             "browser_cost_usd": float(getattr(result, "browser_cost_usd", 0.0) or 0.0),
             "proxy_cost_usd": float(getattr(result, "proxy_cost_usd", 0.0) or 0.0),
+            "stage": stage,
         }
+        if duration_ms is not None:
+            meta["duration_ms"] = duration_ms
         self.store.record_cost_event(
             provider="browser_use",
             operation=stage,
@@ -337,6 +386,7 @@ __all__ = [
     "ParcelOwnerResult",
     "RecorderPartyMatch",
     "RecorderResult",
+    "SosEntityCandidate",
     "SosEntityResult",
     "normalize_entity_name",
 ]

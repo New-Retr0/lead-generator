@@ -44,10 +44,10 @@ class Settings(BaseSettings):
     max_places_per_query: int = 20
     firecrawl_timeout_ms: int = 30_000
     firecrawl_scrape_max_age_ms: int = 172_800_000  # 2 days — use Firecrawl cache when available
-    firecrawl_max_concurrency: int = 5  # match Firecrawl plan (Hobby = 5)
+    firecrawl_max_concurrency: int = 50  # match Firecrawl plan (Standard = 50)
     firecrawl_max_credits_per_run: int = 0  # 0 = unlimited; stop enrichment when exceeded
     firecrawl_session_credit_stop: int = 0  # 0 = off; refuse new runs when total credits exceed
-    enrichment_parallel_workers: int = 1  # parallel lead enrichment threads per market run
+    enrichment_parallel_workers: int = 4  # parallel lead enrichment threads per market run
 
     domain_cache_ttl_hours: int = 24
 
@@ -67,9 +67,13 @@ class Settings(BaseSettings):
     browser_use_backend: str = "cloud"
     browser_use_api_key: str = ""
     browser_use_task_timeout_s: float = 300.0
+    owner_chain_backend: str = "browser_use"  # browser_use | firecrawl_agent
     owner_chain_max_per_run: int = 10
     loopnet_max_per_run: int = 5
     source_checklist_max_pages: int = 6
+
+    ai_owner_disambiguation: bool = True
+    ai_need_signal_fallback: bool = False
 
     def service_account_path(self) -> Path:
         path = Path(self.google_service_account_json)

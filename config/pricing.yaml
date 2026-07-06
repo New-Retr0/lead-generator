@@ -1,8 +1,8 @@
 # USD estimates for pipeline cost tracking.
-# Firecrawl Hobby: $16 / 3,000 credits ≈ $0.00533 per credit.
+# Firecrawl Standard: $99 / 100,000 credits ≈ $0.00099 per credit.
 
 firecrawl:
-  credit_usd: 0.00533
+  credit_usd: 0.00099
 
 google_places:
   text_search_usd: 0.032

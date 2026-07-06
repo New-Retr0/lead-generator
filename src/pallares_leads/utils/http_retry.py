@@ -14,6 +14,10 @@ T = TypeVar("T")
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
+class OutOfCreditsError(Exception):
+    """Raised when an API returns HTTP 402 (credits exhausted)."""
+
+
 def request_with_retry(
     fn: Callable[[], httpx.Response],
     *,
@@ -26,6 +30,8 @@ def request_with_retry(
     for attempt in range(1, max_attempts + 1):
         try:
             response = fn()
+            if response.status_code == 402:
+                raise OutOfCreditsError(f"{label} HTTP 402 — Firecrawl credits exhausted")
             if response.status_code in RETRY_STATUS and attempt < max_attempts:
                 delay = base_delay_s * (2 ** (attempt - 1))
                 retry_after = response.headers.get("Retry-After")

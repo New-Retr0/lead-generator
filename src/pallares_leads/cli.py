@@ -228,9 +228,21 @@ def cmd_list_config(_args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_doctor(_args: argparse.Namespace) -> int:
+def cmd_doctor(args: argparse.Namespace) -> int:
     settings = get_settings()
     ok = True
+
+    if getattr(args, "config", False):
+        from pallares_leads.config_loader import validate_all_config
+
+        problems = validate_all_config(settings.config_dir)
+        if problems:
+            print("Config validation: FAIL")
+            for problem in problems:
+                print(f"  - {problem}")
+            ok = False
+        else:
+            print("Config validation: OK")
 
     if not settings.google_places_api_key:
         print("Places API (New): MISSING — set GOOGLE_PLACES_API_KEY in .env")
@@ -253,8 +265,36 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         status = "OK" if fc_ok else "FAIL"
         print(f"Firecrawl: {status} — {fc_msg}")
         ok = ok and fc_ok
+        print(
+            "  Plan tier: Standard ($99/mo, 100k credits, 50 concurrent browsers, "
+            "500 scrape rpm, 250 search rpm)"
+        )
+        plan_concurrency = 50
+        if settings.firecrawl_max_concurrency > plan_concurrency:
+            print(
+                f"  WARNING: FIRECRAWL_MAX_CONCURRENCY={settings.firecrawl_max_concurrency} "
+                f"exceeds Standard plan limit ({plan_concurrency})"
+            )
+        else:
+            print(
+                f"  Concurrency: {settings.firecrawl_max_concurrency} "
+                f"(plan limit {plan_concurrency})"
+            )
         if settings.firecrawl_max_credits_per_run > 0:
             print(f"  Run credit cap: {settings.firecrawl_max_credits_per_run} credits/run")
+        if settings.firecrawl_session_credit_stop > 0:
+            print(
+                f"  Session credit stop: {settings.firecrawl_session_credit_stop} "
+                "credits (refuse new runs above this)"
+            )
+        queue = fc.get_queue_status()
+        if queue.get("error"):
+            print(f"  Firecrawl queue: unavailable ({queue['error'][:80]})")
+        else:
+            jobs = queue.get("jobsInQueue", queue.get("jobs_in_queue"))
+            max_conc = queue.get("maxConcurrency", queue.get("max_concurrency"))
+            if jobs is not None or max_conc is not None:
+                print(f"  Firecrawl queue: {jobs or 0} queued, max concurrency {max_conc or '?'}")
 
     if not settings.supabase_db_url:
         print("Supabase: MISSING — set SUPABASE_DB_URL in .env")
@@ -288,13 +328,60 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             fc_balance = FirecrawlClient(settings, store=store).get_team_credit_usage()
             remaining = fc_balance.get("remainingCredits", fc_balance.get("remaining_credits"))
             plan = fc_balance.get("planCredits", fc_balance.get("plan_credits"))
+            used = fc_balance.get("usedCredits", fc_balance.get("used_credits"))
+            billing_end = fc_balance.get("billingPeriodEnd", fc_balance.get("billing_period_end"))
             if remaining is not None:
                 detail = f"{float(remaining):.0f} credits remaining"
                 if plan is not None:
                     detail += f" of {float(plan):.0f} plan credits"
                 print(f"  Firecrawl balance snapshot: {detail}")
+                if used is None and plan is not None:
+                    try:
+                        used = float(plan) - float(remaining)
+                    except (TypeError, ValueError):
+                        used = None
+                if used is not None and plan is not None:
+                    pct = (float(used) / float(plan)) * 100 if float(plan) > 0 else 0
+                    print(f"  Billing cycle usage: {float(used):.0f} credits ({pct:.1f}% of plan)")
+                    if pct >= 80:
+                        print(
+                            f"  WARNING: over 80% of monthly plan credits used "
+                            f"({pct:.1f}%) — review spend or raise FIRECRAWL_SESSION_CREDIT_STOP"
+                        )
+                if billing_end:
+                    print(f"  Billing period ends: {billing_end}")
+                    if used is not None:
+                        try:
+                            from datetime import datetime, timezone
+
+                            end_dt = datetime.fromisoformat(str(billing_end).replace("Z", "+00:00"))
+                            now = datetime.now(timezone.utc)
+                            days_left = max((end_dt - now).total_seconds() / 86400, 0)
+                            row = store._conn.execute(
+                                """
+                                SELECT COALESCE(SUM(units), 0) AS total
+                                FROM cost_events
+                                WHERE provider = 'firecrawl'
+                                  AND created_at >= NOW() - INTERVAL '7 days'
+                                """
+                            ).fetchone()
+                            recent_total = float(row["total"] if row else 0)
+                            recent_daily = recent_total / 7 if recent_total > 0 else 0.0
+                            if recent_daily > 0:
+                                projected = float(used) + recent_daily * days_left
+                                plan_f = float(plan or 100_000)
+                                over = projected > plan_f
+                                print(
+                                    f"  Projected cycle-end usage: {projected:.0f} credits "
+                                    f"({'over' if over else 'under'} plan, "
+                                    f"{recent_daily:.0f}/day 7d avg)"
+                                )
+                        except (TypeError, ValueError, OSError):
+                            pass
             elif fc_balance.get("error"):
                 print(f"  Firecrawl balance snapshot: unavailable ({fc_balance['error'][:80]})")
+            elif remaining is not None and float(remaining) <= 0:
+                print("  WARNING: Firecrawl credits exhausted — enrichment will fail with HTTP 402")
 
         if settings.browser_use_api_key:
             from pallares_leads.enrich.browser_use_client import BrowserUseClient
@@ -323,7 +410,7 @@ def cmd_warm_portals(args: argparse.Namespace) -> int:
     from pallares_leads.enrich.browser_use_client import BrowserUseClient
 
     if args.dry_run:
-        print("warm-portals dry-run: would warm CA SOS and county recorder/parcel adapters")
+        print("warm-portals dry-run: would warm all configured state SOS and county adapters")
         return 0
 
     if not settings.browser_use_api_key:
@@ -348,11 +435,14 @@ def cmd_warm_portals(args: argparse.Namespace) -> int:
             print(client.last_skip_reason or "Browser Use unavailable", file=sys.stderr)
             return 1
 
-        ca_state = registry.states.get("ca")
         warmed = 0
-        if ca_state:
-            print("Warming CA SOS bizfile template...")
-            client.sos_entity_lookup("CALIFORNIA TEST LLC", ca_state)
+        for state_code, state_cfg in sorted(registry.states.items()):
+            print(f"Warming {state_code.upper()} SOS template...")
+            client.sos_entity_lookup(
+                f"{state_code.upper()} TEST LLC",
+                state_cfg,
+                state_code=state_code,
+            )
             warmed += 1
 
         for key, county in counties.items():
@@ -642,6 +732,11 @@ def build_parser() -> argparse.ArgumentParser:
     lst.set_defaults(func=cmd_list_config)
 
     doc = sub.add_parser("doctor", help="Verify API keys and Places API (New) connectivity")
+    doc.add_argument(
+        "--config",
+        action="store_true",
+        help="Validate markets, categories, campaigns, and jurisdictions YAML",
+    )
     doc.set_defaults(func=cmd_doctor)
 
     warm = sub.add_parser(

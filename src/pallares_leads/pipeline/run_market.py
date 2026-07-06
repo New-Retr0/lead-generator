@@ -4,16 +4,22 @@ import json
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pallares_leads.config_loader import CategoryConfig, MarketConfig
+from pallares_leads.config_loader import CategoryConfig, MarketConfig, load_markets
 from pallares_leads.db.store import LeadStore
+from pallares_leads.discover.county_filter import filter_excluded_counties
 from pallares_leads.discover.overpass import OverpassClient
 from pallares_leads.discover.places import PlacesClient
+from pallares_leads.utils.http_retry import OutOfCreditsError
 from pallares_leads.enrich.ai_gateway_client import gateway_configured, set_gateway_parallel_workers
 from pallares_leads.enrich.apply import (
+    _ROLE_PRIORITY,
+    _role_priority_rank,
     apply_baseline_fields,
     apply_investigation,
     derive_best_contact_fields,
@@ -73,7 +79,8 @@ from pallares_leads.enrich.registries.license_lookup import (
     parse_license_record,
     should_run_license_lookup,
 )
-from pallares_leads.enrich.insurance import insurance_facts_from_pages
+from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
+from pallares_leads.enrich.insurance import insurance_facts_from_pages, need_signals_ai_fallback
 from pallares_leads.enrich.sales_copy import maybe_enrich_sales_copy
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.enrich.socials import social_facts_from_pages
@@ -81,7 +88,7 @@ from pallares_leads.enrich.source_checklist import run_source_checklist
 from pallares_leads.pipeline.dedupe import dedupe_leads
 from pallares_leads.pipeline.export_csv import export_csv
 from pallares_leads.pipeline.export_sheets import export_sheets, sheets_configured
-from pallares_leads.progress import emit as progress_emit
+from pallares_leads.progress import bind_progress, emit as progress_emit
 from pallares_leads.resolve.contact_hierarchy import pick_best_contact
 from pallares_leads.resolve.lead_score import compute_lead_score
 from pallares_leads.resolve.verification import (
@@ -92,6 +99,7 @@ from pallares_leads.schemas import (
     NOT_FOUND,
     Confidence,
     EnrichedLead,
+    ExtractedContact,
     InvestigationStatus,
     LeadFact,
     RawLead,
@@ -195,12 +203,98 @@ def _snapshot_path(settings: Settings, raw: RawLead, ext: str) -> Path:
     )
 
 
+def _has_callable_phone(enriched: EnrichedLead) -> bool:
+    if is_callable_phone(enriched.best_contact_phone):
+        return True
+    if is_callable_phone(enriched.main_phone):
+        return True
+    return any(is_callable_phone(c.phone) for c in enriched.site_contacts)
+
+
+def _has_named_person(enriched: EnrichedLead) -> bool:
+    return any(c.name.strip() for c in enriched.site_contacts)
+
+
+@contextmanager
+def _enrichment_stage(
+    stage: str,
+    *,
+    raw: RawLead,
+    run_id: str | None,
+    firecrawl: FirecrawlClient | None,
+):
+    if firecrawl is not None:
+        firecrawl.set_cost_context(stage=stage)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        progress_emit(
+            "stage_done",
+            place_id=raw.place_id,
+            business=raw.business_name,
+            run_id=run_id,
+            stage=stage,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+
+def _decision_maker_regex_contacts(contacts: list[ExtractedContact]) -> list[ExtractedContact]:
+    good: list[ExtractedContact] = []
+    for contact in contacts:
+        if not contact.name or not contact.name.strip():
+            continue
+        if not is_callable_phone(contact.phone):
+            continue
+        rank = _role_priority_rank(contact.role or contact.contact_type, contact.name)
+        if rank < len(_ROLE_PRIORITY):
+            good.append(contact)
+    return good
+
+
+def _investigation_from_regex_pages(
+    pages: list[tuple[str, str]],
+    regex_contacts: list[ExtractedContact],
+    raw: RawLead,
+) -> LeadInvestigationResult:
+    combined = "\n".join(md for _, md in pages)
+    decision = min(
+        _decision_maker_regex_contacts(regex_contacts),
+        key=lambda contact: _role_priority_rank(
+            contact.role or contact.contact_type,
+            contact.name,
+        ),
+    )
+    site_contacts = [
+        SiteContact(
+            label=contact.contact_type.replace("_", " "),
+            name=contact.name or "",
+            phone=contact.phone or "",
+            email=contact.email_or_form or "",
+            priority="good",
+            source_url=contact.source_url or "",
+            verification="corroborated",
+        )
+        for contact in regex_contacts
+    ]
+    source_url = pages[0][0] if pages else ""
+    return LeadInvestigationResult(
+        site_contacts=site_contacts,
+        contact_name=decision.name,
+        contact_role=decision.role or decision.contact_type,
+        contact_phone=decision.phone or "",
+        exterior_signals=exterior_signals(combined, raw.property_type),
+        source_urls=[source_url] if source_url else [],
+    )
+
+
 def _scrape_fallback(
     raw: RawLead,
     firecrawl: FirecrawlClient,
     enriched: EnrichedLead,
+    settings: Settings,
 ) -> tuple[EnrichedLead, LeadInvestigationResult | None]:
-    """Markdown fallback: deterministic regex extraction (proximity-window pairing)."""
+    """Markdown fallback: regex pre-check, then Gateway extract + grounding."""
     pages = firecrawl.scrape_site(raw.website or "")
     if not pages:
         return enriched, None
@@ -211,46 +305,52 @@ def _scrape_fallback(
         evidence.append(url)
         combined += md + "\n"
 
-    contacts = merge_page_contacts(pages)
-    site_contacts = [
-        SiteContact(
-            label=c.role or c.contact_type.replace("_", " ").title(),
-            name=c.name or "",
-            phone=c.phone or "",
-            email=(c.email_or_form or "") if "@" in (c.email_or_form or "") else "",
-            priority="good",
-            source_url=c.source_url or "",
-            # Deterministic regex parse of fetched text — verified at birth.
-            verification="verified",
-            quote=c.quote or "",
-        )
-        for c in contacts
-        if c.contact_type != "contact_form"
-    ]
+    regex_contacts = merge_page_contacts(pages)
+    if _decision_maker_regex_contacts(regex_contacts):
+        investigation = _investigation_from_regex_pages(pages, regex_contacts, raw)
+        source_url = pages[0][0]
+        clue = property_manager_clues(combined)
+        if clue:
+            enriched.property_manager_or_ownership_clue = clue
+            enriched.management_source_url = source_url
+        if investigation.exterior_signals:
+            enriched.exterior_cleaning_need_signals = investigation.exterior_signals
+        elif not enriched.exterior_cleaning_need_signals:
+            enriched.exterior_cleaning_need_signals = exterior_signals(combined, raw.property_type)
+        enriched.evidence_urls = list(dict.fromkeys([*enriched.evidence_urls, *evidence]))
+        return enriched, investigation
+
+    if not regex_contacts and not re.search(r"\(\d{3}\)\s*\d{3}-\d{4}", combined):
+        return enriched, None
+
+    source_url = pages[0][0]
+    result = gateway_extract_contacts(
+        combined,
+        raw,
+        source_url=source_url,
+        settings=settings,
+        store=firecrawl._store,
+        run_id=firecrawl._cost_run_id,
+        place_id=firecrawl._cost_place_id,
+        request_id=firecrawl._cost_request_id,
+        stage="scrape",
+    )
+    if not result:
+        return enriched, None
 
     clue = property_manager_clues(combined)
     if clue:
         enriched.property_manager_or_ownership_clue = clue
-        enriched.management_source_url = pages[0][0]
+        enriched.management_source_url = source_url
 
-    enriched.exterior_cleaning_need_signals = exterior_signals(combined, raw.property_type)
+    if result.exterior_signals:
+        enriched.exterior_cleaning_need_signals = result.exterior_signals
+    elif not enriched.exterior_cleaning_need_signals:
+        enriched.exterior_cleaning_need_signals = exterior_signals(combined, raw.property_type)
+
     enriched.evidence_urls = list(dict.fromkeys([*enriched.evidence_urls, *evidence]))
-
-    best = pick_best_contact(contacts, property_type=raw.property_type)
-    form = next((c for c in contacts if c.contact_type == "contact_form"), None)
-    result = LeadInvestigationResult(
-        site_contacts=site_contacts,
-        contact_name=(best.name or "") if best else "",
-        contact_role=(best.role or "") if best else "",
-        contact_phone=(best.phone or "") if best else "",
-        contact_email=(
-            (best.email_or_form or "") if best and "@" in (best.email_or_form or "") else ""
-        ),
-        contact_form_url=(form.source_url or "") if form else "",
-        property_manager=clue or "",
-        exterior_signals=enriched.exterior_cleaning_need_signals,
-        source_urls=evidence,
-    )
+    if result.source_urls:
+        enriched.evidence_urls = list(dict.fromkeys([*enriched.evidence_urls, *result.source_urls]))
     return enriched, result
 
 
@@ -267,6 +367,7 @@ def _try_leasing_tier(
     if work_raw.property_type not in MULTI_TENANT_PROPERTY_TYPES or not work_raw.website:
         return enriched, investigation, False
 
+    firecrawl.set_cost_context(stage="leasing")
     improved = False
     mapped = firecrawl.map_contact_urls(work_raw.website, limit=10)
     leasing_urls = [
@@ -295,15 +396,6 @@ def _try_leasing_tier(
             improved = True
             break
 
-    pdf_snippets = _collect_pdf_snippets(firecrawl, enriched, investigation)
-    if pdf_snippets and trace:
-        trace.record(
-            "pdf",
-            ran=True,
-            reason="broker PDF gap-fill",
-            credits_est=1,
-            outputs={"snippet_chars": len(pdf_snippets[0])},
-        )
     return enriched, investigation, improved
 
 
@@ -351,6 +443,7 @@ def _try_bbb_tier(
             trace.record("bbb", ran=False, reason="verified person already found")
         return enriched
 
+    firecrawl.set_cost_context(stage="bbb")
     url = find_bbb_profile_url(work_raw, firecrawl.search_web, config_dir=settings.config_dir)
     if not url:
         if trace:
@@ -372,13 +465,13 @@ def _try_bbb_tier(
         return enriched
 
     upgraded = _corroborate_with_bbb(enriched, profile)
-    new_contacts = bbb_contacts(profile)
+    new_contacts = bbb_contacts(profile, page_text=markdown)
     existing_keys = {(c.name.casefold(), c.phone) for c in enriched.site_contacts}
     for contact in new_contacts:
         if (contact.name.casefold(), contact.phone) not in existing_keys:
             enriched.site_contacts = [*enriched.site_contacts, contact]
 
-    enriched.facts = [*enriched.facts, *bbb_profile_to_facts(profile)]
+    enriched.facts = [*enriched.facts, *bbb_profile_to_facts(profile, page_text=markdown)]
     if url not in enriched.evidence_urls:
         enriched.evidence_urls = [*enriched.evidence_urls, url]
     if "bbb" not in (enriched.source_tool or ""):
@@ -435,6 +528,7 @@ def _try_license_tier(
             trace.record("state_license", ran=False, reason="contact bar already met")
         return enriched
 
+    firecrawl.set_cost_context(stage="state_license")
     cfg = lookup_config_for_state(work_raw.state, config_dir=settings.config_dir)
     should_run, reason = should_run_license_lookup(
         work_raw,
@@ -485,9 +579,9 @@ def _try_license_tier(
             )
         return enriched
 
-    enriched.facts = [*enriched.facts, *license_record_to_facts(record)]
+    enriched.facts = [*enriched.facts, *license_record_to_facts(record, page_text=markdown)]
     existing = {(c.name.casefold(), c.label) for c in enriched.site_contacts}
-    for name, title, quote in license_contacts(record):
+    for name, title, quote, verified in license_contacts(record, page_text=markdown):
         key = (name.casefold(), title)
         if key not in existing:
             enriched.site_contacts = [
@@ -496,7 +590,7 @@ def _try_license_tier(
                     label=title,
                     name=name,
                     source_url=record.url,
-                    verification="verified",
+                    verification="verified" if verified else "unverified",
                     quote=quote,
                     priority="best",
                 ),
@@ -534,11 +628,24 @@ def _try_linkedin_serp_tier(
         if trace:
             trace.record("linkedin_serp", ran=False, reason="linkedin_serp not enabled")
         return enriched
+    has_callable = any(is_callable_phone(c.phone) for c in enriched.site_contacts) or is_callable_phone(
+        enriched.main_phone
+    )
+    has_named = any(c.name.strip() for c in enriched.site_contacts)
+    if not has_callable or has_named:
+        if trace:
+            trace.record(
+                "linkedin_serp",
+                ran=False,
+                reason="needs callable phone without named person",
+            )
+        return enriched
     if _has_verified_person(enriched):
         if trace:
             trace.record("linkedin_serp", ran=False, reason="verified person already found")
         return enriched
 
+    firecrawl.set_cost_context(stage="linkedin_serp")
     company = enriched.property_manager_or_ownership_clue
     if company in (None, "", NOT_FOUND):
         company = work_raw.business_name
@@ -560,7 +667,10 @@ def _try_linkedin_serp_tier(
     if not any(c.verification in ("verified", "corroborated") for c in enriched.site_contacts):
         enriched.site_contacts = [
             *enriched.site_contacts,
-            *linkedin_serp_site_contacts(parsed),
+            *[
+                c.model_copy(update={"verification": "unverified"})
+                for c in linkedin_serp_site_contacts(parsed)
+            ],
         ]
 
     if trace:
@@ -644,6 +754,7 @@ def _try_owner_chain_tier(
     tier_rules: EnrichmentRules,
     settings: Settings,
     *,
+    firecrawl: FirecrawlClient | None = None,
     store: LeadStore | None = None,
     run_id: str | None = None,
     trace: LeadEvalTrace | None = None,
@@ -659,13 +770,23 @@ def _try_owner_chain_tier(
             trace=trace,
         )
         return enriched
-    if not settings.browser_use_enabled:
+    if settings.owner_chain_backend == "browser_use" and not settings.browser_use_enabled:
         _record_owner_chain_skip(
             store=store,
             run_id=run_id,
             place_id=work_raw.place_id,
             business=work_raw.business_name,
             reason="browser use disabled",
+            trace=trace,
+        )
+        return enriched
+    if settings.owner_chain_backend == "firecrawl_agent" and not settings.firecrawl_api_key:
+        _record_owner_chain_skip(
+            store=store,
+            run_id=run_id,
+            place_id=work_raw.place_id,
+            business=work_raw.business_name,
+            reason="firecrawl agent backend requires FIRECRAWL_API_KEY",
             trace=trace,
         )
         return enriched
@@ -706,9 +827,11 @@ def _try_owner_chain_tier(
         settings=settings,
         store=store,
         browser=browser,
+        firecrawl=firecrawl,
         owner_chain_count=owner_count,
         loopnet_count=loopnet_count,
         entity_seed=bbb_entity,
+        run_id=run_id,
     )
     enriched = chain.enriched
 
@@ -905,43 +1028,40 @@ def _record_production_events(
     *,
     used_fast_path: bool,
 ) -> int:
-    """Persist stage credits on production runs (no eval trace)."""
+    """Persist stage timing on production runs. Credits come from cost_events, not estimates."""
     if not store or not run_id:
         return 0
-    total = 0
-    tool = enriched.source_tool or ""
 
-    def _evt(stage: str, ran: bool, credits: int, reason: str = "") -> None:
-        nonlocal total
+    def _evt(stage: str, ran: bool, reason: str = "") -> None:
         store.record_run_event(
             run_id=run_id,
             place_id=place_id,
             stage=stage,
             ran=ran,
             reason=reason,
-            credits_est=credits,
+            credits_est=0,
         )
-        total += credits
 
+    tool = enriched.source_tool or ""
     if used_fast_path or "profile_reuse" in tool:
-        _evt("profile_fast_path", True, 0, "franchise playbook fast path")
-        _evt("gateway", bool(enriched.why_this_is_a_good_fit), 0, "AI sales copy")
+        _evt("profile_fast_path", True, "franchise playbook fast path")
+        _evt("gateway", bool(enriched.why_this_is_a_good_fit), "AI sales copy")
     else:
         if "search" in tool and "scrape_json" not in tool.split("+")[0]:
-            _evt("search", True, 1, "website gap-fill")
+            _evt("search", True, "website gap-fill")
         if "map" in tool or "scrape" in tool:
-            _evt("map", True, 1, "Firecrawl /map")
+            _evt("map", True, "Firecrawl map/scrape")
         if "scrape_json" in tool:
-            _evt("scrape_json", True, 5, "Tier 1 scrape+JSON")
+            _evt("scrape_json", True, "Tier 1 scrape+JSON")
         elif "scrape" in tool:
-            _evt("markdown", True, 3, "markdown scrape")
+            _evt("markdown", True, "markdown scrape")
         if "search" in tool and "firecrawl_search" in tool:
-            _evt("search_contact", True, 6, "Tier 2 search+JSON")
-        _evt("gateway", bool(enriched.why_this_is_a_good_fit), 0, "AI sales copy")
+            _evt("search_contact", True, "Tier 2 search+scrape")
+        _evt("gateway", bool(enriched.why_this_is_a_good_fit), "AI sales copy")
 
-    _evt("final", True, 0, enriched.source_tool)
+    _evt("final", True, enriched.source_tool)
     store.commit_events()
-    return total
+    return store.lead_run_credits(run_id, place_id)
 
 
 def _record_profile_learning(
@@ -1067,6 +1187,7 @@ def enrich_lead(
         business=raw.business_name,
         category=raw.lead_category,
     )
+    lead_started_at = time.perf_counter()
 
     if not firecrawl:
         enriched.investigation_status = InvestigationStatus.DISCOVERED
@@ -1149,98 +1270,105 @@ def enrich_lead(
         )
 
     if gaps.missing_website or gaps.corporate_website:
-        logger.info("  Google gaps: %s", gap_summary(gaps))
-        work_raw = resolve_website(raw, enriched, firecrawl, gaps)
-        if trace:
-            search_info = firecrawl.last_search_info
-            trace.record(
-                "search",
-                ran=True,
-                reason="missing website or corporate locator",
-                credits_est=1 if search_info.get("method") == "search_api" else 0,
-                inputs={
-                    "query": search_info.get("query", ""),
-                    "method": search_info.get("method", ""),
-                },
-                outputs={"found_url": search_info.get("found") or enriched.website or ""},
-            )
-        gaps = GoogleGaps.from_lead(work_raw, enriched, config_dir=settings.config_dir)
+        with _enrichment_stage(
+            "website_resolve",
+            raw=raw,
+            run_id=run_id,
+            firecrawl=firecrawl,
+        ):
+            logger.info("  Google gaps: %s", gap_summary(gaps))
+            work_raw = resolve_website(raw, enriched, firecrawl, gaps)
+            if trace:
+                search_info = firecrawl.last_search_info
+                trace.record(
+                    "search",
+                    ran=True,
+                    reason="missing website or corporate locator",
+                    credits_est=1 if search_info.get("method") == "search_api" else 0,
+                    inputs={
+                        "query": search_info.get("query", ""),
+                        "method": search_info.get("method", ""),
+                    },
+                    outputs={"found_url": search_info.get("found") or enriched.website or ""},
+                )
+            gaps = GoogleGaps.from_lead(work_raw, enriched, config_dir=settings.config_dir)
 
     # map + scrape+JSON → markdown fallback → Tier 2 search → leasing/PDF gap-fill
     tier1: LeadInvestigationResult | None = None
     if work_raw.website:
-        tier1 = firecrawl.scrape_lead(work_raw)
-        map_info = firecrawl.last_map_info
-        if map_info:
-            progress_emit(
-                "map",
-                place_id=raw.place_id,
-                business=raw.business_name,
-                run_id=run_id,
-                cached=bool(map_info.get("cached")),
-            )
-        if trace:
-            trace.record(
-                "map",
-                ran=bool(map_info),
-                reason="cached hit" if map_info.get("cached") else "Firecrawl /map",
-                credits_est=0 if map_info.get("cached") else 1,
-                inputs={"website": work_raw.website},
-                outputs={"urls": map_info.get("urls", [])},
-            )
-        if tier1:
-            FirecrawlClient.dump_snapshot(
-                snap_base.with_name(snap_base.stem + "_scrape_json.json"),
-                {"tier": "scrape_json", "result": tier1.model_dump()},
-            )
-            enriched = apply_investigation(
-                enriched, tier1, source_tool="google_places+firecrawl_scrape_json"
-            )
-            progress_emit(
-                "scrape_json",
-                place_id=raw.place_id,
-                business=raw.business_name,
-                run_id=run_id,
-            )
+        with _enrichment_stage("scrape", raw=raw, run_id=run_id, firecrawl=firecrawl):
+            tier1 = firecrawl.scrape_lead(work_raw)
+            map_info = firecrawl.last_map_info
+            if map_info:
+                progress_emit(
+                    "map",
+                    place_id=raw.place_id,
+                    business=raw.business_name,
+                    run_id=run_id,
+                    cached=bool(map_info.get("cached")),
+                )
             if trace:
                 trace.record(
-                    "scrape_json",
-                    ran=True,
-                    reason="Tier 1 scrape+JSON",
-                    credits_est=5,
-                    inputs={"target_url": firecrawl.last_scrape_target},
-                    outputs=_investigation_outputs(tier1),
+                    "map",
+                    ran=bool(map_info),
+                    reason="cached hit" if map_info.get("cached") else "Firecrawl /map",
+                    credits_est=0 if map_info.get("cached") else 1,
+                    inputs={"website": work_raw.website},
+                    outputs={"urls": map_info.get("urls", [])},
                 )
-        else:
-            logger.info("  Tier 1 markdown scrape fallback")
-            if trace:
-                trace.record(
-                    "scrape_json",
-                    ran=False,
-                    reason="Tier 1 scrape+JSON returned no result",
-                    credits_est=5,
-                    inputs={"target_url": firecrawl.last_scrape_target},
+            if tier1:
+                FirecrawlClient.dump_snapshot(
+                    snap_base.with_name(snap_base.stem + "_scrape_json.json"),
+                    {"tier": "scrape_json", "result": tier1.model_dump()},
                 )
-            enriched, tier1 = _scrape_fallback(work_raw, firecrawl, enriched)
-            pages_scraped = len(enriched.evidence_urls)
-            tier_rules = get_enrichment_rules(work_raw.property_type, settings.config_dir)
-            if (
-                tier1
-                and investigation_meets_bar(
-                    tier1, tier_rules, property_type=work_raw.property_type
-                )[0]
-            ):
                 enriched = apply_investigation(
-                    enriched, tier1, source_tool="google_places+firecrawl_scrape"
+                    enriched, tier1, source_tool="google_places+firecrawl_scrape_json"
                 )
-            if trace:
-                trace.record(
-                    "markdown",
-                    ran=pages_scraped > 0,
-                    reason="markdown fallback after failed scrape+JSON",
-                    credits_est=pages_scraped,
-                    outputs={"pages_scraped": pages_scraped, "urls": enriched.evidence_urls},
+                progress_emit(
+                    "scrape_json",
+                    place_id=raw.place_id,
+                    business=raw.business_name,
+                    run_id=run_id,
                 )
+                if trace:
+                    trace.record(
+                        "scrape_json",
+                        ran=True,
+                        reason="Tier 1 scrape+JSON",
+                        credits_est=5,
+                        inputs={"target_url": firecrawl.last_scrape_target},
+                        outputs=_investigation_outputs(tier1),
+                    )
+            else:
+                logger.info("  Tier 1 markdown scrape fallback")
+                if trace:
+                    trace.record(
+                        "scrape_json",
+                        ran=False,
+                        reason="Tier 1 scrape+JSON returned no result",
+                        credits_est=5,
+                        inputs={"target_url": firecrawl.last_scrape_target},
+                    )
+                enriched, tier1 = _scrape_fallback(work_raw, firecrawl, enriched, settings)
+                pages_scraped = len(enriched.evidence_urls)
+                tier_rules = get_enrichment_rules(work_raw.property_type, settings.config_dir)
+                if (
+                    tier1
+                    and investigation_meets_bar(
+                        tier1, tier_rules, property_type=work_raw.property_type
+                    )[0]
+                ):
+                    enriched = apply_investigation(
+                        enriched, tier1, source_tool="google_places+firecrawl_scrape"
+                    )
+                if trace:
+                    trace.record(
+                        "markdown",
+                        ran=pages_scraped > 0,
+                        reason="markdown fallback after failed scrape+JSON",
+                        credits_est=pages_scraped,
+                        outputs={"pages_scraped": pages_scraped, "urls": enriched.evidence_urls},
+                    )
 
     investigation = tier1
     tier_rules = get_enrichment_rules(work_raw.property_type, settings.config_dir)
@@ -1248,47 +1376,49 @@ def enrich_lead(
 
     if tier2_needed:
         logger.info("  Tier 2 search gap-fill for %s", work_raw.business_name)
-        search_result = firecrawl.search_contact_gap(work_raw, tier_rules)
-        if trace:
-            search_info = firecrawl.last_contact_search_info
-            trace.record(
-                "search_contact",
-                ran=search_result is not None,
-                reason="contact bar not met after Tier 1",
-                credits_est=6 if search_result else 1,
-                inputs={
-                    "query": search_info.get("query", ""),
-                    "candidates": search_info.get("candidates", []),
-                },
-                outputs=_investigation_outputs(search_result),
-            )
-        if search_result:
-            FirecrawlClient.dump_snapshot(
-                snap_base.with_name(snap_base.stem + "_search_contact.json"),
-                {"tier": "search_contact", "result": search_result.model_dump()},
-            )
-            enriched = apply_investigation(
-                enriched, search_result, source_tool="google_places+firecrawl_search"
-            )
-            investigation = search_result
-            if investigation_meets_bar(
-                search_result, tier_rules, property_type=work_raw.property_type
-            )[0]:
-                tier2_needed = False
-                tier2_reason = f"Tier 2 search met contact bar ({tier_rules.min_contact_bar})"
+        with _enrichment_stage("tier2_search", raw=raw, run_id=run_id, firecrawl=firecrawl):
+            search_result = firecrawl.search_contact_gap(work_raw, tier_rules)
+            if trace:
+                search_info = firecrawl.last_contact_search_info
+                trace.record(
+                    "search_contact",
+                    ran=search_result is not None,
+                    reason="contact bar not met after Tier 1",
+                    credits_est=6 if search_result else 1,
+                    inputs={
+                        "query": search_info.get("query", ""),
+                        "candidates": search_info.get("candidates", []),
+                    },
+                    outputs=_investigation_outputs(search_result),
+                )
+            if search_result:
+                FirecrawlClient.dump_snapshot(
+                    snap_base.with_name(snap_base.stem + "_search_contact.json"),
+                    {"tier": "search_contact", "result": search_result.model_dump()},
+                )
+                enriched = apply_investigation(
+                    enriched, search_result, source_tool="google_places+firecrawl_search"
+                )
+                investigation = search_result
+                if investigation_meets_bar(
+                    search_result, tier_rules, property_type=work_raw.property_type
+                )[0]:
+                    tier2_needed = False
+                    tier2_reason = f"Tier 2 search met contact bar ({tier_rules.min_contact_bar})"
 
     if tier2_needed:
-        enriched, investigation, leasing_met = _try_leasing_tier(
-            work_raw,
-            firecrawl,
-            enriched,
-            investigation,
-            tier_rules,
-            trace=trace,
-        )
-        if leasing_met:
-            tier2_needed = False
-            tier2_reason = "leasing/PDF tier met contact bar"
+        with _enrichment_stage("leasing", raw=raw, run_id=run_id, firecrawl=firecrawl):
+            enriched, investigation, leasing_met = _try_leasing_tier(
+                work_raw,
+                firecrawl,
+                enriched,
+                investigation,
+                tier_rules,
+                trace=trace,
+            )
+            if leasing_met:
+                tier2_needed = False
+                tier2_reason = "leasing/PDF tier met contact bar"
 
     if trace:
         trace.record(
@@ -1298,56 +1428,63 @@ def enrich_lead(
             outputs={"tier2_needed": tier2_needed},
         )
 
-    pdf_snippets = _collect_pdf_snippets(firecrawl, enriched, investigation)
-    if trace:
-        pdf_url = FirecrawlClient.pick_broker_pdf_url(
-            list(enriched.evidence_urls) + (investigation.source_urls if investigation else [])
+    with _enrichment_stage("pdf", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        pdf_snippets = _collect_pdf_snippets(firecrawl, enriched, investigation)
+        if trace:
+            pdf_url = FirecrawlClient.pick_broker_pdf_url(
+                list(enriched.evidence_urls)
+                + (investigation.source_urls if investigation else [])
+            )
+            trace.record(
+                "pdf",
+                ran=bool(pdf_snippets),
+                reason="broker PDF scrape" if pdf_snippets else "no broker PDF URL",
+                credits_est=1 if pdf_snippets else 0,
+                inputs={"url": pdf_url or ""},
+                outputs={"snippet_chars": len(pdf_snippets[0]) if pdf_snippets else 0},
+            )
+
+    with _enrichment_stage("bbb", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        enriched = _try_bbb_tier(
+            work_raw,
+            enriched,
+            firecrawl,
+            tier_rules,
+            settings,
+            trace=trace,
         )
-        trace.record(
-            "pdf",
-            ran=bool(pdf_snippets),
-            reason="broker PDF scrape" if pdf_snippets else "no broker PDF URL",
-            credits_est=1 if pdf_snippets else 0,
-            inputs={"url": pdf_url or ""},
-            outputs={"snippet_chars": len(pdf_snippets[0]) if pdf_snippets else 0},
+
+    with _enrichment_stage("state_license", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        enriched = _try_license_tier(
+            work_raw,
+            enriched,
+            firecrawl,
+            tier_rules,
+            settings,
+            trace=trace,
         )
 
-    enriched = _try_bbb_tier(
-        work_raw,
-        enriched,
-        firecrawl,
-        tier_rules,
-        settings,
-        trace=trace,
-    )
+    with _enrichment_stage("linkedin_serp", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        enriched = _try_linkedin_serp_tier(
+            work_raw,
+            enriched,
+            firecrawl,
+            tier_rules,
+            settings,
+            trace=trace,
+        )
 
-    enriched = _try_license_tier(
-        work_raw,
-        enriched,
-        firecrawl,
-        tier_rules,
-        settings,
-        trace=trace,
-    )
-
-    enriched = _try_linkedin_serp_tier(
-        work_raw,
-        enriched,
-        firecrawl,
-        tier_rules,
-        settings,
-        trace=trace,
-    )
-
-    enriched = _try_owner_chain_tier(
-        work_raw,
-        enriched,
-        tier_rules,
-        settings,
-        store=store,
-        run_id=run_id,
-        trace=trace,
-    )
+    with _enrichment_stage("owner_chain", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        enriched = _try_owner_chain_tier(
+            work_raw,
+            enriched,
+            tier_rules,
+            settings,
+            firecrawl=firecrawl,
+            store=store,
+            run_id=run_id,
+            trace=trace,
+        )
 
     social_facts = social_facts_from_pages(firecrawl.session_markdown)
     if social_facts:
@@ -1369,42 +1506,65 @@ def enrich_lead(
             enriched.facts = [*enriched.facts, *insurance_facts]
             logger.info("  Insurance: %d mention(s) found", len(insurance_facts))
 
+    if not enriched.exterior_cleaning_need_signals.strip() and firecrawl.session_markdown:
+        ai_signals = need_signals_ai_fallback(
+            firecrawl.session_markdown,
+            property_type=work_raw.property_type,
+            business_name=work_raw.business_name,
+            city=work_raw.city,
+            state=work_raw.state,
+            settings=settings,
+            store=store,
+            run_id=run_id,
+            place_id=work_raw.place_id,
+            stage="scrape",
+        )
+        if ai_signals:
+            enriched.exterior_cleaning_need_signals = ai_signals
+            logger.info("  Need signals (AI fallback): %s", ai_signals[:120])
+
     bar_met, _bar_detail = enriched_meets_bar(enriched, tier_rules)
     if not bar_met:
-        checklist_facts, checklist_results, checklist_contacts = run_source_checklist(
-            work_raw,
-            enriched,
-            config_dir=settings.config_dir,
-            scrape_url=firecrawl.scrape_url,
-            max_pages=settings.source_checklist_max_pages,
-        )
-        if checklist_facts:
-            enriched.facts = [*enriched.facts, *checklist_facts]
-        if checklist_contacts:
-            enriched.site_contacts = [*enriched.site_contacts, *checklist_contacts]
-        if store and run_id and checklist_results:
-            for item in checklist_results:
-                store.record_run_event(
-                    run_id=run_id,
-                    place_id=work_raw.place_id,
-                    stage=f"source_check:{item.source_key}",
-                    ran=item.status == "checked",
-                    reason=f"{item.status}: {item.reason or item.url}",
-                    credits_est=1 if item.status == "checked" else 0,
-                )
-            store.commit_events()
-        if trace and checklist_results:
-            trace.record(
-                "source_checklist",
-                ran=True,
-                reason=f"{len(checklist_results)} source(s) evaluated",
-                outputs={
-                    "checks": [
-                        {"source": r.source_key, "status": r.status, "url": r.url}
-                        for r in checklist_results
-                    ]
-                },
+        with _enrichment_stage(
+            "source_checklist",
+            raw=raw,
+            run_id=run_id,
+            firecrawl=firecrawl,
+        ):
+            checklist_facts, checklist_results, checklist_contacts = run_source_checklist(
+                work_raw,
+                enriched,
+                config_dir=settings.config_dir,
+                scrape_url=firecrawl.scrape_url,
+                max_pages=settings.source_checklist_max_pages,
             )
+            if checklist_facts:
+                enriched.facts = [*enriched.facts, *checklist_facts]
+            if checklist_contacts:
+                enriched.site_contacts = [*enriched.site_contacts, *checklist_contacts]
+            if store and run_id and checklist_results:
+                for item in checklist_results:
+                    store.record_run_event(
+                        run_id=run_id,
+                        place_id=work_raw.place_id,
+                        stage=f"source_check:{item.source_key}",
+                        ran=item.status == "checked",
+                        reason=f"{item.status}: {item.reason or item.url}",
+                        credits_est=1 if item.status == "checked" else 0,
+                    )
+                store.commit_events()
+            if trace and checklist_results:
+                trace.record(
+                    "source_checklist",
+                    ran=True,
+                    reason=f"{len(checklist_results)} source(s) evaluated",
+                    outputs={
+                        "checks": [
+                            {"source": r.source_key, "status": r.status, "url": r.url}
+                            for r in checklist_results
+                        ]
+                    },
+                )
     elif trace:
         trace.record("source_checklist", ran=False, reason="contact bar already met")
 
@@ -1416,16 +1576,17 @@ def enrich_lead(
 
     enriched = apply_baseline_fields(enriched, raw)
     enriched = scrub_unverified_website(enriched, store=store, verify_evidence=False)
-    enriched = maybe_enrich_sales_copy(
-        enriched,
-        raw,
-        investigation,
-        pdf_snippets,
-        settings,
-        trace=trace,
-        store=store,
-        run_id=run_id,
-    )
+    with _enrichment_stage("sales_copy", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        enriched = maybe_enrich_sales_copy(
+            enriched,
+            raw,
+            investigation,
+            pdf_snippets,
+            settings,
+            trace=trace,
+            store=store,
+            run_id=run_id,
+        )
     _append_related_talking_points(enriched, store)
     if store and firecrawl and firecrawl.session_credits_used:
         store.commit_cost_events()
@@ -1480,6 +1641,7 @@ def enrich_lead(
         verification_level=enriched.verification_level,
         score=enriched.lead_score,
         credits=firecrawl.session_credits_used if firecrawl else 0,
+        duration_ms=int((time.perf_counter() - lead_started_at) * 1000),
     )
     return enriched
 
@@ -1514,6 +1676,7 @@ def run_market_category(
     force_refresh: bool = False,
     refresh_after_days: int | None = None,
     store: LeadStore | None = None,
+    exclude_counties: list[str] | None = None,
 ) -> Path | None:
     if dry_run:
         source = category.get("source", "places")
@@ -1568,6 +1731,7 @@ def run_market_category(
             refresh_after_days=refresh_after_days,
             store=store,
             run_id=run_id,
+            exclude_counties=exclude_counties,
         )
     except BaseException:
         # Never leave a run stuck in 'running' when the process crashes or is killed.
@@ -1601,7 +1765,10 @@ def _run_market_category_body(
     refresh_after_days: int | None,
     store: LeadStore,
     run_id: str,
+    exclude_counties: list[str] | None = None,
 ) -> Path | None:
+    bind_progress(store, run_id=run_id)
+    run_started_at = time.perf_counter()
     progress_emit(
         "run_started",
         run_id=run_id,
@@ -1633,6 +1800,7 @@ def _run_market_category_body(
                 skipped_known=0,
                 enriched=0,
                 reason=f"session credit stop ({used}/{stop})",
+                duration_ms=int((time.perf_counter() - run_started_at) * 1000),
             )
             return None
     discovered = _discover_category(
@@ -1644,6 +1812,17 @@ def _run_market_category_body(
         store=store,
         run_id=run_id,
     )
+    if exclude_counties:
+        all_markets = load_markets(settings.config_dir)
+        discovered, county_skipped = filter_excluded_counties(
+            discovered, exclude_counties, all_markets
+        )
+        if county_skipped:
+            logger.info(
+                "Skipped %d lead(s) in excluded counties %s",
+                county_skipped,
+                exclude_counties,
+            )
     discovered, dup_skipped = dedupe_leads(discovered)
     if dup_skipped:
         logger.info("Skipped %d near-duplicate Google listing(s) in discovery", dup_skipped)
@@ -1701,6 +1880,7 @@ def _run_market_category_body(
             skipped_known=skipped_known,
             enriched=0,
             reason="no new leads — all already in the database",
+            duration_ms=int((time.perf_counter() - run_started_at) * 1000),
         )
         return None
 
@@ -1787,6 +1967,8 @@ def _run_market_category_body(
     else:
         set_gateway_parallel_workers(1)
 
+    credits_exhausted = False
+
     heartbeat_stop = threading.Event()
 
     def _heartbeat_loop() -> None:
@@ -1800,6 +1982,7 @@ def _run_market_category_body(
 
             def _worker(raw: RawLead) -> EnrichedLead:
                 with LeadStore(store.db_url) as worker_store:
+                    bind_progress(worker_store, run_id=run_id)
                     client = FirecrawlClient(settings, store=worker_store)
                     return _do_enrich(raw, client, active_store=worker_store)
 
@@ -1815,6 +1998,17 @@ def _run_market_category_body(
                             logger.info(
                                 "[%d/%d] %s — done", i, len(raw_leads), raw.business_name
                             )
+                        except OutOfCreditsError:
+                            credits_exhausted = True
+                            logger.error("Firecrawl credits exhausted — stopping enrichment")
+                            progress_emit(
+                                "credits_exhausted",
+                                run_id=run_id,
+                                reason="firecrawl_credits_exhausted",
+                            )
+                            for pending in futures:
+                                pending.cancel()
+                            break
                         except Exception as exc:
                             logger.exception("Enrichment failed for %s", raw.business_name)
                             progress_emit(
@@ -1830,8 +2024,20 @@ def _run_market_category_body(
             enriched.sort(key=lambda lead: order.get(lead.place_id, 999))
         else:
             for i, raw in enumerate(raw_leads, start=1):
+                if credits_exhausted:
+                    break
                 logger.info("[%d/%d] %s — enriching", i, len(raw_leads), raw.business_name)
-                result = _do_enrich(raw, firecrawl)
+                try:
+                    result = _do_enrich(raw, firecrawl)
+                except OutOfCreditsError:
+                    credits_exhausted = True
+                    logger.error("Firecrawl credits exhausted — stopping enrichment")
+                    progress_emit(
+                        "credits_exhausted",
+                        run_id=run_id,
+                        reason="firecrawl_credits_exhausted",
+                    )
+                    break
                 enriched.append(result)
                 _persist_lead(result)
     finally:
@@ -1861,6 +2067,7 @@ def _run_market_category_body(
         discovered_count=len(discovered),
         skipped_known_count=skipped_known,
         enriched_count=len(enriched),
+        status="firecrawl_credits_exhausted" if credits_exhausted else "completed",
     )
     store.wal_checkpoint()
     _write_run_manifest(
@@ -1882,6 +2089,7 @@ def _run_market_category_body(
         skipped_known=skipped_known,
         enriched=len(enriched),
         credits=store.run_credits_total(run_id),
+        duration_ms=int((time.perf_counter() - run_started_at) * 1000),
     )
 
     if sheets_configured(settings) and not skip_sheets:

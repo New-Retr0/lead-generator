@@ -3,6 +3,7 @@ from pallares_leads.utils.geo import (
     market_bbox,
     point_to_polyline_distance_m,
     polygon_area_m2,
+    tile_circles,
     within_corridor_buffer,
 )
 
@@ -43,3 +44,18 @@ def test_market_bbox_has_four_values() -> None:
     south, west, north, east = bbox
     assert south < north
     assert west < east
+
+
+def test_tile_circles_covers_bbox() -> None:
+    bbox = market_bbox(36.5963, -119.4504, 20_000)
+    centers = tile_circles(bbox, 15_000)
+    assert len(centers) >= 1
+    south, west, north, east = bbox
+    for lat, lon in centers:
+        assert south - 0.01 <= lat <= north + 0.01
+        assert west - 0.01 <= lon <= east + 0.01
+
+
+def test_tile_circles_empty_for_zero_radius() -> None:
+    bbox = market_bbox(36.5963, -119.4504, 10_000)
+    assert tile_circles(bbox, 0) == []

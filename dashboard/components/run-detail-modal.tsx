@@ -38,6 +38,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatCostUnits, formatProvider, formatUsd } from "@/lib/utils";
+import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
 import type {
   RunCostProvider,
   RunDetail,
@@ -289,7 +290,7 @@ function RunCostSummary({
   costs: RunDetail["costs"];
   running: boolean;
 }) {
-  const creditUsdEst = costs.firecrawlCreditsEst * 0.00533;
+  const creditUsdEst = costs.firecrawlCreditsEst * FIRECRAWL_CREDIT_USD;
 
   if (costs.eventCount === 0 && costs.firecrawlCreditsEst === 0) {
     return (
@@ -361,7 +362,7 @@ function RunCostSummary({
               <Odometer value={costs.firecrawlCreditsEst} climbSeconds={1.8} />
             </p>
             <p className="text-xs text-muted-foreground">
-              {formatUsd(creditUsdEst)} at Hobby rate
+              {formatUsd(creditUsdEst)} at Standard rate
             </p>
           </div>
         ) : null}

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRunDetail } from "@/lib/db";
+import { getRunDetail, getLiveRunContext } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -14,11 +14,15 @@ export async function GET(
       return NextResponse.json({ error: "Run not found" }, { status: 404 });
     }
 
-    return NextResponse.json({
-      ...detail,
+    const live = detail.run.status === "running" ? await getLiveRunContext(id) : {
       liveJobId: null,
       liveNames: {},
       liveDiscovered: null,
+    };
+
+    return NextResponse.json({
+      ...detail,
+      ...live,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load run";

@@ -57,6 +57,22 @@ categories:
       always_investigate: true
       allow_owner_chain: true
 
+  outdoor_mall:
+    label: Outdoor Mall / Lifestyle Center
+    property_type: outdoor_mall
+    included_type: shopping_mall
+    nearby_types:
+      - shopping_mall
+    queries:
+      - outdoor mall
+      - open-air shopping center
+      - lifestyle center
+    enrichment:
+      min_contact_bar: labeled_phone
+      require_property_manager_clue: true
+      always_investigate: true
+      allow_owner_chain: true
+
   shopping_center:
     label: Shopping Center
     property_type: shopping_center
@@ -66,11 +82,27 @@ categories:
     queries:
       - shopping center
       - retail shopping center
+      - power center
+      - retail plaza
     enrichment:
       min_contact_bar: labeled_phone
       require_property_manager_clue: true
       always_investigate: true
       allow_owner_chain: true
+
+  coffee_drive_thru:
+    label: Coffee Drive-Thru
+    property_type: coffee_drive_thru
+    included_type: cafe
+    nearby_types:
+      - cafe
+      - coffee_shop
+    queries:
+      - Starbucks
+      - coffee drive thru
+    enrichment:
+      franchise_fast_path: true
+      suggest_recurring: true
 
   grocery:
     label: Grocery-Anchored Center

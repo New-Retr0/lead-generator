@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +19,26 @@ from psycopg.types.json import Json
 from pallares_leads.settings import get_settings
 
 QUEUE_NAME = "pipeline_jobs"
+
+ALLOWED_ENV_OVERRIDES = frozenset({
+    "ENRICHMENT_PARALLEL_WORKERS",
+    "FIRECRAWL_MAX_CONCURRENCY",
+    "FIRECRAWL_MAX_CREDITS_PER_RUN",
+    "FIRECRAWL_SESSION_CREDIT_STOP",
+    "BROWSER_USE_ENABLED",
+    "OWNER_CHAIN_BACKEND",
+    "AI_GATEWAY_ENABLED",
+    "AI_OWNER_DISAMBIGUATION",
+    "AI_NEED_SIGNAL_FALLBACK",
+})
+
+
+def apply_env_overrides(env: dict[str, str], payload: dict[str, Any]) -> dict[str, str]:
+    """Apply allowlisted per-run env overrides from a job payload."""
+    for key, value in (payload.get("env_overrides") or {}).items():
+        if key in ALLOWED_ENV_OVERRIDES:
+            env[key] = str(value)
+    return env
 
 
 def now_utc() -> datetime:
@@ -44,6 +66,19 @@ def _json_obj(value: Any) -> dict[str, Any]:
 
 def _truthy(value: Any) -> bool:
     return value is True or (isinstance(value, str) and value.lower() in {"1", "true", "yes"})
+
+
+def _try_parse_progress_event(line: str) -> dict[str, Any] | None:
+    trimmed = line.strip()
+    if not trimmed.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(trimmed)
+    except json.JSONDecodeError:
+        return None
+    if parsed.get("t") != "evt" or not isinstance(parsed.get("event"), str):
+        return None
+    return parsed
 
 
 def build_cli_args(kind: str, payload: dict[str, Any]) -> list[str]:
@@ -97,10 +132,20 @@ def build_cli_args(kind: str, payload: dict[str, Any]) -> list[str]:
 
 
 class PipelineQueueWorker:
-    def __init__(self, db_url: str, *, visibility_timeout_s: int = 3600) -> None:
+    def __init__(
+        self,
+        db_url: str,
+        *,
+        visibility_timeout_s: int = 3600,
+        worker_id: str | None = None,
+    ) -> None:
         self.db_url = db_url
         self.visibility_timeout_s = visibility_timeout_s
         self.project_root = get_settings().project_root
+        self.worker_id = worker_id or os.environ.get(
+            "PALLARES_WORKER_ID",
+            f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}",
+        )
 
     def connect(self) -> psycopg.Connection:
         return psycopg.connect(
@@ -108,6 +153,28 @@ class PipelineQueueWorker:
             row_factory=dict_row,
             autocommit=True,
             prepare_threshold=None,
+        )
+
+    def heartbeat(
+        self,
+        conn: psycopg.Connection,
+        *,
+        status: str,
+        current_job_id: str | None = None,
+    ) -> None:
+        conn.execute(
+            """
+            insert into public.worker_status (
+              worker_id, hostname, last_seen, current_job_id, status
+            )
+            values (%s, %s, now(), %s, %s)
+            on conflict (worker_id) do update set
+              hostname = excluded.hostname,
+              last_seen = excluded.last_seen,
+              current_job_id = excluded.current_job_id,
+              status = excluded.status
+            """,
+            (self.worker_id, socket.gethostname(), current_job_id, status),
         )
 
     def read_one(self, conn: psycopg.Connection) -> QueueMessage | None:
@@ -198,9 +265,11 @@ class PipelineQueueWorker:
             started_at=now_utc(),
             error=None,
         )
+        self.heartbeat(conn, status="busy", current_job_id=job_id)
 
         env = os.environ.copy()
         env.setdefault("PALLARES_LOG_JSON", "1")
+        apply_env_overrides(env, payload)
         proc = subprocess.Popen(
             command,
             cwd=self.project_root,
@@ -212,6 +281,7 @@ class PipelineQueueWorker:
             errors="replace",
         )
         logs: list[str] = []
+        linked_run_id: str | None = None
         assert proc.stdout is not None
         for line in proc.stdout:
             text = line.rstrip()
@@ -220,7 +290,14 @@ class PipelineQueueWorker:
                 logs.append(text)
                 if len(logs) > 10000:
                     logs = logs[-10000:]
+                evt = _try_parse_progress_event(text)
+                if evt and not linked_run_id:
+                    run_id = evt.get("run_id")
+                    if isinstance(run_id, str) and run_id.strip():
+                        linked_run_id = run_id.strip()
+                        self.update_job(conn, job_id, run_id=linked_run_id)
                 self.update_job(conn, job_id, logs=logs)
+                self.heartbeat(conn, status="busy", current_job_id=job_id)
         code = proc.wait()
 
         if code == 0:
@@ -259,7 +336,9 @@ class PipelineQueueWorker:
 
     def run_loop(self, *, once: bool = False, idle_sleep_s: float = 5.0) -> int:
         with self.connect() as conn:
+            self.heartbeat(conn, status="idle")
             while True:
+                self.heartbeat(conn, status="idle")
                 msg = self.read_one(conn)
                 if msg is None:
                     if once:

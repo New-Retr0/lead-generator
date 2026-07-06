@@ -121,3 +121,593 @@ markets:
     longitude: -94.5786
     search_radius_m: 20000
     bbox: [38.95, -94.75, 39.25, -94.45]
+  # --- Multi-state expansion (generate_state_markets.py) ---
+  chandler_az:
+    city: Chandler
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.3062
+    longitude: -111.8413
+    search_radius_m: 25000
+    bbox: [33.081, -112.1108, 33.5314, -111.5718]
+  gilbert_az:
+    city: Gilbert
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.3528
+    longitude: -111.789
+    search_radius_m: 25000
+    bbox: [33.1276, -112.0586, 33.578, -111.5194]
+  glendale_az:
+    city: Glendale
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.5387
+    longitude: -112.186
+    search_radius_m: 25000
+    bbox: [33.3135, -112.4562, 33.7639, -111.9158]
+  mesa_az:
+    city: Mesa
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.4152
+    longitude: -111.8315
+    search_radius_m: 30000
+    bbox: [33.1449, -112.1553, 33.6855, -111.5077]
+    grid_radius_m: 40000
+  peoria_az:
+    city: Peoria
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.5806
+    longitude: -112.2374
+    search_radius_m: 20000
+    bbox: [33.4004, -112.4537, 33.7608, -112.0211]
+  phoenix_az:
+    city: Phoenix
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.4484
+    longitude: -112.074
+    search_radius_m: 30000
+    bbox: [33.1781, -112.3979, 33.7187, -111.7501]
+    grid_radius_m: 40000
+  scottsdale_az:
+    city: Scottsdale
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.4942
+    longitude: -111.9261
+    search_radius_m: 25000
+    bbox: [33.269, -112.1962, 33.7194, -111.656]
+  surprise_az:
+    city: Surprise
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.6292
+    longitude: -112.3679
+    search_radius_m: 20000
+    bbox: [33.449, -112.5843, 33.8094, -112.1515]
+  tempe_az:
+    city: Tempe
+    state: AZ
+    region: arizona
+    county: maricopa_az
+    latitude: 33.4255
+    longitude: -111.94
+    search_radius_m: 20000
+    bbox: [33.2453, -112.1559, 33.6057, -111.7241]
+  tucson_az:
+    city: Tucson
+    state: AZ
+    region: arizona
+    county: pima_az
+    latitude: 32.2226
+    longitude: -110.9747
+    search_radius_m: 30000
+    bbox: [31.9523, -111.2942, 32.4929, -110.6552]
+    grid_radius_m: 40000
+  bakersfield_ca:
+    city: Bakersfield
+    state: CA
+    region: california_expansion
+    county: kern_ca
+    latitude: 35.3733
+    longitude: -119.0187
+    search_radius_m: 25000
+    bbox: [35.1481, -119.2949, 35.5985, -118.7425]
+    grid_radius_m: 40000
+  chula_vista_ca:
+    city: Chula Vista
+    state: CA
+    region: california_expansion
+    county: san_diego_ca
+    latitude: 32.6401
+    longitude: -117.0842
+    search_radius_m: 25000
+    bbox: [32.4149, -117.3517, 32.8653, -116.8167]
+  fremont_ca:
+    city: Fremont
+    state: CA
+    region: california_expansion
+    county: alameda_ca
+    latitude: 37.5485
+    longitude: -121.9886
+    search_radius_m: 25000
+    bbox: [37.3233, -122.2727, 37.7737, -121.7045]
+  modesto_ca:
+    city: Modesto
+    state: CA
+    region: california_expansion
+    county: stanislaus_ca
+    latitude: 37.6391
+    longitude: -120.9969
+    search_radius_m: 25000
+    bbox: [37.4139, -121.2813, 37.8643, -120.7125]
+  moreno_valley_ca:
+    city: Moreno Valley
+    state: CA
+    region: california_expansion
+    county: riverside_ca
+    latitude: 33.9425
+    longitude: -117.2297
+    search_radius_m: 25000
+    bbox: [33.7173, -117.5012, 34.1677, -116.9582]
+  oakland_ca:
+    city: Oakland
+    state: CA
+    region: california_expansion
+    county: alameda_ca
+    latitude: 37.8044
+    longitude: -122.2712
+    search_radius_m: 25000
+    bbox: [37.5792, -122.5563, 38.0296, -121.9861]
+    grid_radius_m: 40000
+  oxnard_ca:
+    city: Oxnard
+    state: CA
+    region: california_expansion
+    county: ventura_ca
+    latitude: 34.1975
+    longitude: -119.1771
+    search_radius_m: 25000
+    bbox: [33.9723, -119.4494, 34.4227, -118.9048]
+  riverside_ca:
+    city: Riverside
+    state: CA
+    region: california_expansion
+    county: riverside_ca
+    latitude: 33.9533
+    longitude: -117.3962
+    search_radius_m: 25000
+    bbox: [33.7281, -117.6677, 34.1785, -117.1247]
+  sacramento_ca:
+    city: Sacramento
+    state: CA
+    region: california_expansion
+    county: sacramento_ca
+    latitude: 38.5816
+    longitude: -121.4944
+    search_radius_m: 30000
+    bbox: [38.3113, -121.8401, 38.8519, -121.1487]
+    grid_radius_m: 40000
+  san_bernardino_ca:
+    city: San Bernardino
+    state: CA
+    region: california_expansion
+    county: san_bernardino_ca
+    latitude: 34.1083
+    longitude: -117.2898
+    search_radius_m: 25000
+    bbox: [33.8831, -117.5618, 34.3335, -117.0178]
+  san_diego_ca:
+    city: San Diego
+    state: CA
+    region: california_expansion
+    county: san_diego_ca
+    latitude: 32.7157
+    longitude: -117.1611
+    search_radius_m: 30000
+    bbox: [32.4454, -117.4823, 32.986, -116.8399]
+    grid_radius_m: 40000
+  san_francisco_ca:
+    city: San Francisco
+    state: CA
+    region: california_expansion
+    county: san_francisco_ca
+    latitude: 37.7749
+    longitude: -122.4194
+    search_radius_m: 30000
+    bbox: [37.5046, -122.7613, 38.0452, -122.0775]
+    grid_radius_m: 40000
+  san_jose_ca:
+    city: San Jose
+    state: CA
+    region: california_expansion
+    county: santa_clara_ca
+    latitude: 37.3382
+    longitude: -121.8863
+    search_radius_m: 30000
+    bbox: [37.0679, -122.2262, 37.6085, -121.5464]
+    grid_radius_m: 40000
+  stockton_ca:
+    city: Stockton
+    state: CA
+    region: california_expansion
+    county: san_joaquin_ca
+    latitude: 37.9577
+    longitude: -121.2908
+    search_radius_m: 25000
+    bbox: [37.7325, -121.5765, 38.1829, -121.0051]
+  hilo_hi:
+    city: Hilo
+    state: HI
+    region: hawaii
+    county: hawaii_hi
+    latitude: 19.7297
+    longitude: -155.09
+    search_radius_m: 15000
+    bbox: [19.5946, -155.2336, 19.8648, -154.9464]
+  honolulu_hi:
+    city: Honolulu
+    state: HI
+    region: hawaii
+    county: honolulu_hi
+    latitude: 21.3069
+    longitude: -157.8583
+    search_radius_m: 25000
+    bbox: [21.0817, -158.1, 21.5321, -157.6166]
+  kailua_hi:
+    city: Kailua
+    state: HI
+    region: hawaii
+    county: honolulu_hi
+    latitude: 21.4022
+    longitude: -157.7394
+    search_radius_m: 15000
+    bbox: [21.2671, -157.8845, 21.5373, -157.5943]
+  pearl_city_hi:
+    city: Pearl City
+    state: HI
+    region: hawaii
+    county: honolulu_hi
+    latitude: 21.3972
+    longitude: -157.9753
+    search_radius_m: 15000
+    bbox: [21.2621, -158.1204, 21.5323, -157.8302]
+  albuquerque_nm:
+    city: Albuquerque
+    state: NM
+    region: new_mexico
+    county: bernalillo_nm
+    latitude: 35.0844
+    longitude: -106.6504
+    search_radius_m: 30000
+    bbox: [34.8141, -106.9807, 35.3547, -106.3201]
+    grid_radius_m: 40000
+  las_cruces_nm:
+    city: Las Cruces
+    state: NM
+    region: new_mexico
+    county: dona_ana_nm
+    latitude: 32.3199
+    longitude: -106.7637
+    search_radius_m: 20000
+    bbox: [32.1397, -106.9769, 32.5001, -106.5505]
+  rio_rancho_nm:
+    city: Rio Rancho
+    state: NM
+    region: new_mexico
+    county: sandoval_nm
+    latitude: 35.2328
+    longitude: -106.663
+    search_radius_m: 20000
+    bbox: [35.0526, -106.8836, 35.413, -106.4424]
+  roswell_nm:
+    city: Roswell
+    state: NM
+    region: new_mexico
+    county: chaves_nm
+    latitude: 33.3943
+    longitude: -104.523
+    search_radius_m: 15000
+    bbox: [33.2592, -104.6849, 33.5294, -104.3611]
+  santa_fe_nm:
+    city: Santa Fe
+    state: NM
+    region: new_mexico
+    county: santa_fe_nm
+    latitude: 35.687
+    longitude: -105.9378
+    search_radius_m: 15000
+    bbox: [35.5519, -106.1042, 35.8221, -105.7714]
+  carson_city_nv:
+    city: Carson City
+    state: NV
+    region: nevada
+    county: carson_city_nv
+    latitude: 39.1638
+    longitude: -119.7674
+    search_radius_m: 15000
+    bbox: [39.0287, -119.9417, 39.2989, -119.5931]
+  henderson_nv:
+    city: Henderson
+    state: NV
+    region: nevada
+    county: clark_nv
+    latitude: 36.0395
+    longitude: -114.9817
+    search_radius_m: 25000
+    bbox: [35.8143, -115.2602, 36.2647, -114.7032]
+  las_vegas_nv:
+    city: Las Vegas
+    state: NV
+    region: nevada
+    county: clark_nv
+    latitude: 36.1699
+    longitude: -115.1398
+    search_radius_m: 30000
+    bbox: [35.8996, -115.4746, 36.4402, -114.805]
+    grid_radius_m: 40000
+  north_las_vegas_nv:
+    city: North Las Vegas
+    state: NV
+    region: nevada
+    county: clark_nv
+    latitude: 36.1989
+    longitude: -115.1175
+    search_radius_m: 25000
+    bbox: [35.9737, -115.3966, 36.4241, -114.8384]
+  reno_nv:
+    city: Reno
+    state: NV
+    region: nevada
+    county: washoe_nv
+    latitude: 39.5296
+    longitude: -119.8138
+    search_radius_m: 25000
+    bbox: [39.3044, -120.1058, 39.7548, -119.5218]
+  sparks_nv:
+    city: Sparks
+    state: NV
+    region: nevada
+    county: washoe_nv
+    latitude: 39.5349
+    longitude: -119.7527
+    search_radius_m: 20000
+    bbox: [39.3547, -119.9863, 39.7151, -119.5191]
+  albany_or:
+    city: Albany
+    state: OR
+    region: oregon
+    county: linn_or
+    latitude: 44.6365
+    longitude: -123.1059
+    search_radius_m: 15000
+    bbox: [44.5014, -123.2958, 44.7716, -122.916]
+  beaverton_or:
+    city: Beaverton
+    state: OR
+    region: oregon
+    county: washington_or
+    latitude: 45.4871
+    longitude: -122.8037
+    search_radius_m: 15000
+    bbox: [45.352, -122.9965, 45.6222, -122.6109]
+  bend_or:
+    city: Bend
+    state: OR
+    region: oregon
+    county: deschutes_or
+    latitude: 44.0582
+    longitude: -121.3153
+    search_radius_m: 15000
+    bbox: [43.9231, -121.5033, 44.1933, -121.1273]
+  corvallis_or:
+    city: Corvallis
+    state: OR
+    region: oregon
+    county: benton_or
+    latitude: 44.5646
+    longitude: -123.262
+    search_radius_m: 15000
+    bbox: [44.4295, -123.4517, 44.6997, -123.0723]
+  eugene_or:
+    city: Eugene
+    state: OR
+    region: oregon
+    county: lane_or
+    latitude: 44.0521
+    longitude: -123.0868
+    search_radius_m: 20000
+    bbox: [43.8719, -123.3375, 44.2323, -122.8361]
+  gresham_or:
+    city: Gresham
+    state: OR
+    region: oregon
+    county: multnomah_or
+    latitude: 45.5001
+    longitude: -122.4302
+    search_radius_m: 20000
+    bbox: [45.3199, -122.6873, 45.6803, -122.1731]
+  hillsboro_or:
+    city: Hillsboro
+    state: OR
+    region: oregon
+    county: washington_or
+    latitude: 45.5229
+    longitude: -122.9898
+    search_radius_m: 20000
+    bbox: [45.3427, -123.247, 45.7031, -122.7326]
+  medford_or:
+    city: Medford
+    state: OR
+    region: oregon
+    county: jackson_or
+    latitude: 42.3265
+    longitude: -122.8756
+    search_radius_m: 15000
+    bbox: [42.1914, -123.0584, 42.4616, -122.6928]
+  portland_or:
+    city: Portland
+    state: OR
+    region: oregon
+    county: multnomah_or
+    latitude: 45.5152
+    longitude: -122.6784
+    search_radius_m: 30000
+    bbox: [45.2449, -123.0641, 45.7855, -122.2927]
+    grid_radius_m: 40000
+  salem_or:
+    city: Salem
+    state: OR
+    region: oregon
+    county: marion_or
+    latitude: 44.9429
+    longitude: -123.0351
+    search_radius_m: 20000
+    bbox: [44.7627, -123.2897, 45.1231, -122.7805]
+  springfield_or:
+    city: Springfield
+    state: OR
+    region: oregon
+    county: lane_or
+    latitude: 44.0462
+    longitude: -123.022
+    search_radius_m: 15000
+    bbox: [43.9111, -123.21, 44.1813, -122.834]
+  tigard_or:
+    city: Tigard
+    state: OR
+    region: oregon
+    county: washington_or
+    latitude: 45.4315
+    longitude: -122.7715
+    search_radius_m: 15000
+    bbox: [45.2964, -122.9641, 45.5666, -122.5789]
+  bellevue_wa:
+    city: Bellevue
+    state: WA
+    region: washington
+    county: king_wa
+    latitude: 47.6101
+    longitude: -122.2015
+    search_radius_m: 20000
+    bbox: [47.4299, -122.4688, 47.7903, -121.9342]
+  bellingham_wa:
+    city: Bellingham
+    state: WA
+    region: washington
+    county: whatcom_wa
+    latitude: 48.7519
+    longitude: -122.4787
+    search_radius_m: 15000
+    bbox: [48.6168, -122.6837, 48.887, -122.2737]
+  everett_wa:
+    city: Everett
+    state: WA
+    region: washington
+    county: snohomish_wa
+    latitude: 47.979
+    longitude: -122.2021
+    search_radius_m: 20000
+    bbox: [47.7988, -122.4713, 48.1592, -121.9329]
+  federal_way_wa:
+    city: Federal Way
+    state: WA
+    region: washington
+    county: king_wa
+    latitude: 47.3223
+    longitude: -122.3126
+    search_radius_m: 20000
+    bbox: [47.1421, -122.5784, 47.5025, -122.0468]
+  kent_wa:
+    city: Kent
+    state: WA
+    region: washington
+    county: king_wa
+    latitude: 47.3809
+    longitude: -122.2348
+    search_radius_m: 20000
+    bbox: [47.2007, -122.5009, 47.5611, -121.9687]
+  kirkland_wa:
+    city: Kirkland
+    state: WA
+    region: washington
+    county: king_wa
+    latitude: 47.6769
+    longitude: -122.206
+    search_radius_m: 15000
+    bbox: [47.5418, -122.4067, 47.812, -122.0053]
+  renton_wa:
+    city: Renton
+    state: WA
+    region: washington
+    county: king_wa
+    latitude: 47.4829
+    longitude: -122.2171
+    search_radius_m: 20000
+    bbox: [47.3027, -122.4837, 47.6631, -121.9505]
+  seattle_wa:
+    city: Seattle
+    state: WA
+    region: washington
+    county: king_wa
+    latitude: 47.6062
+    longitude: -122.3321
+    search_radius_m: 30000
+    bbox: [47.3359, -122.733, 47.8765, -121.9312]
+    grid_radius_m: 40000
+  spokane_wa:
+    city: Spokane
+    state: WA
+    region: washington
+    county: spokane_wa
+    latitude: 47.6588
+    longitude: -117.426
+    search_radius_m: 25000
+    bbox: [47.4336, -117.7604, 47.884, -117.0916]
+  spokane_valley_wa:
+    city: Spokane Valley
+    state: WA
+    region: washington
+    county: spokane_wa
+    latitude: 47.6733
+    longitude: -117.2394
+    search_radius_m: 20000
+    bbox: [47.4931, -117.507, 47.8535, -116.9718]
+  tacoma_wa:
+    city: Tacoma
+    state: WA
+    region: washington
+    county: pierce_wa
+    latitude: 47.2529
+    longitude: -122.4443
+    search_radius_m: 25000
+    bbox: [47.0277, -122.7761, 47.4781, -122.1125]
+  vancouver_wa:
+    city: Vancouver
+    state: WA
+    region: washington
+    county: clark_wa
+    latitude: 45.6387
+    longitude: -122.6615
+    search_radius_m: 20000
+    bbox: [45.4585, -122.9192, 45.8189, -122.4038]
+  yakima_wa:
+    city: Yakima
+    state: WA
+    region: washington
+    county: yakima_wa
+    latitude: 46.6021
+    longitude: -120.5059
+    search_radius_m: 15000
+    bbox: [46.467, -120.7026, 46.7372, -120.3092]

@@ -586,7 +586,7 @@ class LeadStore:
         self,
         *,
         run_id: str,
-        place_id: str,
+        place_id: str | None,
         stage: str,
         ran: bool,
         reason: str = "",
@@ -614,6 +614,58 @@ class LeadStore:
                     _iso(_utc_now()),
                 ),
             )
+
+    def record_progress_event(
+        self,
+        *,
+        run_id: str,
+        event: str,
+        ts: str,
+        place_id: str | None = None,
+        business: str | None = None,
+        credits: int | None = None,
+        duration_ms: int | None = None,
+        reason: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one CLI JSON progress event for Supabase Realtime streaming."""
+        skip_persist = event in {"heartbeat"}
+        if skip_persist:
+            return
+
+        ran = event not in {
+            "owner_chain_skip",
+            "verification_rejected",
+            "lead_failed",
+            "owner_chain_failed",
+        }
+        meta: dict[str, Any] = {"event": event, "ts": ts}
+        if business:
+            meta["business"] = business
+        if extra:
+            meta.update(extra)
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO run_events (
+                    run_id, place_id, stage, ran, reason, credits_est,
+                    duration_ms, meta_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    place_id,
+                    event,
+                    ran,
+                    reason or "",
+                    int(credits or 0),
+                    duration_ms,
+                    meta,
+                    ts,
+                ),
+            )
+            self._conn.commit()
 
     def commit_events(self) -> None:
         with self._lock:
@@ -851,20 +903,30 @@ class LeadStore:
             return {}
         events = self.run_events_for_run(run_id)
         by_stage: dict[str, dict[str, int]] = {}
-        credits_total = 0
         for event in events:
             stage = str(event["stage"])
             bucket = by_stage.setdefault(stage, {"count": 0, "ran": 0, "credits": 0})
             bucket["count"] += 1
             bucket["ran"] += int(event["ran"] or 0)
-            credits = int(event["credits_est"] or 0)
-            bucket["credits"] += credits
-            credits_total += credits
+
+        cost_rows = self._conn.execute(
+            """
+            SELECT operation, COALESCE(SUM(units), 0) AS credits
+            FROM cost_events
+            WHERE run_id = ? AND provider = 'firecrawl'
+            GROUP BY operation
+            """,
+            (run_id,),
+        ).fetchall()
+        credits_by_operation = {str(r["operation"]): int(r["credits"]) for r in cost_rows}
+        credits_total = self.run_credits_total(run_id)
         cost = self.cost_summary(run_id)
         return {
             "run": dict(run_row),
             "events_count": len(events),
             "credits_est_total": credits_total,
+            "credits_actual_total": credits_total,
+            "credits_by_operation": credits_by_operation,
             "by_stage": by_stage,
             "cost_summary": cost,
         }
@@ -1284,6 +1346,30 @@ class LeadStore:
             content=content,
             credits_used=credits_used,
         )
+
+    @staticmethod
+    def _extraction_cache_key(property_type: str, markdown_hash: str) -> str:
+        return f"{property_type}:{markdown_hash}"
+
+    def get_extraction_cache(
+        self,
+        *,
+        property_type: str,
+        markdown_hash: str,
+        ttl_days: int | None = None,
+    ) -> str | None:
+        cache_key = self._extraction_cache_key(property_type, markdown_hash)
+        return self._local_cache.get_extraction_cache(cache_key, ttl_days=ttl_days)
+
+    def set_extraction_cache(
+        self,
+        *,
+        property_type: str,
+        markdown_hash: str,
+        result_json: str,
+    ) -> None:
+        cache_key = self._extraction_cache_key(property_type, markdown_hash)
+        self._local_cache.set_extraction_cache(cache_key, result_json)
 
     def prune_stale_data(
         self,

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from pallares_leads.enrich.search_templates import render_search_template
+from pallares_leads.enrich.verify import ground_name, ground_phone
 from pallares_leads.schemas import LeadFact, RawLead, SiteContact
 from pallares_leads.utils.normalize import (
     extract_phones_with_positions,
@@ -160,44 +161,57 @@ def parse_bbb_profile(markdown: str, url: str = "") -> BBBProfile:
     return profile
 
 
-def bbb_profile_to_facts(profile: BBBProfile) -> list[LeadFact]:
+def bbb_profile_to_facts(profile: BBBProfile, *, page_text: str = "") -> list[LeadFact]:
     facts: list[LeadFact] = []
 
-    def fact(kind: str, value: dict[str, str], quote_key: str) -> LeadFact:
+    def fact(kind: str, value: dict[str, str], quote_key: str) -> LeadFact | None:
+        quote = profile.quotes.get(quote_key, "")
+        verification = "verified"
+        if page_text:
+            if kind == "person" and not ground_name(value.get("name", ""), page_text):
+                verification = "unverified"
+            if kind == "phone" and not ground_phone(value.get("phone", ""), page_text):
+                verification = "unverified"
         return LeadFact(
             fact_kind=kind,
             value=value,
             source_kind="bbb",
             source_url=profile.url,
             method="deterministic_parse",
-            quote=profile.quotes.get(quote_key, ""),
-            verification="verified",
+            quote=quote,
+            verification=verification,
         )
 
     if profile.rating:
-        facts.append(
-            fact(
-                "registry_rating",
-                {
-                    "rating": profile.rating,
-                    "accredited_since": profile.accredited_since,
-                    "business_started": profile.business_started,
-                    "years_in_business": profile.years_in_business,
-                    "entity_type": profile.entity_type,
-                },
-                profile.rating,
-            )
+        rating_fact = fact(
+            "registry_rating",
+            {
+                "rating": profile.rating,
+                "accredited_since": profile.accredited_since,
+                "business_started": profile.business_started,
+                "years_in_business": profile.years_in_business,
+                "entity_type": profile.entity_type,
+            },
+            profile.rating,
         )
+        if rating_fact:
+            facts.append(rating_fact)
     for name, title in profile.principals:
-        facts.append(fact("person", {"name": name, "title": title}, name))
+        person_fact = fact("person", {"name": name, "title": title}, name)
+        if person_fact:
+            facts.append(person_fact)
     for phone in profile.phones:
-        facts.append(fact("phone", {"phone": phone, "label": "BBB additional phone"}, phone))
+        phone_fact = fact("phone", {"phone": phone, "label": "BBB additional phone"}, phone)
+        if phone_fact:
+            facts.append(phone_fact)
     for alt_name in profile.alternate_names:
-        facts.append(fact("alternate_name", {"name": alt_name}, alt_name))
+        alt_fact = fact("alternate_name", {"name": alt_name}, alt_name)
+        if alt_fact:
+            facts.append(alt_fact)
     return facts
 
 
-def bbb_contacts(profile: BBBProfile) -> list[SiteContact]:
+def bbb_contacts(profile: BBBProfile, *, page_text: str = "") -> list[SiteContact]:
     """Principals and additional phones as separate atomic contacts.
 
     BBB never says which phone belongs to which person, so we never pair them —
@@ -205,24 +219,26 @@ def bbb_contacts(profile: BBBProfile) -> list[SiteContact]:
     """
     contacts: list[SiteContact] = []
     for name, title in profile.principals:
+        verified = not page_text or ground_name(name, page_text)
         contacts.append(
             SiteContact(
                 label=title,
                 name=name,
                 priority="best",
                 source_url=profile.url,
-                verification="verified",
+                verification="verified" if verified else "unverified",
                 quote=profile.quotes.get(name, ""),
             )
         )
     for phone in profile.phones:
+        verified = not page_text or ground_phone(phone, page_text)
         contacts.append(
             SiteContact(
                 label="BBB additional phone",
                 phone=phone,
                 priority="good",
                 source_url=profile.url,
-                verification="verified",
+                verification="verified" if verified else "unverified",
                 quote=profile.quotes.get(phone, ""),
             )
         )

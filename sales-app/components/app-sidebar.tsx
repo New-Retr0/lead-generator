@@ -11,6 +11,7 @@ import {
   ScrollText,
   PlayCircle,
   Receipt,
+  Workflow,
 } from "lucide-react";
 import {
   Sidebar,
@@ -35,6 +36,7 @@ const groups = [
       { href: "/jobs", label: "Jobs", icon: ListChecks },
       { href: "/requests", label: "Lead Requests", icon: MessageSquareText },
       { href: "/runs", label: "Runs", icon: PlayCircle },
+      { href: "/pipeline", label: "Pipeline", icon: Workflow },
     ],
   },
   {

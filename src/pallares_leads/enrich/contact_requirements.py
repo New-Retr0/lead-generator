@@ -89,7 +89,9 @@ class EnrichmentRules:
             return base
         bar = str(data.get("min_contact_bar") or base.min_contact_bar).lower()
         if bar not in _BAR_ORDER:
-            bar = base.min_contact_bar
+            raise ValueError(
+                f"Invalid min_contact_bar {bar!r} — must be one of {sorted(_BAR_ORDER)}"
+            )
         registry_raw = data.get("registry_lookup", base.registry_lookup)
         if isinstance(registry_raw, str):
             registry_lookup = tuple(

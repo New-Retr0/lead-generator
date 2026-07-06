@@ -35,7 +35,9 @@ import type {
   RunTimelineStage,
   SiteContact,
   SourceCheck,
+  PipelineTrends,
 } from "./types";
+import { buildCostBudget } from "./cost-budget";
 
 async function supabase() {
   return createClient();
@@ -73,11 +75,17 @@ function parseFirecrawlSnapshotBalance(
   snapshotJson: unknown,
   remaining: number | null,
   used: number | null,
-): { remaining: number | null; used: number | null; plan: number | null } {
+): {
+  remaining: number | null;
+  used: number | null;
+  plan: number | null;
+  billingPeriodEnd: string | null;
+} {
   const payload = snapshotPayload(snapshotJson);
   let plan: number | null = null;
   let snapRemaining: number | null = null;
   let snapUsed: number | null = null;
+  let billingPeriodEnd: string | null = null;
 
   if (payload) {
     try {
@@ -94,6 +102,8 @@ function parseFirecrawlSnapshotBalance(
         usedRaw = plan - snapRemaining;
       }
       snapUsed = usedRaw != null ? Number(usedRaw) : null;
+      const billingRaw = data.billingPeriodEnd ?? data.billing_period_end;
+      billingPeriodEnd = billingRaw != null ? String(billingRaw) : null;
     } catch {
       // fall through with DB columns only
     }
@@ -103,6 +113,7 @@ function parseFirecrawlSnapshotBalance(
     remaining: remaining ?? snapRemaining,
     used: used ?? snapUsed,
     plan,
+    billingPeriodEnd,
   };
 }
 
@@ -171,12 +182,14 @@ export async function getCreditBalances(): Promise<ProviderBalance[]> {
             remaining: row.remaining_credits as number | null,
             used: row.used_credits as number | null,
             plan: null,
+            billingPeriodEnd: null,
           };
     rows.push({
       provider,
       remaining: parsed.remaining,
       used: parsed.used,
       plan: parsed.plan,
+      billingPeriodEnd: parsed.billingPeriodEnd,
       unitLabel: balanceUnitLabel(provider),
       snapshotAt: toIsoOrNull(row.created_at),
     });
@@ -522,18 +535,104 @@ export async function getCostSeries(days = 30): Promise<CostSeries> {
     }
   }
 
+  const { data: byRunRows, error: runErr } = await client
+    .from("cost_by_run")
+    .select(
+      "run_id, started_at, finished_at, run_type, market_key, category_key, enriched_count, status, usd, firecrawl_credits, event_count, usd_per_enriched_lead",
+    )
+    .gte("started_at", sinceIso)
+    .order("started_at", { ascending: false })
+    .limit(50);
+  throwOnError(runErr, "cost_by_run");
+
+  const { data: byModelRows, error: modelErr } = await client
+    .from("cost_by_model")
+    .select("provider, model, operation, unit_type, units, usd, event_count")
+    .order("usd", { ascending: false })
+    .limit(30);
+  throwOnError(modelErr, "cost_by_model");
+
+  const { data: byMarketRows, error: marketErr } = await client
+    .from("cost_by_market")
+    .select("market_key, category_key, usd, firecrawl_credits, run_count, event_count")
+    .order("usd", { ascending: false })
+    .limit(30);
+  throwOnError(marketErr, "cost_by_market");
+
+  const { data: byHourRows, error: hourErr } = await client
+    .from("cost_by_hour")
+    .select("hour, usd, firecrawl_credits, event_count")
+    .order("hour");
+  throwOnError(hourErr, "cost_by_hour");
+
+  const { data: snapshotRows, error: snapErr } = await client
+    .from("credit_snapshots")
+    .select("snapshot_json")
+    .eq("provider", "firecrawl")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  throwOnError(snapErr, "credit_snapshots firecrawl");
+
+  const byDay = (byDayRows ?? []).map((row) => ({
+    date: String(row.date),
+    usd: Number(row.usd),
+    firecrawlCredits: Number(row.firecrawl_credits),
+    browserUseUsd: Number(row.browser_use_usd),
+    aiGatewayUsd: Number(row.ai_gateway_usd),
+    googlePlacesUsd: Number(row.google_places_usd),
+  }));
+
+  const balances = await getCreditBalances();
+  const firecrawlBalance = balances.find((b) => b.provider === "firecrawl");
+
   return {
-    byDay: (byDayRows ?? []).map((row) => ({
-      date: String(row.date),
-      usd: Number(row.usd),
-      firecrawlCredits: Number(row.firecrawl_credits),
-      browserUseUsd: Number(row.browser_use_usd),
-      aiGatewayUsd: Number(row.ai_gateway_usd),
-      googlePlacesUsd: Number(row.google_places_usd),
-    })),
+    byDay,
     byProvider: [...mergedProviders.values()].sort((a, b) => b.usd - a.usd),
     byOperation: [...opMap.values()].sort((a, b) => b.usd - a.usd).slice(0, 20),
-    balances: await getCreditBalances(),
+    byRun: (byRunRows ?? []).map((row) => ({
+      runId: String(row.run_id),
+      startedAt: toIso(row.started_at),
+      finishedAt: toIsoOrNull(row.finished_at),
+      runType: String(row.run_type),
+      marketKey: row.market_key != null ? String(row.market_key) : null,
+      categoryKey: row.category_key != null ? String(row.category_key) : null,
+      enrichedCount: Number(row.enriched_count),
+      status: String(row.status),
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      eventCount: Number(row.event_count),
+      usdPerEnrichedLead:
+        row.usd_per_enriched_lead != null ? Number(row.usd_per_enriched_lead) : null,
+    })),
+    byModel: (byModelRows ?? []).map((row) => ({
+      provider: String(row.provider),
+      model: String(row.model),
+      operation: String(row.operation),
+      unitType: String(row.unit_type),
+      units: Number(row.units),
+      usd: Number(row.usd),
+      eventCount: Number(row.event_count),
+    })),
+    byMarket: (byMarketRows ?? []).map((row) => ({
+      marketKey: row.market_key != null ? String(row.market_key) : null,
+      categoryKey: row.category_key != null ? String(row.category_key) : null,
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      runCount: Number(row.run_count),
+      eventCount: Number(row.event_count),
+    })),
+    byHour: (byHourRows ?? []).map((row) => ({
+      hour: toIso(row.hour),
+      usd: Number(row.usd),
+      firecrawlCredits: Number(row.firecrawl_credits),
+      eventCount: Number(row.event_count),
+    })),
+    budget: buildCostBudget(
+      firecrawlBalance,
+      byDay,
+      snapshotRows?.[0]?.snapshot_json,
+    ),
+    balances,
   };
 }
 
@@ -546,6 +645,8 @@ function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
     ran: row.ran ? 1 : 0,
     reason: row.reason != null ? String(row.reason) : null,
     credits_est: row.credits_est != null ? Number(row.credits_est) : null,
+    duration_ms: row.duration_ms != null ? Number(row.duration_ms) : null,
+    meta_json: row.meta_json,
     created_at: toIso(row.created_at),
   };
 }
@@ -554,7 +655,9 @@ export async function getRunEvents(runId: string): Promise<RunEventRow[]> {
   const client = await supabase();
   const { data, error } = await client
     .from("run_events")
-    .select("id, run_id, place_id, stage, ran, reason, credits_est, created_at")
+    .select(
+      "id, run_id, place_id, stage, ran, reason, credits_est, duration_ms, meta_json, created_at",
+    )
     .eq("run_id", runId)
     .order("created_at", { ascending: true });
   throwOnError(error, "run_events");
@@ -1111,4 +1214,331 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
     costs: await getRunCosts(runId),
     timeline: await getRunTimeline(runId),
   };
+}
+
+export type LiveRunContext = {
+  liveJobId: string | null;
+  liveNames: Record<string, string>;
+  liveDiscovered: number | null;
+};
+
+export async function getLiveRunContext(runId: string): Promise<LiveRunContext> {
+  const client = await supabase();
+  const { data: jobRow, error: jobErr } = await client
+    .from("pipeline_jobs")
+    .select("id")
+    .eq("run_id", runId)
+    .in("status", ["running", "queued"])
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  throwOnError(jobErr, "pipeline_jobs live lookup");
+
+  const events = await getRunEvents(runId);
+  const liveNames: Record<string, string> = {};
+  let liveDiscovered: number | null = null;
+
+  for (const row of events) {
+    const meta =
+      row.meta_json && typeof row.meta_json === "object" && !Array.isArray(row.meta_json)
+        ? (row.meta_json as Record<string, unknown>)
+        : {};
+    const business = meta.business;
+    if (row.place_id && typeof business === "string" && business.trim()) {
+      liveNames[row.place_id] = business;
+    }
+    if (row.stage === "discovery_done" && typeof meta.count === "number") {
+      liveDiscovered = meta.count;
+    }
+  }
+
+  return {
+    liveJobId: jobRow?.id != null ? String(jobRow.id) : null,
+    liveNames,
+    liveDiscovered,
+  };
+}
+
+export type QueueMetrics = {
+  queue_name: string | null;
+  queue_depth: number;
+  queue_visible_depth: number;
+  oldest_msg_age_sec: number | null;
+  newest_msg_age_sec: number | null;
+  total_messages: number;
+  scrape_time: string | null;
+  running_jobs: number;
+  queued_jobs: number;
+};
+
+export type WorkerHeartbeat = {
+  worker_id: string;
+  hostname: string | null;
+  last_seen: string;
+  current_job_id: string | null;
+  status: string;
+};
+
+export async function getQueueMetrics(): Promise<QueueMetrics> {
+  const client = await supabase();
+  const { data, error } = await client.rpc("get_pipeline_queue_metrics");
+  throwOnError(error, "get_pipeline_queue_metrics");
+  const row = (data ?? {}) as Record<string, unknown>;
+  return {
+    queue_name: row.queue_name != null ? String(row.queue_name) : null,
+    queue_depth: Number(row.queue_depth ?? 0),
+    queue_visible_depth: Number(row.queue_visible_depth ?? 0),
+    oldest_msg_age_sec:
+      row.oldest_msg_age_sec != null ? Number(row.oldest_msg_age_sec) : null,
+    newest_msg_age_sec:
+      row.newest_msg_age_sec != null ? Number(row.newest_msg_age_sec) : null,
+    total_messages: Number(row.total_messages ?? 0),
+    scrape_time: row.scrape_time != null ? String(row.scrape_time) : null,
+    running_jobs: Number(row.running_jobs ?? 0),
+    queued_jobs: Number(row.queued_jobs ?? 0),
+  };
+}
+
+export async function listWorkerHeartbeats(limit = 10): Promise<WorkerHeartbeat[]> {
+  const client = await supabase();
+  const { data, error } = await client
+    .from("worker_status")
+    .select("worker_id, hostname, last_seen, current_job_id, status")
+    .order("last_seen", { ascending: false })
+    .limit(limit);
+  throwOnError(error, "worker_status");
+  return (data ?? []).map((row) => ({
+    worker_id: String(row.worker_id),
+    hostname: (row.hostname as string | null) ?? null,
+    last_seen: toIso(row.last_seen),
+    current_job_id: (row.current_job_id as string | null) ?? null,
+    status: String(row.status),
+  }));
+}
+
+export async function getRunCostEvents(runId: string) {
+  const client = await supabase();
+  const { data, error } = await client
+    .from("cost_events")
+    .select(
+      "id, provider, operation, usd, model, units, unit_type, place_id, meta_json, created_at",
+    )
+    .eq("run_id", runId)
+    .order("created_at", { ascending: true });
+  throwOnError(error, "cost_events");
+  return data ?? [];
+}
+
+export async function getPipelineJob(jobId: string) {
+  const client = await supabase();
+  const { data, error } = await client
+    .from("pipeline_jobs")
+    .select(
+      "id, kind, payload, status, attempts, max_attempts, command, error, logs, run_id, created_at, updated_at, started_at, finished_at",
+    )
+    .eq("id", jobId)
+    .maybeSingle();
+  throwOnError(error, "pipeline_jobs");
+  return data;
+}
+
+export async function getPipelineTrends(
+  days = 30,
+  filters?: { market?: string; category?: string },
+): Promise<PipelineTrends> {
+  const client = await supabase();
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const sinceDay = since.toISOString().slice(0, 10);
+
+  const empty: PipelineTrends = {
+    stageTrends: [],
+    opTrends: [],
+    runEfficiency: [],
+    stageStatsByRun: [],
+    viewsAvailable: false,
+  };
+
+  try {
+    if (days > 90) {
+      let stageQuery = client
+        .from("pipeline_daily_rollup")
+        .select("day, stage, avg_duration_ms, p95_duration_ms, event_count, ran_count")
+        .gte("day", sinceDay)
+        .neq("stage", "")
+        .eq("provider", "")
+        .eq("operation", "")
+        .order("day", { ascending: true });
+      if (filters?.market) stageQuery = stageQuery.eq("market_key", filters.market);
+      if (filters?.category) stageQuery = stageQuery.eq("category_key", filters.category);
+      const { data: stageRollup, error: stageRollupErr } = await stageQuery;
+      if (stageRollupErr) throw stageRollupErr;
+
+      let opQuery = client
+        .from("pipeline_daily_rollup")
+        .select("day, provider, operation, usd, units, event_count, avg_duration_ms")
+        .gte("day", sinceDay)
+        .neq("provider", "")
+        .order("day", { ascending: true });
+      if (filters?.market) opQuery = opQuery.eq("market_key", filters.market);
+      if (filters?.category) opQuery = opQuery.eq("category_key", filters.category);
+      const { data: opRollup, error: opRollupErr } = await opQuery;
+      if (opRollupErr) throw opRollupErr;
+
+      let effQuery = client
+        .from("pipeline_daily_rollup")
+        .select(
+          "day, event_count, leads_enriched, usd, units, avg_duration_ms",
+        )
+        .gte("day", sinceDay)
+        .eq("stage", "")
+        .eq("provider", "")
+        .eq("operation", "")
+        .order("day", { ascending: true });
+      if (filters?.market) effQuery = effQuery.eq("market_key", filters.market);
+      if (filters?.category) effQuery = effQuery.eq("category_key", filters.category);
+      const { data: effRollup, error: effRollupErr } = await effQuery;
+      if (effRollupErr) throw effRollupErr;
+
+      return {
+        stageTrends: (stageRollup ?? []).map((row) => ({
+          day: String(row.day).slice(0, 10),
+          stage: String(row.stage),
+          avgDurationMs:
+            row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+          p95DurationMs:
+            row.p95_duration_ms != null ? Number(row.p95_duration_ms) : null,
+          runCount: Number(row.ran_count ?? 0),
+          eventCount: Number(row.event_count ?? 0),
+        })),
+        opTrends: (opRollup ?? []).map((row) => ({
+          day: String(row.day).slice(0, 10),
+          provider: String(row.provider),
+          operation: String(row.operation),
+          usd: Number(row.usd ?? 0),
+          units: Number(row.units ?? 0),
+          callCount: Number(row.event_count ?? 0),
+          avgDurationMs:
+            row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+        })),
+        runEfficiency: (effRollup ?? []).map((row) => ({
+          day: String(row.day).slice(0, 10),
+          runCount: Number(row.event_count ?? 0),
+          leadsEnriched: Number(row.leads_enriched ?? 0),
+          totalUsd: Number(row.usd ?? 0),
+          usdPerEnrichedLead:
+            Number(row.leads_enriched ?? 0) > 0
+              ? Number(row.usd ?? 0) / Number(row.leads_enriched)
+              : null,
+          avgLeadDurationMs:
+            row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+          firecrawlCreditsPerLead:
+            Number(row.leads_enriched ?? 0) > 0
+              ? Number(row.units ?? 0) / Number(row.leads_enriched)
+              : null,
+        })),
+        stageStatsByRun: [],
+        viewsAvailable: true,
+      };
+    }
+
+    const { data: stageTrends, error: stageErr } = await client
+      .from("stage_trends_by_day")
+      .select("day, stage, avg_duration_ms, p95_duration_ms, run_count, event_count")
+      .gte("day", sinceDay)
+      .order("day", { ascending: true });
+    if (stageErr) throw stageErr;
+
+    const { data: opTrends, error: opErr } = await client
+      .from("op_trends_by_day")
+      .select("day, provider, operation, usd, units, call_count, avg_duration_ms")
+      .gte("day", sinceDay)
+      .order("day", { ascending: true });
+    if (opErr) throw opErr;
+
+    const { data: runEfficiency, error: effErr } = await client
+      .from("run_efficiency_by_day")
+      .select(
+        "day, run_count, leads_enriched, total_usd, usd_per_enriched_lead, avg_lead_duration_ms, firecrawl_credits_per_lead",
+      )
+      .gte("day", sinceDay)
+      .order("day", { ascending: true });
+    if (effErr) throw effErr;
+
+    let statsQuery = client
+      .from("stage_stats_by_run")
+      .select(
+        "run_id, stage, event_count, ran_count, avg_duration_ms, max_duration_ms, p95_duration_ms, market_key, category_key, started_at",
+      )
+      .gte("started_at", since.toISOString())
+      .order("started_at", { ascending: false })
+      .limit(500);
+    if (filters?.market) {
+      statsQuery = statsQuery.eq("market_key", filters.market);
+    }
+    if (filters?.category) {
+      statsQuery = statsQuery.eq("category_key", filters.category);
+    }
+    const { data: stageStatsByRun, error: statsErr } = await statsQuery;
+    if (statsErr) throw statsErr;
+
+    return {
+      stageTrends: (stageTrends ?? []).map((row) => ({
+        day: String(row.day).slice(0, 10),
+        stage: String(row.stage),
+        avgDurationMs:
+          row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+        p95DurationMs:
+          row.p95_duration_ms != null ? Number(row.p95_duration_ms) : null,
+        runCount: Number(row.run_count ?? 0),
+        eventCount: Number(row.event_count ?? 0),
+      })),
+      opTrends: (opTrends ?? []).map((row) => ({
+        day: String(row.day).slice(0, 10),
+        provider: String(row.provider),
+        operation: String(row.operation),
+        usd: Number(row.usd ?? 0),
+        units: Number(row.units ?? 0),
+        callCount: Number(row.call_count ?? 0),
+        avgDurationMs:
+          row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+      })),
+      runEfficiency: (runEfficiency ?? []).map((row) => ({
+        day: String(row.day).slice(0, 10),
+        runCount: Number(row.run_count ?? 0),
+        leadsEnriched: Number(row.leads_enriched ?? 0),
+        totalUsd: Number(row.total_usd ?? 0),
+        usdPerEnrichedLead:
+          row.usd_per_enriched_lead != null
+            ? Number(row.usd_per_enriched_lead)
+            : null,
+        avgLeadDurationMs:
+          row.avg_lead_duration_ms != null
+            ? Number(row.avg_lead_duration_ms)
+            : null,
+        firecrawlCreditsPerLead:
+          row.firecrawl_credits_per_lead != null
+            ? Number(row.firecrawl_credits_per_lead)
+            : null,
+      })),
+      stageStatsByRun: (stageStatsByRun ?? []).map((row) => ({
+        runId: String(row.run_id),
+        stage: String(row.stage),
+        eventCount: Number(row.event_count ?? 0),
+        ranCount: Number(row.ran_count ?? 0),
+        avgDurationMs:
+          row.avg_duration_ms != null ? Number(row.avg_duration_ms) : null,
+        maxDurationMs:
+          row.max_duration_ms != null ? Number(row.max_duration_ms) : null,
+        p95DurationMs:
+          row.p95_duration_ms != null ? Number(row.p95_duration_ms) : null,
+        marketKey: (row.market_key as string | null) ?? null,
+        categoryKey: (row.category_key as string | null) ?? null,
+        startedAt: toIso(row.started_at),
+      })),
+      viewsAvailable: true,
+    };
+  } catch {
+    return empty;
+  }
 }

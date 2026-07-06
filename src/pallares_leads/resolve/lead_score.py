@@ -6,13 +6,21 @@ from pallares_leads.eval.score import copy_score, exterior_score, source_diversi
 from pallares_leads.resolve.triggers import compute_trigger
 from pallares_leads.schemas import NOT_FOUND, EnrichedLead
 
-_DECISION_ROLES = (
-    "owner",
+_DECISION_ROLES: tuple[str, ...] = (
+    "facilities manager",
+    "facilities",
+    "maintenance manager",
+    "maintenance supervisor",
+    "maintenance",
+    "property manager",
+    "property management",
     "property owner",
     "property_owner",
-    "property manager",
-    "property_manager",
-    "facilities",
+    "owner",
+    "landlord",
+    "general manager",
+    "gm",
+    "leasing manager",
     "leasing",
     "portfolio",
     "registered agent",
@@ -44,28 +52,34 @@ _PROPERTY_TICKET_WEIGHTS: dict[str, int] = {
 }
 
 
+def _role_matches(text: str) -> bool:
+    lowered = text.casefold()
+    return any(token in lowered for token in _DECISION_ROLES)
+
+
 def _contact_role_score(enriched: EnrichedLead) -> int:
     role = (enriched.best_contact_role or "").lower()
-    if role in ("", NOT_FOUND.lower()):
-        for contact in enriched.site_contacts:
-            label = (contact.label or "").lower()
-            if any(token in label for token in _DECISION_ROLES):
-                if is_callable_phone(contact.phone) or (contact.email and "@" in contact.email):
-                    return 40
-        phone = primary_phone(enriched)
-        if is_callable_phone(phone):
-            if any(token in (enriched.notes or "").lower() for token in _DECISION_ROLES):
-                return 25
-            return 5
-        return 0
-
-    if any(token in role for token in _DECISION_ROLES):
+    contact_type = (enriched.best_contact_type or "").lower()
+    if _role_matches(role) or _role_matches(contact_type):
         phone = primary_phone(enriched)
         if is_callable_phone(phone) or (
             enriched.best_contact_email_or_form not in ("", NOT_FOUND)
             and "@" in enriched.best_contact_email_or_form
         ):
             return 40
+
+    if role in ("", NOT_FOUND.lower()) and contact_type in ("", NOT_FOUND.lower()):
+        for contact in enriched.site_contacts:
+            label = (contact.label or "").lower()
+            if _role_matches(label) or _role_matches(contact.name):
+                if is_callable_phone(contact.phone) or (contact.email and "@" in contact.email):
+                    return 40
+        phone = primary_phone(enriched)
+        if is_callable_phone(phone):
+            if _role_matches(enriched.notes or ""):
+                return 25
+            return 5
+        return 0
 
     phone = primary_phone(enriched)
     if is_callable_phone(phone):
@@ -122,11 +136,11 @@ def compute_lead_score(enriched: EnrichedLead) -> int:
 def is_decision_maker_contact(enriched: EnrichedLead) -> bool:
     """True when the best contact looks like a property decision-maker."""
     role = (enriched.best_contact_role or "").lower()
-    if any(token in role for token in _DECISION_ROLES):
+    if _role_matches(role) or _role_matches(enriched.best_contact_type or ""):
         return True
     for contact in enriched.site_contacts:
         label = (contact.label or "").lower()
-        if any(token in label for token in _DECISION_ROLES):
+        if _role_matches(label) or _role_matches(contact.name):
             if is_callable_phone(contact.phone) or (contact.email and "@" in contact.email):
                 return True
     return False

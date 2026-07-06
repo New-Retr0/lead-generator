@@ -13,7 +13,15 @@ _TRUSTED = frozenset({"verified", "corroborated"})
 
 
 def _verified_person_contacts(enriched: EnrichedLead) -> list:
-    return [c for c in enriched.site_contacts if c.name.strip() and c.verification in _TRUSTED]
+    people = []
+    for c in enriched.site_contacts:
+        if not c.name.strip() or c.verification not in _TRUSTED:
+            continue
+        # Name-only SERP hits (e.g. LinkedIn) do not satisfy verified-person unless corroborated.
+        if not c.phone.strip() and c.verification != "corroborated":
+            continue
+        people.append(c)
+    return people
 
 
 def _verified_phones(enriched: EnrichedLead) -> list[str]:

@@ -161,8 +161,62 @@ export type ProviderBalance = {
   remaining: number | null;
   used: number | null;
   plan: number | null;
+  billingPeriodEnd: string | null;
   unitLabel: string;
   snapshotAt: string | null;
+};
+
+export type CostBudget = {
+  planCredits: number;
+  remainingCredits: number | null;
+  usedThisCycle: number | null;
+  billingPeriodEnd: string | null;
+  dailyAverageCredits: number | null;
+  projectedCycleCredits: number | null;
+  projectedOverPlan: boolean;
+  percentOfPlanUsed: number | null;
+  planTier: "standard";
+};
+
+export type CostByRunRow = {
+  runId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  runType: string;
+  marketKey: string | null;
+  categoryKey: string | null;
+  enrichedCount: number;
+  status: string;
+  usd: number;
+  firecrawlCredits: number;
+  eventCount: number;
+  usdPerEnrichedLead: number | null;
+};
+
+export type CostByModelRow = {
+  provider: string;
+  model: string;
+  operation: string;
+  unitType: string;
+  units: number;
+  usd: number;
+  eventCount: number;
+};
+
+export type CostByMarketRow = {
+  marketKey: string | null;
+  categoryKey: string | null;
+  usd: number;
+  firecrawlCredits: number;
+  runCount: number;
+  eventCount: number;
+};
+
+export type CostByHourRow = {
+  hour: string;
+  usd: number;
+  firecrawlCredits: number;
+  eventCount: number;
 };
 
 export type OverviewStats = {
@@ -207,6 +261,11 @@ export type CostSeries = {
     count: number;
     unitType: string;
   }[];
+  byRun: CostByRunRow[];
+  byModel: CostByModelRow[];
+  byMarket: CostByMarketRow[];
+  byHour: CostByHourRow[];
+  budget: CostBudget | null;
   balances: ProviderBalance[];
 };
 
@@ -372,7 +431,7 @@ export function estimateRequestCost(spec: {
   usd: number;
 } {
   const perLeadCredits = 13;
-  const creditUsd = 0.00533;
+  const creditUsd = 0.00099;
   const discoveryCredits = spec.categories.length * spec.market_keys.length * 2;
   const enrichCredits = spec.count * perLeadCredits;
   const total = discoveryCredits + enrichCredits;

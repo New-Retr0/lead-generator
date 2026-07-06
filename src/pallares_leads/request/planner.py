@@ -270,7 +270,7 @@ def estimate_request_cost(spec: LeadRequestSpec) -> dict[str, float | int]:
     discovery_credits = len(spec.categories) * len(spec.market_keys) * 2
     enrich_credits = spec.count * per_lead_credits
     total_credits = discovery_credits + enrich_credits
-    usd = total_credits * 0.00533
+    usd = total_credits * 0.00099
     return {
         "discovery_credits_est": discovery_credits,
         "enrich_credits_est": enrich_credits,

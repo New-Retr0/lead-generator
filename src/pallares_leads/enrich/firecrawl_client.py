@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
+from firecrawl import Firecrawl
+from firecrawl.v2.types import ScrapeOptions
+from firecrawl.v2.utils.error_handler import PaymentRequiredError, RateLimitError
 
 from pallares_leads.enrich.contact_extract import candidate_paths
 from pallares_leads.enrich.contact_requirements import (
@@ -15,23 +20,20 @@ from pallares_leads.enrich.contact_requirements import (
     investigation_meets_bar,
 )
 from pallares_leads.enrich.domain_verify import pick_verified_website_url, verify_website_url
+from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
 from pallares_leads.enrich.firecrawl_types import FirecrawlStageMeta
 from pallares_leads.enrich.google_gaps import is_corporate_locator_url
-from pallares_leads.enrich.schema import (
-    LEAD_CONTACT_SCHEMA,
-    LEAD_INVESTIGATION_SCHEMA,
-    LeadInvestigationResult,
-    extract_prompt,
-)
+from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.enrich.search_templates import load_search_templates, render_search_template
 from pallares_leads.enrich.verify import GroundingResult, Rejection, ground_investigation
 from pallares_leads.enrich.website_discover import candidate_website_urls, is_skipped_domain
 from pallares_leads.progress import emit_rejection
 from pallares_leads.schemas import RawLead
 from pallares_leads.settings import Settings
-from pallares_leads.utils.http_retry import request_with_retry
+from pallares_leads.utils.http_retry import OutOfCreditsError, request_with_retry
 
 if TYPE_CHECKING:
+    from pallares_leads.config_loader import CountyJurisdictionConfig, StateJurisdictionConfig
     from pallares_leads.db.store import LeadStore
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,10 @@ CONTACT_URL_HINTS = ("contact", "leasing", "management", "about", "team", "facil
 BROKER_PDF_HINTS = ("showcase", "loopnet", "pearson", "cbre", "costar", "crexi", "flyer")
 PDF_SNIPPET_MAX_CHARS = 3000
 SKIP_URL_HINTS = ("maps.google.com", "google.com/maps", "mapquest.com", "goo.gl/maps")
+
+# Shared across parallel enrichment workers (one map credit per site per process).
+_SHARED_MAP_CACHE: dict[str, list[str]] = {}
+_MAP_CACHE_LOCK = threading.Lock()
 
 
 class FirecrawlClient:
@@ -52,7 +58,7 @@ class FirecrawlClient:
         self._timeout_ms = settings.firecrawl_timeout_ms
         self._settings = settings
         self._store = store
-        self._map_cache: dict[str, list[str]] = {}
+        self._sdk = Firecrawl(api_key=self._api_key)
         self.last_map_info: dict[str, Any] = {}
         self.last_scrape_target: str = ""
         self.last_search_info: dict[str, Any] = {}
@@ -62,6 +68,8 @@ class FirecrawlClient:
         self._cost_run_id: str | None = None
         self._cost_place_id: str | None = None
         self._cost_request_id: str | None = None
+        self._cost_stage: str | None = None
+        self._last_op_duration_ms: int | None = None
         self.stage_meta: FirecrawlStageMeta = FirecrawlStageMeta()
         self.last_grounding: GroundingResult | None = None
         self.session_rejections: list[Rejection] = []
@@ -80,10 +88,16 @@ class FirecrawlClient:
         run_id: str | None = None,
         place_id: str | None = None,
         request_id: str | None = None,
+        stage: str | None = None,
     ) -> None:
-        self._cost_run_id = run_id
-        self._cost_place_id = place_id
-        self._cost_request_id = request_id
+        if run_id is not None:
+            self._cost_run_id = run_id
+        if place_id is not None:
+            self._cost_place_id = place_id
+        if request_id is not None:
+            self._cost_request_id = request_id
+        if stage is not None:
+            self._cost_stage = stage
 
     def _record_cost_event(self, credits: int, operation: str) -> None:
         if credits <= 0 or not self._store:
@@ -98,6 +112,11 @@ class FirecrawlClient:
             units=credits,
             unit_type="credits",
         )
+        meta: dict[str, Any] = {}
+        if self._cost_stage:
+            meta["stage"] = self._cost_stage
+        if self._last_op_duration_ms is not None:
+            meta["duration_ms"] = self._last_op_duration_ms
         self._store.record_cost_event(
             provider="firecrawl",
             operation=operation,
@@ -107,8 +126,10 @@ class FirecrawlClient:
             run_id=self._cost_run_id,
             request_id=self._cost_request_id,
             place_id=self._cost_place_id,
+            meta=meta or None,
         )
         self._store.commit_cost_events()
+        self._last_op_duration_ms = None
 
     @staticmethod
     def _metadata_candidates(payload: dict[str, Any]) -> list[Any]:
@@ -167,6 +188,58 @@ class FirecrawlClient:
             self._record_cost_event(credits, operation)
         return credits
 
+    def _track_credits_units(self, credits: int, operation: str) -> int:
+        self.last_credits_used = credits
+        if credits > 0:
+            self.session_credits_used += credits
+            self._record_cost_event(credits, operation)
+        return credits
+
+    @staticmethod
+    def _credits_from_document(doc: Any) -> int:
+        if doc is None:
+            return 0
+        metadata = getattr(doc, "metadata", None)
+        if metadata is not None:
+            for attr in ("credits_used", "creditsUsed"):
+                val = getattr(metadata, attr, None)
+                if val is not None:
+                    try:
+                        parsed = int(val)
+                        if parsed > 0:
+                            return parsed
+                    except (TypeError, ValueError):
+                        pass
+        return 1
+
+    def _sdk_call_with_retry(self, fn, *, label: str, operation: str):
+        """Run an SDK call with retry on rate limits; map 402 to OutOfCreditsError."""
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            started = time.perf_counter()
+            try:
+                result = fn()
+                self._last_op_duration_ms = int((time.perf_counter() - started) * 1000)
+                credits = self._credits_from_document(result)
+                if credits <= 0 and operation in ("search", "search_contact", "search_website"):
+                    credits = 2
+                elif credits <= 0 and operation == "map":
+                    credits = 1
+                self._track_credits_units(credits, operation)
+                return result
+            except PaymentRequiredError as exc:
+                raise OutOfCreditsError(str(exc)) from exc
+            except RateLimitError as exc:
+                last_exc = exc
+                if attempt >= 3:
+                    raise
+                delay = float(2 ** (attempt - 1))
+                logger.warning("%s rate-limited — retry %d/3 in %.1fs", label, attempt, delay)
+                time.sleep(delay)
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"{label} failed after retries")
+
     def _map_contact_search(self) -> str:
         templates = load_search_templates(self._settings.config_dir)
         return templates.get(
@@ -186,7 +259,22 @@ class FirecrawlClient:
         return meta
 
     def reset_map_cache(self) -> None:
-        self._map_cache.clear()
+        with _MAP_CACHE_LOCK:
+            _SHARED_MAP_CACHE.clear()
+
+    @staticmethod
+    def _filter_contact_links(links: list[str]) -> list[str]:
+        filtered: list[str] = []
+        seen: set[str] = set()
+        for url in links:
+            key = url.split("#")[0].rstrip("/")
+            if key in seen:
+                continue
+            lower = key.lower()
+            if any(hint in lower for hint in CONTACT_URL_HINTS):
+                seen.add(key)
+                filtered.append(url)
+        return filtered
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -200,28 +288,14 @@ class FirecrawlClient:
         origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
         return origin.lower()
 
-    def _scrape_body(
-        self,
-        url: str,
-        *,
-        formats: list[str],
-        json_prompt: str | None = None,
-        contact_schema: bool = False,
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "url": url,
-            "formats": formats,
-            "onlyMainContent": True,
+    def _scrape_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "only_main_content": True,
             "timeout": self._timeout_ms,
         }
-        if json_prompt is not None:
-            body["jsonOptions"] = {
-                "prompt": json_prompt,
-                "schema": LEAD_CONTACT_SCHEMA if contact_schema else LEAD_INVESTIGATION_SCHEMA,
-            }
         if self._settings.firecrawl_scrape_max_age_ms > 0:
-            body["maxAge"] = self._settings.firecrawl_scrape_max_age_ms
-        return body
+            kwargs["max_age"] = self._settings.firecrawl_scrape_max_age_ms
+        return kwargs
 
     def health_check(self) -> tuple[bool, str]:
         """Cheap validation scrape (uses Firecrawl cache when maxAge is set)."""
@@ -251,18 +325,19 @@ class FirecrawlClient:
     def map_contact_urls(self, website: str, *, limit: int = 10) -> list[str]:
         """Discover contact/leasing pages on a known domain (1 credit per call)."""
         cache_key = self._site_cache_key(website)
-        if cache_key in self._map_cache:
-            cached = self._map_cache[cache_key]
-            self._set_stage_meta(
-                FirecrawlStageMeta(
-                    stage="map",
-                    website=website,
-                    cached=True,
-                    urls=cached[:limit],
-                    credits_est=0,
+        with _MAP_CACHE_LOCK:
+            if cache_key in _SHARED_MAP_CACHE:
+                cached = _SHARED_MAP_CACHE[cache_key]
+                self._set_stage_meta(
+                    FirecrawlStageMeta(
+                        stage="map",
+                        website=website,
+                        cached=True,
+                        urls=cached[:limit],
+                        credits_est=0,
+                    )
                 )
-            )
-            return cached[:limit]
+                return cached[:limit]
 
         if self._store:
             db_cached = self._store.get_page_cache(
@@ -276,62 +351,64 @@ class FirecrawlClient:
                 except json.JSONDecodeError:
                     links = []
                 if isinstance(links, list):
-                    self._map_cache[cache_key] = [str(u) for u in links]
+                    parsed = [str(u) for u in links]
+                    with _MAP_CACHE_LOCK:
+                        _SHARED_MAP_CACHE[cache_key] = parsed
                     self._set_stage_meta(
                         FirecrawlStageMeta(
                             stage="map",
                             website=website,
                             cached=True,
-                            urls=links[:limit],
+                            urls=parsed[:limit],
                             credits_est=0,
                         )
                     )
-                    return [str(u) for u in links[:limit]]
+                    return parsed[:limit]
 
-        with httpx.Client(timeout=60.0) as client:
-            response = request_with_retry(
-                lambda: client.post(
-                    f"{self.BASE_URL}/map",
-                    headers=self._headers(),
-                    json={
-                        "url": website,
-                        "search": self._map_contact_search(),
-                        "limit": limit,
-                    },
+        try:
+            map_data = self._sdk_call_with_retry(
+                lambda: self._sdk.map(
+                    website,
+                    search=self._map_contact_search(),
+                    limit=limit,
                 ),
                 label="Firecrawl map",
+                operation="map",
             )
-            if response.status_code >= 400:
-                logger.warning("Firecrawl map failed for %s: %s", website, response.text[:200])
-                self._map_cache[cache_key] = []
-                self._set_stage_meta(
-                    FirecrawlStageMeta(
-                        stage="map", website=website, cached=False, urls=[], credits_est=0
-                    )
-                )
-                return []
-
-            payload: dict[str, Any] = response.json()
-            credits = self._track_credits(payload, operation="map")
-            links = self._parse_map_links(payload)
-            self._map_cache[cache_key] = links
-            if self._store and links:
-                self._store.set_page_cache(
-                    cache_key,
-                    content_type="map_links",
-                    content=json.dumps(links),
-                    credits_used=credits,
-                )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Firecrawl map failed for %s: %s", website, exc)
+            with _MAP_CACHE_LOCK:
+                _SHARED_MAP_CACHE[cache_key] = []
             self._set_stage_meta(
                 FirecrawlStageMeta(
-                    stage="map",
-                    website=website,
-                    cached=False,
-                    urls=links[:limit],
-                    credits_est=credits or 1,
+                    stage="map", website=website, cached=False, urls=[], credits_est=0
                 )
             )
-            return links[:limit]
+            return []
+
+        links = [link.url for link in (map_data.links or []) if getattr(link, "url", None)]
+        credits = self.last_credits_used or 1
+        with _MAP_CACHE_LOCK:
+            _SHARED_MAP_CACHE[cache_key] = links
+        if self._store and links:
+            self._store.set_page_cache(
+                cache_key,
+                content_type="map_links",
+                content=json.dumps(links),
+                credits_used=credits,
+            )
+        self._set_stage_meta(
+            FirecrawlStageMeta(
+                stage="map",
+                website=website,
+                cached=False,
+                urls=links[:limit],
+                credits_est=credits,
+            )
+        )
+        return links[:limit]
 
     @staticmethod
     def _parse_map_links(payload: dict[str, Any]) -> list[str]:
@@ -387,8 +464,9 @@ class FirecrawlClient:
                 return url
         return None
 
-    def scrape_url(self, url: str) -> str | None:
-        if self._store:
+    def scrape_url(self, url: str, *, formats: list[str] | None = None) -> str | None:
+        scrape_formats = formats or ["markdown"]
+        if self._store and scrape_formats == ["markdown"]:
             cached = self._store.get_page_cache(
                 url,
                 content_type="markdown",
@@ -399,32 +477,36 @@ class FirecrawlClient:
                 self.session_markdown[url] = str(cached["content"])
                 return str(cached["content"])
 
-        with httpx.Client(timeout=60.0) as client:
-            response = request_with_retry(
-                lambda: client.post(
-                    f"{self.BASE_URL}/scrape",
-                    headers=self._headers(),
-                    json=self._scrape_body(url, formats=["markdown"]),
-                ),
+        try:
+            doc = self._sdk_call_with_retry(
+                lambda: self._sdk.scrape(url, formats=scrape_formats, **self._scrape_kwargs()),
                 label="Firecrawl scrape",
+                operation="scrape",
             )
-            if response.status_code >= 400:
-                logger.warning("Firecrawl scrape failed for %s: %s", url, response.text[:200])
-                return None
-            payload: dict[str, Any] = response.json()
-            credits = self._track_credits(payload, operation="scrape")
-            data = payload.get("data") or {}
-            markdown = data.get("markdown")
-            if isinstance(markdown, str) and markdown:
-                self.session_markdown[url] = markdown
-                if self._store:
-                    self._store.set_page_cache(
-                        url,
-                        content_type="markdown",
-                        content=markdown,
-                        credits_used=credits,
-                    )
-            return markdown if isinstance(markdown, str) else None
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Firecrawl scrape failed for %s: %s", url, exc)
+            return None
+
+        markdown = getattr(doc, "markdown", None) if doc else None
+        if isinstance(markdown, str) and markdown:
+            self.session_markdown[url] = markdown
+            if self._store and scrape_formats == ["markdown"]:
+                self._store.set_page_cache(
+                    url,
+                    content_type="markdown",
+                    content=markdown,
+                    credits_used=self.last_credits_used,
+                )
+            links = getattr(doc, "links", None)
+            if links and scrape_formats != ["markdown"]:
+                with _MAP_CACHE_LOCK:
+                    site_key = self._site_cache_key(url)
+                    existing = _SHARED_MAP_CACHE.get(site_key, [])
+                    merged = list(dict.fromkeys([*existing, *[str(u) for u in links if u]]))
+                    _SHARED_MAP_CACHE[site_key] = merged
+        return markdown if isinstance(markdown, str) else None
 
     def scrape_pdf_snippet(self, url: str, *, max_pages: int = 15) -> str | None:
         """Extract markdown from a remote broker PDF via scrape+parsers."""
@@ -449,6 +531,7 @@ class FirecrawlClient:
             body["maxAge"] = self._settings.firecrawl_scrape_max_age_ms
 
         with httpx.Client(timeout=120.0) as client:
+            started = time.perf_counter()
             response = request_with_retry(
                 lambda: client.post(
                     f"{self.BASE_URL}/scrape",
@@ -457,6 +540,7 @@ class FirecrawlClient:
                 ),
                 label="Firecrawl PDF scrape",
             )
+            self._last_op_duration_ms = int((time.perf_counter() - started) * 1000)
             if response.status_code >= 400:
                 logger.warning("Firecrawl PDF scrape failed for %s: %s", url, response.text[:200])
                 return None
@@ -512,14 +596,55 @@ class FirecrawlClient:
         return [(url, by_url[url]) for url in urls if url in by_url]
 
     def scrape_lead(self, raw: RawLead) -> LeadInvestigationResult | None:
-        """Tier-1 structured extraction via scrape+JSON (fixed ~5 credits/page)."""
+        """Tier-1: homepage links when available, else map; markdown scrape + Gateway extract."""
         if not raw.website:
             return None
 
-        mapped = self.map_contact_urls(raw.website, limit=8)
+        self.set_cost_context(stage="map")
+        mapped: list[str] = []
+        homepage_doc = None
+        try:
+            homepage_doc = self._sdk_call_with_retry(
+                lambda: self._sdk.scrape(
+                    raw.website,
+                    formats=["markdown", "links"],
+                    **self._scrape_kwargs(),
+                ),
+                label="Firecrawl homepage scrape",
+                operation="scrape",
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Homepage scrape failed for %s: %s", raw.website, exc)
+
+        if homepage_doc:
+            link_urls = [str(u) for u in (homepage_doc.links or []) if u]
+            contact_links = self._filter_contact_links(link_urls)
+            if contact_links:
+                mapped = contact_links
+                cache_key = self._site_cache_key(raw.website)
+                with _MAP_CACHE_LOCK:
+                    _SHARED_MAP_CACHE[cache_key] = link_urls
+                self._set_stage_meta(
+                    FirecrawlStageMeta(
+                        stage="map",
+                        website=raw.website,
+                        cached=True,
+                        urls=contact_links,
+                        credits_est=0,
+                    )
+                )
+            if isinstance(homepage_doc.markdown, str) and homepage_doc.markdown:
+                self.session_markdown[raw.website] = homepage_doc.markdown
+
+        if not mapped:
+            mapped = self.map_contact_urls(raw.website, limit=8)
+
+        self.set_cost_context(stage="scrape")
         target = self._best_json_target(raw.website, mapped)
         self.last_scrape_target = target
-        logger.info("  Tier 1 scrape+JSON: %s", target)
+        logger.info("  Tier 1 markdown+Gateway: %s", target)
         result = self._scrape_json(target, raw)
         if result is not None:
             return result
@@ -530,7 +655,7 @@ class FirecrawlClient:
             lower = alt_url.lower()
             if not any(hint in lower for hint in CONTACT_URL_HINTS):
                 continue
-            logger.info("  Tier 1 scrape+JSON retry: %s", alt_url)
+            logger.info("  Tier 1 markdown+Gateway retry: %s", alt_url)
             self.last_scrape_target = alt_url
             result = self._scrape_json(alt_url, raw)
             if result is not None:
@@ -538,9 +663,20 @@ class FirecrawlClient:
         return None
 
     def scrape_lead_json_url(self, url: str, raw: RawLead) -> LeadInvestigationResult | None:
-        """Structured scrape+JSON for a specific URL (leasing/management pages)."""
+        """Markdown + Gateway extraction for a specific URL."""
         self.last_scrape_target = url
-        return self._scrape_json(url, raw)
+        markdown = self.scrape_url(url)
+        if not markdown:
+            return None
+        return gateway_extract_contacts(
+            markdown,
+            raw,
+            self._settings,
+            store=self._store,
+            run_id=self._cost_run_id,
+            place_id=self._cost_place_id or raw.place_id,
+            stage="scrape",
+        )
 
     def _ground_and_record(
         self,
@@ -576,6 +712,7 @@ class FirecrawlClient:
         return cleaned
 
     def _scrape_json(self, url: str, raw: RawLead) -> LeadInvestigationResult | None:
+        """Markdown scrape (1 credit) + AI Gateway contact extract (replaces Firecrawl JSON mode)."""
         cache_key_content = "json_grounded"
         if self._store:
             cached = self._store.get_page_cache(
@@ -588,76 +725,63 @@ class FirecrawlClient:
                 try:
                     parsed = json.loads(str(cached["content"]))
                     if isinstance(parsed, dict):
-                        # Cached content is post-gate: already grounded.
                         result = LeadInvestigationResult.from_api_payload(parsed)
                         if result:
                             return result
                 except json.JSONDecodeError:
                     pass
 
-        with httpx.Client(timeout=120.0) as client:
-            response = request_with_retry(
-                lambda: client.post(
-                    f"{self.BASE_URL}/scrape",
-                    headers=self._headers(),
-                    json=self._scrape_body(
-                        url,
-                        formats=["markdown", "json"],
-                        json_prompt=extract_prompt(raw),
-                        contact_schema=True,
-                    ),
-                ),
-                label="Firecrawl scrape+JSON",
+        markdown = self.session_markdown.get(url)
+        if not markdown:
+            markdown = self.scrape_url(url)
+        if not markdown:
+            return None
+
+        result = gateway_extract_contacts(
+            markdown,
+            raw,
+            source_url=url,
+            settings=self._settings,
+            store=self._store,
+            run_id=self._cost_run_id,
+            place_id=self._cost_place_id,
+            request_id=self._cost_request_id,
+            stage="scrape",
+        )
+        if not result:
+            return None
+
+        if self._store:
+            self._store.set_page_cache(
+                url,
+                content_type=cache_key_content,
+                content=result.model_dump_json(),
+                credits_used=self.last_credits_used,
             )
-            if response.status_code >= 400:
-                logger.warning(
-                    "Firecrawl scrape+JSON failed for %s: %s",
-                    url,
-                    response.text[:300],
-                )
-                return None
+        return result
 
-            payload: dict[str, Any] = response.json()
-            credits = self._track_credits(payload, operation="scrape_json")
-            if payload.get("success") is False:
-                logger.warning("Firecrawl scrape+JSON unsuccessful for %s", url)
-                return None
+    def _search_items(self, search_data: Any) -> list[tuple[str, str, str]]:
+        """Flatten SDK search results to (url, title, markdown) tuples."""
+        rows: list[tuple[str, str, str]] = []
+        for group in (getattr(search_data, "web", None),):
+            if not group:
+                continue
+            for item in group:
+                url = getattr(item, "url", None) or ""
+                if not url and hasattr(item, "metadata_dict"):
+                    url = item.metadata_dict.get("sourceURL") or item.metadata_dict.get("url") or ""
+                title = getattr(item, "title", None) or getattr(item, "description", None) or ""
+                markdown = getattr(item, "markdown", None) or ""
+                if url:
+                    rows.append((str(url), str(title or ""), str(markdown or "")))
+        return rows
 
-            data = payload.get("data") or {}
-            markdown = data.get("markdown")
-            page_text = markdown if isinstance(markdown, str) else ""
-            if page_text:
-                self.session_markdown[url] = page_text
-                if self._store:
-                    self._store.set_page_cache(
-                        url,
-                        content_type="markdown",
-                        content=page_text,
-                        credits_used=0,
-                    )
-
-            json_blob = data.get("json")
-            if isinstance(json_blob, str):
-                try:
-                    json_blob = json.loads(json_blob)
-                except json.JSONDecodeError:
-                    json_blob = None
-            if not isinstance(json_blob, dict):
-                logger.warning("Firecrawl scrape+JSON returned no parseable json blob for %s", url)
-                return None
-
-            result = LeadInvestigationResult.from_api_payload(json_blob)
-            if not result:
-                return None
-            grounded = self._ground_and_record(result, page_text, url=url)
-            if grounded and self._store:
-                self._store.set_page_cache(
-                    url,
-                    content_type=cache_key_content,
-                    content=grounded.model_dump_json(),
-                    credits_used=credits,
-                )
-            return grounded
+    def _sdk_search(self, query: str, *, operation: str = "search", **kwargs: Any):
+        return self._sdk_call_with_retry(
+            lambda: self._sdk.search(query, **kwargs),
+            label=f"Firecrawl {operation}",
+            operation=operation,
+        )
 
     def search_website(self, raw: RawLead) -> str | None:
         """Find official website when Google Places has none — must pass DNS + HTTP check."""
@@ -684,37 +808,29 @@ class FirecrawlClient:
             city=raw.city,
             state=raw.state,
         )
-        body = {"query": query, "limit": 8}
         candidates: list[str] = []
-
-        with httpx.Client(timeout=60.0) as client:
-            response = client.post(
-                f"{self.BASE_URL}/search",
-                headers=self._headers(),
-                json=body,
+        try:
+            search_data = self._sdk_search(
+                query,
+                operation="search",
+                limit=8,
+                location=f"{raw.city},{raw.state},United States",
             )
-            if response.status_code >= 400:
-                logger.warning(
-                    "Firecrawl search failed for %s: %s",
-                    raw.business_name,
-                    response.text[:200],
-                )
-                self.last_search_info = {
-                    "query": query,
-                    "method": "search_api",
-                    "found": None,
-                    "error": response.text[:200],
-                }
-                return None
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Firecrawl search failed for %s: %s", raw.business_name, exc)
+            self.last_search_info = {
+                "query": query,
+                "method": "search_api",
+                "found": None,
+                "error": str(exc)[:200],
+            }
+            return None
 
-            payload: dict[str, Any] = response.json()
-            self._track_credits(payload, operation="search")
-            for item in payload.get("data") or []:
-                if not isinstance(item, dict):
-                    continue
-                url = item.get("url") or (item.get("metadata") or {}).get("sourceURL")
-                if isinstance(url, str) and url and not is_skipped_domain(url):
-                    candidates.append(url)
+        for url, _title, _md in self._search_items(search_data):
+            if url and not is_skipped_domain(url):
+                candidates.append(url)
 
         found = pick_verified_website_url(candidates, raw.business_name)
         self.last_search_info = {
@@ -730,7 +846,8 @@ class FirecrawlClient:
         raw: RawLead,
         rules: EnrichmentRules,
     ) -> LeadInvestigationResult | None:
-        """Tier 2: Firecrawl Search + scrape+JSON (~6 credits) when Tier 1 misses contact bar."""
+        """Tier 2: v2 search with embedded markdown scrape + Gateway extract."""
+        self.set_cost_context(stage="tier2_search")
         queries: list[str] = []
         if raw.website and is_corporate_locator_url(raw.website):
             host = urlparse(raw.website).netloc.replace("www.", "")
@@ -755,77 +872,204 @@ class FirecrawlClient:
             )
         )
 
-        candidates: list[str] = []
+        location = f"{raw.city},{raw.state},United States"
+        scrape_opts = ScrapeOptions(
+            formats=["markdown"],
+            only_main_content=True,
+            timeout=self._timeout_ms,
+        )
         last_query = ""
+        collected: list[tuple[str, str]] = []
+
         for query in queries[:2]:
             last_query = query
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(
-                    f"{self.BASE_URL}/search",
-                    headers=self._headers(),
-                    json={"query": query, "limit": 6},
+            try:
+                search_data = self._sdk_search(
+                    query,
+                    operation="search_contact",
+                    limit=3,
+                    location=location,
+                    scrape_options=scrape_opts,
                 )
-                if response.status_code >= 400:
+            except OutOfCreditsError:
+                raise
+            except Exception as exc:
+                logger.warning("Tier 2 search failed for %r: %s", query, exc)
+                continue
+
+            for url, _title, markdown in self._search_items(search_data):
+                lower = url.lower()
+                if any(hint in lower for hint in SKIP_URL_HINTS):
                     continue
-                payload: dict[str, Any] = response.json()
-                self._track_credits(payload, operation="search_contact")
-                for item in payload.get("data") or []:
-                    if not isinstance(item, dict):
-                        continue
-                    url = item.get("url") or (item.get("metadata") or {}).get("sourceURL")
-                    if not isinstance(url, str) or not url:
-                        continue
-                    lower = url.lower()
-                    if any(hint in lower for hint in SKIP_URL_HINTS):
-                        continue
-                    if is_skipped_domain(url):
-                        continue
-                    if url not in candidates:
-                        candidates.append(url)
+                if is_skipped_domain(url):
+                    continue
+                if markdown.strip():
+                    collected.append((url, markdown))
+                elif url not in [u for u, _ in collected]:
+                    collected.append((url, ""))
 
         if self._store:
             self._store.commit_cost_events()
 
         self.last_contact_search_info = {
             "query": last_query,
-            "candidates": candidates[:6],
+            "candidates": [u for u, _ in collected[:6]],
         }
 
-        for url in candidates[:3]:
-            logger.info("  Tier 2 search+JSON: %s", url)
-            result = self._scrape_json(url, raw)
-            if (
-                result
-                and investigation_meets_bar(result, rules, property_type=raw.property_type)[0]
-            ):
-                self.last_contact_search_info["matched_url"] = url
-                return result
+        batch_pages: list[tuple[str, str]] = []
+        for url, markdown in collected[:3]:
+            if not markdown.strip():
+                markdown = self.scrape_url(url) or ""
+            if markdown.strip():
+                batch_pages.append((url, markdown))
 
+        if not batch_pages:
+            return None
+
+        combined_parts: list[str] = []
+        for url, markdown in batch_pages:
+            combined_parts.append(f"--- URL: {url} ---\n{markdown}")
+        combined_markdown = "\n\n".join(combined_parts)
+        primary_url = batch_pages[0][0]
+        logger.info(
+            "  Tier 2 batched Gateway extract: %d page(s), first=%s",
+            len(batch_pages),
+            primary_url,
+        )
+        result = gateway_extract_contacts(
+            combined_markdown,
+            raw,
+            source_url=primary_url,
+            settings=self._settings,
+            store=self._store,
+            run_id=self._cost_run_id,
+            place_id=self._cost_place_id,
+            request_id=self._cost_request_id,
+            stage="tier2_search",
+        )
+        if result and investigation_meets_bar(result, rules, property_type=raw.property_type)[0]:
+            self.last_contact_search_info["matched_url"] = primary_url
+            return result
         return None
 
     def search_web(self, query: str, *, limit: int = 5) -> list[dict[str, str]]:
         """Firecrawl web search returning url/title snippets."""
         results: list[dict[str, str]] = []
-        with httpx.Client(timeout=60.0) as client:
-            response = client.post(
-                f"{self.BASE_URL}/search",
-                headers=self._headers(),
-                json={"query": query, "limit": limit},
+        try:
+            search_data = self._sdk_search(
+                query,
+                operation="search",
+                limit=limit,
             )
-            if response.status_code >= 400:
-                logger.warning("Firecrawl search failed for %r: %s", query, response.text[:200])
-                return results
-            payload: dict[str, Any] = response.json()
-            self._track_credits(payload)
-            for item in payload.get("data") or []:
-                if not isinstance(item, dict):
-                    continue
-                url = item.get("url") or (item.get("metadata") or {}).get("sourceURL")
-                if not isinstance(url, str) or not url:
-                    continue
-                title = str(item.get("title") or item.get("description") or "")
-                results.append({"url": url, "title": title})
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Firecrawl search failed for %r: %s", query, exc)
+            return results
+
+        for url, title, _markdown in self._search_items(search_data):
+            results.append({"url": url, "title": title})
         return results
+
+    _OWNER_CHAIN_AGENT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "entity_name": {"type": "string"},
+            "entity_number": {"type": "string"},
+            "registered_agent": {"type": "string"},
+            "owner_name": {"type": "string"},
+            "officers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "title": {"type": "string"},
+                    },
+                    "required": ["name"],
+                },
+            },
+            "broker_name": {"type": "string"},
+            "broker_phone": {"type": "string"},
+            "broker_company": {"type": "string"},
+            "source_note": {"type": "string"},
+        },
+    }
+
+    def run_owner_chain_agent(
+        self,
+        *,
+        entity_name: str,
+        party_name: str,
+        address: str,
+        city: str,
+        state_name: str,
+        sos_url: str,
+        recorder_url: str | None = None,
+        parcel_url: str | None = None,
+        max_credits: int = 100,
+    ) -> dict[str, Any] | None:
+        """Research-preview Firecrawl /agent for SOS/recorder/parcel owner lookups."""
+        from pallares_leads.enrich.task_templates import render_task, SOS_BIZFILE_TASK
+
+        prompt_parts = [
+            render_task(
+                SOS_BIZFILE_TASK,
+                portal_url=sos_url,
+                entity_name=entity_name or party_name,
+                state_name=state_name,
+            )
+        ]
+        if recorder_url:
+            prompt_parts.append(
+                f"If no entity officers found, search the county recorder at {recorder_url} "
+                f"for party {party_name!r} (grantor/grantee index only, no paid deed images)."
+            )
+        if parcel_url:
+            prompt_parts.append(
+                f"Optionally search the parcel portal at {parcel_url} for address "
+                f"{address!r} in {city!r}, {state_name} and return the owner name if shown online."
+            )
+        prompt = " ".join(prompt_parts)
+
+        try:
+            response = self._sdk_call_with_retry(
+                lambda: self._sdk.agent(
+                    prompt=prompt,
+                    schema=self._OWNER_CHAIN_AGENT_SCHEMA,
+                    model="spark-1-mini",
+                    max_credits=max_credits,
+                ),
+                label="Firecrawl owner-chain agent",
+                operation="agent",
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Firecrawl owner-chain agent failed: %s", exc)
+            return None
+
+        credits = getattr(response, "credits_used", None) or self.last_credits_used
+        if credits and credits > 0:
+            self._record_cost_event(int(credits), "agent")
+
+        data = getattr(response, "data", None)
+        if isinstance(data, dict):
+            return data
+        if hasattr(data, "model_dump"):
+            return data.model_dump()
+        return None
+
+    def get_queue_status(self) -> dict[str, Any]:
+        """Fetch Firecrawl v2 queue/plan concurrency status."""
+        try:
+            status = self._sdk.get_queue_status()
+            if hasattr(status, "model_dump"):
+                return status.model_dump()
+            return dict(status) if isinstance(status, dict) else {"raw": str(status)}
+        except Exception as exc:
+            logger.warning("Firecrawl queue-status failed: %s", exc)
+            return {"error": str(exc)[:200]}
 
     @staticmethod
     def _unwrap_api_data(payload: dict[str, Any]) -> dict[str, Any]:

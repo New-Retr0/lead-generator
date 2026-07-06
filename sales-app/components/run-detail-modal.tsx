@@ -38,6 +38,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatCostUnits, formatProvider, formatUsd } from "@/lib/utils";
+import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
+import { useRunStream } from "@/lib/use-run-stream";
 import type {
   RunCostProvider,
   RunDetail,
@@ -285,13 +287,20 @@ function ProviderCostCard({
 function RunCostSummary({
   costs,
   running,
+  liveTotalUsd,
+  liveUsdPerMinute,
 }: {
   costs: RunDetail["costs"];
   running: boolean;
+  liveTotalUsd?: number;
+  liveUsdPerMinute?: number;
 }) {
-  const creditUsdEst = costs.firecrawlCreditsEst * 0.00533;
+  const creditUsdEst = costs.firecrawlCreditsEst * FIRECRAWL_CREDIT_USD;
+  const displayUsd = running && typeof liveTotalUsd === "number"
+    ? Math.max(costs.totalUsd, liveTotalUsd)
+    : costs.totalUsd;
 
-  if (costs.eventCount === 0 && costs.firecrawlCreditsEst === 0) {
+  if (costs.eventCount === 0 && costs.firecrawlCreditsEst === 0 && displayUsd === 0) {
     return (
       <div className="flex items-center gap-3 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
         {running ? (
@@ -320,11 +329,14 @@ function RunCostSummary({
             {running ? <LiveDot tone="warning" /> : null}
           </p>
           <p className="font-mono text-2xl font-bold leading-none tabular-nums">
-            <Odometer value={costs.totalUsd} format={formatUsd} climbSeconds={2.4} />
+            <Odometer value={displayUsd} format={formatUsd} climbSeconds={2.4} />
           </p>
           <p className="text-xs text-muted-foreground">
             <AnimatedNumber value={costs.eventCount} /> tool call
             {costs.eventCount === 1 ? "" : "s"}
+            {running && typeof liveUsdPerMinute === "number" && liveUsdPerMinute > 0 ? (
+              <> · {formatUsd(liveUsdPerMinute)}/min live</>
+            ) : null}
             {costs.leadCount > 0 ? (
               <>
                 {" · "}
@@ -361,7 +373,7 @@ function RunCostSummary({
               <Odometer value={costs.firecrawlCreditsEst} climbSeconds={1.8} />
             </p>
             <p className="text-xs text-muted-foreground">
-              {formatUsd(creditUsdEst)} at Hobby rate
+              {formatUsd(creditUsdEst)} at Standard rate
             </p>
           </div>
         ) : null}
@@ -518,6 +530,7 @@ function RunDetailContent({
   }, [loadDetail]);
 
   const running = detail?.run.status === "running";
+  const stream = useRunStream(runId, running);
 
   useEffect(() => {
     if (!running) return;
@@ -621,9 +634,19 @@ function RunDetailContent({
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               <SquareTerminal className="size-3.5" />
               {running && liveJobId ? "Live run" : "Run progress"}
-              {running && !liveJobId ? <LiveDot tone="primary" /> : null}
+              {running ? <LiveDot tone="primary" /> : null}
             </h3>
-            {running && liveJobId ? (
+            {running ? (
+              <JobTimeline
+                runId={runId}
+                onDone={() => {
+                  void loadDetail().then((data) => {
+                    if (data) setDetail(data);
+                  });
+                  onRunFinished?.();
+                }}
+              />
+            ) : liveJobId ? (
               <JobTimeline
                 jobId={liveJobId}
                 onDone={() => {
@@ -645,7 +668,7 @@ function RunDetailContent({
             )}
           </section>
 
-          {running && liveJobId && detail.timeline.leads.length > 0 ? (
+          {running && detail.timeline.leads.length > 0 ? (
             <section className="space-y-3">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 Stage audit (persisted)
@@ -668,7 +691,12 @@ function RunDetailContent({
                 </span>
               ) : null}
             </h3>
-            <RunCostSummary costs={detail.costs} running={running} />
+            <RunCostSummary
+              costs={detail.costs}
+              running={running}
+              liveTotalUsd={stream.totalUsd}
+              liveUsdPerMinute={stream.usdPerMinute}
+            />
           </section>
         </div>
       </ScrollArea>

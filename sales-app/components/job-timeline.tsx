@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { motion } from "motion/react";
 import {
   Building2,
@@ -32,6 +32,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { useRunStream } from "@/lib/use-run-stream";
 import type { JobEvent } from "@/lib/types";
 
 type StageMeta = {
@@ -265,6 +266,296 @@ function LeadGroupCard({
         </div>
       </Collapsible>
     </SlideIn>
+  );
+}
+
+function JobTimelineRealtime({
+  runId,
+  onDone,
+}: {
+  runId: string;
+  onDone?: (status: string) => void;
+}) {
+  const stream = useRunStream(runId, true);
+  const [showRaw, setShowRaw] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const wasLiveRef = useRef(true);
+
+  const events = stream.events;
+  const running = !events.some((e) => e.event === "run_done");
+
+  useEffect(() => {
+    if (running) return;
+    if (wasLiveRef.current) onDone?.("completed");
+  }, [running, onDone]);
+
+  useEffect(() => {
+    if (!paused) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [events, paused, showRaw]);
+
+  useEffect(() => {
+    if (running) {
+      const id = window.setInterval(() => setNow(Date.now()), 30_000);
+      return () => window.clearInterval(id);
+    }
+  }, [running]);
+
+  const totals = useMemo(() => {
+    let credits = 0;
+    for (const evt of events) {
+      if (evt.event === "lead_done" && typeof evt.credits === "number") {
+        credits += evt.credits;
+      }
+    }
+    const leadsDone = events.filter((e) => e.event === "lead_done").length;
+    const leadsStarted = new Set(
+      events.filter((e) => e.place_id).map((e) => e.place_id),
+    ).size;
+    const rejected = events.filter((e) => e.event === "verification_rejected").length;
+    return { credits, leadsDone, leadsStarted, rejected };
+  }, [events]);
+
+  const { runEvents, leads } = useMemo(() => groupByLead(events), [events]);
+  const staleMs = 5 * 60 * 1000;
+  const lastEventTs = events.length
+    ? Date.parse(events[events.length - 1]?.ts ?? "")
+    : 0;
+  const isStale =
+    running &&
+    lastEventTs > 0 &&
+    now - lastEventTs > staleMs &&
+    !events.some((e) => e.event === "run_done");
+
+  return (
+    <TimelineShell
+      running={running}
+      status={running ? "running" : "completed"}
+      isStale={isStale}
+      streamConnected={stream.connected}
+      showRaw={showRaw}
+      paused={paused}
+      totals={totals}
+      streamUsd={stream.totalUsd}
+      usdPerMinute={stream.usdPerMinute}
+      runEvents={runEvents}
+      leads={leads}
+      nowMs={now}
+      rawLines={[]}
+      loading={stream.loading && events.length === 0}
+      hasEvents={runEvents.length > 0 || leads.length > 0}
+      onToggleRaw={() => setShowRaw((v) => !v)}
+      onTogglePause={() => setPaused((v) => !v)}
+      bottomRef={bottomRef}
+    />
+  );
+}
+
+function TimelineShell({
+  running,
+  status,
+  isStale,
+  streamConnected,
+  showRaw,
+  paused,
+  totals,
+  streamUsd,
+  usdPerMinute,
+  runEvents,
+  leads,
+  nowMs,
+  rawLines,
+  loading,
+  hasEvents = false,
+  onToggleRaw,
+  onTogglePause,
+  bottomRef,
+}: {
+  running: boolean;
+  status: string;
+  isStale: boolean;
+  streamConnected?: boolean;
+  showRaw: boolean;
+  paused: boolean;
+  totals: { credits: number; leadsDone: number; leadsStarted: number; rejected: number };
+  streamUsd?: number;
+  usdPerMinute?: number;
+  runEvents: JobEvent[];
+  leads: LeadGroup[];
+  nowMs: number;
+  rawLines: string[];
+  loading?: boolean;
+  hasEvents?: boolean;
+  onToggleRaw: () => void;
+  onTogglePause: () => void;
+  bottomRef: RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div className={cn("rounded-2xl", running && "live-ring p-px")}>
+      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+        <div className="relative border-b border-border/50 px-5 pb-4 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "flex size-9 items-center justify-center rounded-xl text-white shadow-lg",
+                  running
+                    ? "bg-gradient-to-br from-primary to-[oklch(0.6_0.16_300)]"
+                    : status === "completed"
+                      ? "bg-gradient-to-br from-success to-[oklch(0.62_0.13_183)]"
+                      : "bg-gradient-to-br from-destructive to-[oklch(0.55_0.2_15)]",
+                )}
+              >
+                <SquareTerminal className="size-4.5" strokeWidth={2.25} />
+              </span>
+              <div>
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                  Live run
+                  {running ? <LiveDot tone="primary" /> : null}
+                  {streamConnected === false && running ? (
+                    <span className="text-[10px] font-normal text-warning">reconnecting…</span>
+                  ) : null}
+                </p>
+                <p className="text-xs capitalize text-muted-foreground">
+                  {running
+                    ? isStale
+                      ? "possibly hung — no events for 5+ minutes"
+                      : "streaming via Supabase Realtime…"
+                    : status}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant={showRaw ? "secondary" : "ghost"}
+                className="h-7 px-2.5 text-xs"
+                onClick={onToggleRaw}
+              >
+                <SquareTerminal className="size-3.5" />
+                Raw
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2.5 text-xs"
+                onClick={onTogglePause}
+              >
+                {paused ? "Follow" : "Pause"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                Leads
+              </p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums leading-none">
+                <AnimatedNumber value={totals.leadsDone} />
+                <span className="text-xs font-medium text-muted-foreground">
+                  {" "}
+                  / {Math.max(totals.leadsStarted, totals.leadsDone)}
+                </span>
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
+              <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                <Coins className="size-3" />
+                Credits
+              </p>
+              <p className="mt-0.5 text-lg font-bold tabular-nums leading-none text-warning">
+                <Odometer value={totals.credits} climbSeconds={1.4} />
+              </p>
+            </div>
+            <div className="rounded-lg border border-border bg-card px-3 py-2">
+              <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                <ShieldX className="size-3" />
+                Rejected
+              </p>
+              <p
+                className={cn(
+                  "mt-0.5 text-lg font-bold tabular-nums leading-none",
+                  totals.rejected > 0 ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                <AnimatedNumber value={totals.rejected} />
+              </p>
+            </div>
+            {typeof streamUsd === "number" ? (
+              <div className="rounded-lg border border-border bg-card px-3 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                  Spend
+                </p>
+                <p className="mt-0.5 text-lg font-bold tabular-nums leading-none">
+                  ${streamUsd.toFixed(2)}
+                </p>
+                {typeof usdPerMinute === "number" && usdPerMinute > 0 ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    ${usdPerMinute.toFixed(2)}/min
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="p-3">
+          {showRaw ? (
+            <pre className="max-h-96 overflow-auto rounded-xl border border-white/5 bg-[oklch(0.15_0.02_262)] p-3.5 font-mono text-[11px] leading-relaxed text-[oklch(0.84_0.01_250)] shadow-inner">
+              {rawLines.join("\n") || "Waiting for output…"}
+              <div ref={bottomRef} />
+            </pre>
+          ) : (
+            <div className="max-h-96 space-y-2 overflow-auto pr-1">
+              {loading ? (
+                <div className="space-y-2 py-2">
+                  <div className="shimmer h-12 rounded-xl border border-border/40" />
+                  <div className="shimmer h-12 rounded-xl border border-border/40" />
+                  <p className="pt-1 text-center text-xs text-muted-foreground">
+                    Loading live events…
+                  </p>
+                </div>
+              ) : !hasEvents ? (
+                <div className="space-y-2 py-2">
+                  <div className="shimmer h-12 rounded-xl border border-border/40" />
+                  <div className="shimmer h-12 rounded-xl border border-border/40" />
+                  <p className="pt-1 text-center text-xs text-muted-foreground">
+                    Waiting for structured events…
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {runEvents.length > 0 ? (
+                    <SlideIn>
+                      <div className="space-y-0.5 rounded-lg border border-border bg-card px-1.5 py-1.5">
+                        {runEvents.map((evt, i) => (
+                          <EventRow key={`run-${evt.ts}-${i}`} event={evt} />
+                        ))}
+                      </div>
+                    </SlideIn>
+                  ) : null}
+                  {leads.map((group, i) => (
+                    <LeadGroupCard
+                      key={group.key}
+                      group={group}
+                      defaultOpen={i === leads.length - 1}
+                      nowMs={nowMs}
+                    />
+                  ))}
+                </>
+              )}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -520,10 +811,18 @@ function JobTimelineStream({
 
 export function JobTimeline({
   jobId,
+  runId,
   onDone,
 }: {
-  jobId: string;
+  jobId?: string;
+  runId?: string;
   onDone?: (status: string) => void;
 }) {
-  return <JobTimelineStream key={jobId} jobId={jobId} onDone={onDone} />;
+  if (runId) {
+    return <JobTimelineRealtime key={runId} runId={runId} onDone={onDone} />;
+  }
+  if (jobId) {
+    return <JobTimelineStream key={jobId} jobId={jobId} onDone={onDone} />;
+  }
+  return null;
 }

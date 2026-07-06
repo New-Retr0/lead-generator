@@ -1,0 +1,272 @@
+openapi: 3.1.0
+info:
+  title: Pallares Partner Lead API
+  version: v1
+  description: |
+    Read-only cursor-sync API for Pallares.us lead ingestion.
+
+    Authentication accepts either `Authorization: Bearer ppl_...` or `x-api-key: ppl_...`.
+
+    Leads are served from the `partner_leads_v1` view. A lead is eligible only when:
+    - `enrichment_status = enriched`
+    - `confidence` is not `Low`
+    - `verification_level` is `verified` or `partial`
+    - a callable phone exists (`best_contact_phone` or `main_phone`)
+
+    Leads missing any of the above are excluded from list/detail responses.
+servers:
+  - url: https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1
+    description: Production Edge Function
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  api_version:
+                    type: string
+                  generated_at:
+                    type: string
+                    format: date-time
+  /metadata:
+    get:
+      summary: Sync metadata
+      responses:
+        "200":
+          description: Categories, markets, and cursor rules
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetadataResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /leads:
+    get:
+      summary: List leads (cursor sync)
+      parameters:
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [client, vendor, all]
+            default: client
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: Opaque cursor from a previous page
+        - in: query
+          name: updated_since
+          schema:
+            type: string
+            format: date-time
+          description: Backfill filter when cursor is omitted
+      responses:
+        "200":
+          description: Lead page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeadsListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /leads/{place_id}:
+    get:
+      summary: Lead detail
+      parameters:
+        - in: path
+          name: place_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Eligible lead detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeadDetailResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: ppl_
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  schemas:
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    MetadataResponse:
+      type: object
+      properties:
+        api_version:
+          type: string
+        schema_version:
+          type: string
+        lead_types:
+          type: array
+          items:
+            type: string
+        max_limit:
+          type: integer
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              label:
+                type: string
+                nullable: true
+        markets:
+          type: array
+          items:
+            type: string
+    LeadListItem:
+      type: object
+      properties:
+        lead_id:
+          type: string
+        place_id:
+          type: string
+        lead_type:
+          type: string
+          enum: [client, vendor]
+        business_name:
+          type: string
+        category_key:
+          type: string
+          nullable: true
+        market_key:
+          type: string
+          nullable: true
+        primary_phone:
+          type: string
+          nullable: true
+        verification_level:
+          type: string
+          enum: [verified, partial]
+        updated_at:
+          type: string
+          format: date-time
+    LeadsListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeadListItem"
+        page:
+          type: object
+          properties:
+            limit:
+              type: integer
+            next_cursor:
+              type: string
+              nullable: true
+            has_more:
+              type: boolean
+        meta:
+          type: object
+    LeadDetailResponse:
+      type: object
+      properties:
+        data:
+          allOf:
+            - $ref: "#/components/schemas/LeadListItem"
+            - type: object
+              properties:
+                site_contacts:
+                  type: array
+                  items:
+                    type: object
+                evidence_urls:
+                  type: array
+                  items:
+                    type: string
+                fact_summaries:
+                  type: object
+                score_breakdown:
+                  type: object
+                coordinates:
+                  type: object
+                  properties:
+                    latitude:
+                      type: number
+                      nullable: true
+                    longitude:
+                      type: number
+                      nullable: true
+        meta:
+          type: object
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    BadRequest:
+      description: Invalid query parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NotFound:
+      description: Lead not found or not eligible
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    RateLimited:
+      description: Rate or daily row budget exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []

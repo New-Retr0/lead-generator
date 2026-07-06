@@ -47,6 +47,13 @@ class LocalCache:
                     fetched_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_page_cache_fetched_at ON page_cache(fetched_at);
+                CREATE TABLE IF NOT EXISTS extraction_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    result_json TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_extraction_cache_fetched_at
+                    ON extraction_cache(fetched_at);
                 """
             )
             self._conn.commit()
@@ -127,6 +134,39 @@ class LocalCache:
                     fetched_at = excluded.fetched_at
                 """,
                 (cache_key, url, content_type, content, credits_used, now),
+            )
+            self._conn.commit()
+
+    def get_extraction_cache(
+        self,
+        cache_key: str,
+        *,
+        ttl_days: int | None = None,
+    ) -> str | None:
+        row = self._conn.execute(
+            "SELECT result_json, fetched_at FROM extraction_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        if ttl_days is not None:
+            fetched = datetime.fromisoformat(row["fetched_at"])
+            if _utc_now() - fetched > timedelta(days=ttl_days):
+                return None
+        return str(row["result_json"])
+
+    def set_extraction_cache(self, cache_key: str, result_json: str) -> None:
+        now = _iso(_utc_now())
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO extraction_cache (cache_key, result_json, fetched_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    result_json = excluded.result_json,
+                    fetched_at = excluded.fetched_at
+                """,
+                (cache_key, result_json, now),
             )
             self._conn.commit()
 

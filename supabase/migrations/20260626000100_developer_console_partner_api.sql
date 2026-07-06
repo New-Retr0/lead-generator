@@ -197,6 +197,12 @@ begin
 exception
   when duplicate_table then null;
   when duplicate_object then null;
+  when others then
+    if sqlstate = '55000' then
+      null; -- queue/sequence already owned by pgmq extension
+    else
+      raise;
+    end if;
 end $$;
 
 create or replace function public.enqueue_pipeline_job(job_kind text, job_payload jsonb default '{}'::jsonb)

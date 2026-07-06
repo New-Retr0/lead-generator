@@ -12,6 +12,7 @@ const titles: Record<string, string> = {
   "/jobs": "Jobs",
   "/requests": "Lead Requests",
   "/runs": "Runs",
+  "/pipeline": "Pipeline Studio",
   "/workspace": "Deprecated CRM",
   "/crm": "Deprecated CRM",
   "/leads": "Deprecated CRM",

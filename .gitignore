@@ -7,6 +7,10 @@
 secrets/*
 !secrets/.gitkeep
 
+# Partner handoff docs may include live API keys.
+docs/partner-api-ben-onboarding.md
+docs/partner-api-ben-onboarding.html
+
 # Python
 .venv/
 venv/
