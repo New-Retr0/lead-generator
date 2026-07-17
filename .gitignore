@@ -41,6 +41,11 @@ service-account-email.txt
 .firecrawl/
 .cursor/
 data/*.db
+data/*.db-shm
+data/*.db-wal
 data/jobs/
+
+# Local agent/dev run artifacts
+.codex-run-logs/
 
 .vercel
