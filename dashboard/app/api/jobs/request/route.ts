@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { startJob } from "@/lib/jobs";
+import { getRequestCreditBudget } from "@/lib/request-budget";
 import type { RequestSpec } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -7,14 +8,20 @@ export const dynamic = "force-dynamic";
 type RequestBody = {
   /** Natural-language mode */
   prompt?: string;
-  /** Structured builder mode — bypasses LLM parsing via --spec-json */
+  /** Structured builder mode: bypasses LLM parsing via --spec-json */
   spec?: RequestSpec;
   dryRun?: boolean;
 };
 
+const DASHBOARD_REQUEST_DEFAULTS = {
+  min_lead_score: 0,
+  recurring_only: false,
+} satisfies Pick<RequestSpec, "min_lead_score" | "recurring_only">;
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as RequestBody;
+    const requestBudget = await getRequestCreditBudget();
 
     const args: string[] = ["request"];
 
@@ -26,7 +33,15 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
-      args.push("--spec-json", JSON.stringify(spec));
+
+      const normalizedSpec: RequestSpec = {
+        ...spec,
+        ...DASHBOARD_REQUEST_DEFAULTS,
+        budget: {
+          max_firecrawl_credits: requestBudget.maxFirecrawlCredits,
+        },
+      };
+      args.push("--spec-json", JSON.stringify(normalizedSpec));
     } else if (body.prompt?.trim()) {
       args.push(body.prompt.trim());
     } else {
@@ -42,7 +57,11 @@ export async function POST(req: NextRequest) {
       args.push("--yes");
     }
 
-    const job = startJob("request", args);
+    const job = startJob("request", args, {
+      PALLARES_REQUEST_MAX_FIRECRAWL_CREDITS: String(
+        requestBudget.maxFirecrawlCredits,
+      ),
+    });
     return NextResponse.json({ jobId: job.id, job });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to start request";

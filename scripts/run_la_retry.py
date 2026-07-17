@@ -60,7 +60,6 @@ def main() -> int:
             cat,
             "--limit",
             "10",
-            "--no-sheets",
         ]
         print("\n>>>", " ".join(cmd[2:]))
         code = subprocess.call(cmd, cwd=ROOT, env=env)

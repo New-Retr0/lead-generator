@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CorridorFilter(BaseModel):
@@ -11,8 +11,9 @@ class CorridorFilter(BaseModel):
 
 
 class BudgetCap(BaseModel):
-    max_firecrawl_credits: int = 200
-    max_usd: float = 10.0
+    model_config = ConfigDict(extra="ignore")
+
+    max_firecrawl_credits: int = 100_000
 
 
 class LeadRequestSpec(BaseModel):
@@ -34,8 +35,7 @@ class LeadRequestSpec(BaseModel):
             f"Markets: {', '.join(self.market_keys) or '(none)'}",
             f"Categories: {', '.join(self.categories) or '(none)'}",
             f"Min lead score: {self.min_lead_score}",
-            f"Budget: {self.budget.max_firecrawl_credits} Firecrawl credits, "
-            f"${self.budget.max_usd:.2f} USD cap",
+            f"Budget: {self.budget.max_firecrawl_credits} Firecrawl credits",
         ]
         if self.corridor:
             lines.append(f"Corridor: {self.corridor.road_ref} (±{self.corridor.buffer_m}m)")

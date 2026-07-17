@@ -229,10 +229,15 @@ class BrowserUseClient:
         balance = self.account_balance()
         if balance is None:
             return False, self.last_skip_reason or "balance check failed"
-        total = float(balance.get("total_credits_balance_usd") or 0.0)
+        try:
+            total = float(balance.get("total_credits_balance_usd") or 0.0)
+        except (TypeError, ValueError):
+            return False, "balance response did not include a usable USD balance"
         plan_info = balance.get("plan_info") or {}
         plan = plan_info.get("plan_name") or "unknown plan"
-        return True, f"OK — ${total:.2f} USD balance remaining ({plan})"
+        if total <= 0:
+            return False, f"no Browser Use balance remaining (${total:.2f} USD, {plan})"
+        return True, f"${total:.2f} USD balance remaining ({plan})"
 
     def account_balance(self) -> dict[str, Any] | None:
         """Fetch Browser Use credit balance and snapshot it into credit_snapshots."""
@@ -277,7 +282,7 @@ class BrowserUseClient:
                 "browser-use-sdk not installed — install with: pip install browser-use-sdk"
             )
             return None
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_s = self.settings.browser_use_task_timeout_s
             self.last_skip_reason = f"task timed out after {timeout_s}s"
             logger.warning("Browser Use task timed out (%s) after %ss", stage, timeout_s)

@@ -1,0 +1,13 @@
+{
+  "name": "pallares-lead-generator",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix dashboard run dev",
+    "dev:direct": "npm --prefix dashboard run dev:direct",
+    "build": "npm --prefix dashboard run build",
+    "start": "npm --prefix dashboard run start",
+    "lint": "npm --prefix dashboard run lint",
+    "install:dashboard": "npm --prefix dashboard install"
+  }
+}

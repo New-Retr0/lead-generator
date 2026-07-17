@@ -13,7 +13,7 @@ from typing import Any
 import psycopg
 
 from pallares_leads.db.local_cache import LocalCache
-from pallares_leads.db.pg import PgAdapter, connect, parse_json_field, to_db_timestamp
+from pallares_leads.db.pg import PgAdapter, connect, parse_json_field
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead
 from pallares_leads.utils.normalize import normalize_entity_name
 
@@ -321,27 +321,33 @@ class LeadStore:
         enriched_count: int,
         status: str = "completed",
     ) -> None:
+        params = (
+            _iso(_utc_now()),
+            discovered_count,
+            skipped_known_count,
+            enriched_count,
+            status,
+            run_id,
+        )
+        sql = """
+            UPDATE runs SET
+                finished_at = ?,
+                discovered_count = ?,
+                skipped_known_count = ?,
+                enriched_count = ?,
+                status = ?
+            WHERE run_id = ?
+        """
         with self._lock:
-            self._conn.execute(
-                """
-                UPDATE runs SET
-                    finished_at = ?,
-                    discovered_count = ?,
-                    skipped_known_count = ?,
-                    enriched_count = ?,
-                    status = ?
-                WHERE run_id = ?
-                """,
-                (
-                    _iso(_utc_now()),
-                    discovered_count,
-                    skipped_known_count,
-                    enriched_count,
-                    status,
-                    run_id,
-                ),
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(sql, params)
+                self._conn.commit()
+            except Exception:
+                # A prior write can leave psycopg in InFailedSqlTransaction; recover
+                # so exception handlers can still mark the run terminal.
+                self._raw_conn.rollback()
+                self._conn.execute(sql, params)
+                self._conn.commit()
 
     def count_leads(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM leads").fetchone()
@@ -951,12 +957,12 @@ class LeadStore:
     def lead_run_credits(self, run_id: str, place_id: str) -> int:
         row = self._conn.execute(
             """
-            SELECT COALESCE(SUM(units), 0) FROM cost_events
+            SELECT COALESCE(SUM(units), 0) AS total FROM cost_events
             WHERE run_id = ? AND place_id = ? AND provider = 'firecrawl'
             """,
             (run_id, place_id),
         ).fetchone()
-        return int(row[0] if row else 0)
+        return int(row["total"] if row else 0)
 
     def run_report(self, run_id: str) -> dict[str, Any]:
         run_row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -1269,7 +1275,11 @@ class LeadStore:
         for attempt in range(1, max_attempts + 1):
             try:
                 with self._lock:
-                    self._conn.execute(_COST_EVENT_INSERT_SQL, params)
+                    if not self._cost_event_ready_locked(params):
+                        self._pending_cost_events.append(params)
+                        return
+                    if not self._insert_cost_event_locked(params):
+                        return
                 return
             except psycopg.OperationalError as exc:
                 if attempt == max_attempts:
@@ -1279,17 +1289,47 @@ class LeadStore:
                     return
                 time.sleep(min(0.25 * (2 ** (attempt - 1)), 8.0))
 
+    def _cost_event_ready_locked(self, params: tuple[Any, ...]) -> bool:
+        place_id = params[2]
+        if not place_id:
+            return True
+        row = self._conn.execute(
+            "SELECT 1 FROM leads WHERE place_id = ? LIMIT 1",
+            (place_id,),
+        ).fetchone()
+        return row is not None
+
+    def _insert_cost_event_locked(self, params: tuple[Any, ...]) -> bool:
+        savepoint_active = False
+        try:
+            self._conn.execute("SAVEPOINT cost_event_insert")
+            savepoint_active = True
+            self._conn.execute(_COST_EVENT_INSERT_SQL, params)
+            self._conn.execute("RELEASE SAVEPOINT cost_event_insert")
+            return True
+        except psycopg.IntegrityError as exc:
+            if savepoint_active:
+                self._conn.execute("ROLLBACK TO SAVEPOINT cost_event_insert")
+                self._conn.execute("RELEASE SAVEPOINT cost_event_insert")
+            logger.warning("Queueing cost event until referenced rows exist: %s", exc)
+            if params not in self._pending_cost_events:
+                self._pending_cost_events.append(params)
+            return False
+
     def _flush_pending_cost_events(self) -> None:
         while True:
             with self._lock:
                 if not self._pending_cost_events:
                     return
                 params = self._pending_cost_events[0]
+                if not self._cost_event_ready_locked(params):
+                    return
             inserted = False
             for attempt in range(1, 9):
                 try:
                     with self._lock:
-                        self._conn.execute(_COST_EVENT_INSERT_SQL, params)
+                        if not self._insert_cost_event_locked(params):
+                            return
                         self._pending_cost_events.pop(0)
                         self._conn.commit()
                     inserted = True
@@ -1448,7 +1488,6 @@ class LeadStore:
             "run_events_deleted": 0,
             "cost_events_deleted": 0,
         }
-        cache_cutoff = _iso(_utc_now() - timedelta(days=page_cache_ttl_days))
         stats["page_cache_deleted"] = self._local_cache.prune_page_cache(
             ttl_days=page_cache_ttl_days, dry_run=dry_run
         )

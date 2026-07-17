@@ -6,6 +6,7 @@ import path from "path";
 import { cliChildEnv } from "./env";
 import { dbAvailable, getSql } from "./pg";
 import { formatCliCommand, projectRoot, resolveCli } from "./paths";
+import { parseLogLineToJobEvent } from "./run-events";
 import type { JobEvent, JobRecord, JobStatus } from "./types";
 
 const jobs = new Map<string, JobRecord>();
@@ -42,8 +43,18 @@ function persistJob(job: JobRecord) {
   }
 }
 
+function pidAlive(pid: number | null | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizePersistedJob(job: JobRecord): JobRecord {
-  if (job.status === "running" && !jobs.has(job.id)) {
+  if (job.status === "running" && !jobs.has(job.id) && !pidAlive(job.pid)) {
     return { ...job, status: "interrupted" };
   }
   return job;
@@ -75,12 +86,13 @@ function appendLog(job: JobRecord, line: string) {
     job.logs.shift();
   }
   job.logs.push(line);
-  emitterFor(job.id).emit("log", line);
   const evt = tryParseEvent(line);
   if (evt) {
     job.events.push(evt);
-    emitterFor(job.id).emit("event", evt);
   }
+  persistJob(job);
+  emitterFor(job.id).emit("log", line);
+  if (evt) emitterFor(job.id).emit("event", evt);
 }
 
 function runningJobCount(): number {
@@ -129,8 +141,12 @@ export function loadPersistedJob(id: string): JobRecord | null {
 }
 
 export function findJobByRunId(runId: string): JobRecord | null {
-  for (const job of listJobs(50)) {
+  for (const job of listJobs(200)) {
     if (job.events.some((evt) => evt.run_id === runId)) return job;
+    for (const line of job.logs) {
+      const evt = parseLogLineToJobEvent(line);
+      if (evt?.run_id === runId) return job;
+    }
   }
   return null;
 }
@@ -219,6 +235,7 @@ export function startJob(
     finishedAt: null,
   };
   jobs.set(id, job);
+  persistJob(job);
 
   const child = spawn(command, [...baseArgs, ...args], {
     cwd,
@@ -230,6 +247,7 @@ export function startJob(
   job.status = "running";
   job.pid = child.pid ?? null;
   childProcesses.set(id, child);
+  persistJob(job);
   appendLog(job, `$ ${job.command}`);
 
   const onData = (chunk: Buffer) => {
@@ -267,5 +285,8 @@ export function startJob(
 
 export function setJobStatus(id: string, status: JobStatus) {
   const job = jobs.get(id);
-  if (job) job.status = status;
+  if (job) {
+    job.status = status;
+    persistJob(job);
+  }
 }

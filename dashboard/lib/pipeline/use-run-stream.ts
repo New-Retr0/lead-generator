@@ -26,10 +26,22 @@ export type RunStreamState = {
   loading: boolean;
 };
 
+function eventKey(evt: JobEvent): string {
+  if (evt.id != null) return `id:${String(evt.id)}`;
+  return [
+    evt.ts,
+    evt.event,
+    evt.stage ?? "",
+    evt.place_id ?? "",
+    evt.reason ?? "",
+    typeof evt.duration_ms === "number" ? String(evt.duration_ms) : "",
+  ].join("|");
+}
+
 function mergeEvents(prev: JobEvent[], incoming: JobEvent[], seen: Set<string>): JobEvent[] {
   const next = [...prev];
   for (const evt of incoming) {
-    const key = `${evt.ts}:${evt.event}:${evt.place_id ?? ""}`;
+    const key = eventKey(evt);
     if (seen.has(key)) continue;
     seen.add(key);
     next.push(evt);
@@ -67,9 +79,9 @@ export function useRunStream(
     () => async () => {
       if (!runId) return;
       const [eventRes, costRes, runRes] = await Promise.all([
-        fetch(`/api/runs/${encodeURIComponent(runId)}/events`),
-        fetch(`/api/runs/${encodeURIComponent(runId)}/costs`),
-        fetch(`/api/runs/${encodeURIComponent(runId)}`),
+        fetch(`/api/runs/${encodeURIComponent(runId)}/events`, { cache: "no-store" }),
+        fetch(`/api/runs/${encodeURIComponent(runId)}/costs`, { cache: "no-store" }),
+        fetch(`/api/runs/${encodeURIComponent(runId)}`, { cache: "no-store" }),
       ]);
       const eventBody = (await eventRes.json()) as { events?: Record<string, unknown>[] };
       const costBody = (await costRes.json()) as { events?: Record<string, unknown>[] };
@@ -148,6 +160,20 @@ export function useRunStream(
     }, 3000);
     return () => window.clearInterval(id);
   }, [runId, enabled, pollWhileRunning, runStatus, fetchStream]);
+
+  useEffect(() => {
+    if (!runId || !enabled || loading || events.length > 0 || costs.length > 0) return;
+    let cancelled = false;
+    const timers = [1500, 5000].map((delay) =>
+      window.setTimeout(() => {
+        if (!cancelled) void fetchStream();
+      }, delay),
+    );
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [runId, enabled, loading, events.length, costs.length, fetchStream]);
 
   useEffect(() => {
     if (!runId || !enabled) return;

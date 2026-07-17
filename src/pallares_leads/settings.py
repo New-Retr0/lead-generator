@@ -51,23 +51,6 @@ class Settings(BaseSettings):
             "Credentials", secret=True, help="Firecrawl API key for enrichment"
         ),
     )
-    google_sheets_spreadsheet_id: str = Field(
-        default="",
-        json_schema_extra=_meta("Credentials", help="Optional Google Sheets export target"),
-    )
-    google_service_account_json: str = Field(
-        default="",
-        json_schema_extra=_meta(
-            "Credentials",
-            secret=True,
-            help="Path to service account JSON for Sheets export",
-        ),
-    )
-    google_sheets_tab_name: str = Field(
-        default="Leads",
-        json_schema_extra=_meta("Credentials", help="Worksheet tab name for Sheets export"),
-    )
-
     supabase_url: str = Field(
         default="",
         json_schema_extra=_meta("Supabase", help="Supabase project URL"),
@@ -300,13 +283,6 @@ class Settings(BaseSettings):
         default=False,
         json_schema_extra=_meta("Owner Chain", help="LLM fallback for exterior need signals"),
     )
-
-    def service_account_path(self) -> Path:
-        path = Path(self.google_service_account_json)
-        if not path.is_absolute():
-            path = self.project_root / path
-        return path
-
 
 def get_settings() -> Settings:
     return Settings()

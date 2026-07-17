@@ -3,8 +3,7 @@
 Use this API to pull Pallares lead-generation data into the Pallares.us
 platform. The API is read-only and uses a dedicated partner key.
 
-Machine-readable spec: [`partner-api.openapi.yaml`](./partner-api.openapi.yaml)  
-Developer Console UI: `/partner-api` (OpenAPI download at `/api/partner-api/openapi`)
+Machine-readable spec: [`partner-api.openapi.yaml`](./partner-api.openapi.yaml)
 
 ## Base URL
 
@@ -29,9 +28,8 @@ x-api-key: ppl_...
 Store the key as a server-side environment variable. Do not ship it in browser
 JavaScript or mobile client code.
 
-Admins can create and revoke keys from the Developer Console (`/partner-api`) when
-their Supabase user has `app_metadata.is_admin = true`. Server routes use the
-service role key — never expose it to clients.
+Operators can create or rotate keys with `scripts/create_partner_api_key.py`.
+The service role key is server-only; never expose it to clients.
 
 ## Error shape
 
@@ -220,8 +218,7 @@ x-api-key: ppl_...
 
 ## OpenAPI
 
-Machine-readable contract: `docs/partner-api.openapi.yaml` (also served at
-`/api/partner-api/openapi` on the Developer Console).
+Machine-readable contract: `docs/partner-api.openapi.yaml`.
 
 ## Error shape
 

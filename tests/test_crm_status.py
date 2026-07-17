@@ -2,9 +2,9 @@
 
 import uuid
 
-from pallares_leads.db.store import CRM_STATUSES, LeadStore, normalize_crm_status
-
 from helpers import ensure_lead
+
+from pallares_leads.db.store import CRM_STATUSES, LeadStore, normalize_crm_status
 
 
 def test_normalize_crm_status():

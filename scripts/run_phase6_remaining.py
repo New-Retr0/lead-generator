@@ -43,7 +43,10 @@ def checkpoint(label: str) -> tuple[float, float, int]:
     usd = float(con.execute("SELECT COALESCE(SUM(usd),0) n FROM cost_events").fetchone()["n"])
     leads = int(con.execute("SELECT COUNT(*) n FROM leads").fetchone()["n"])
     con.close()
-    print(f"[checkpoint:{label}] firecrawl_credits={credits:.0f}  tracked_usd=${usd:.2f}  leads={leads}")
+    print(
+        f"[checkpoint:{label}] firecrawl_credits={credits:.0f}  "
+        f"tracked_usd=${usd:.2f}  leads={leads}"
+    )
     return credits, usd, leads
 
 
@@ -66,11 +69,39 @@ def main() -> int:
 
     for cat in LA_OC_CATS:
         steps.append(
-            (f"la_{cat}", ["python", "-m", "pallares_leads.cli", "run", "--market", "los_angeles", "--category", cat, "--limit", "10", "--no-sheets"])
+            (
+                f"la_{cat}",
+                [
+                    "python",
+                    "-m",
+                    "pallares_leads.cli",
+                    "run",
+                    "--market",
+                    "los_angeles",
+                    "--category",
+                    cat,
+                    "--limit",
+                    "10",
+                ],
+            )
         )
     for cat in LA_OC_CATS:
         steps.append(
-            (f"oc_{cat}", ["python", "-m", "pallares_leads.cli", "run", "--market", "orange_county", "--category", cat, "--limit", "10", "--no-sheets"])
+            (
+                f"oc_{cat}",
+                [
+                    "python",
+                    "-m",
+                    "pallares_leads.cli",
+                    "run",
+                    "--market",
+                    "orange_county",
+                    "--category",
+                    cat,
+                    "--limit",
+                    "10",
+                ],
+            )
         )
     for market in VENDOR_MARKETS:
         steps.append(
@@ -87,7 +118,6 @@ def main() -> int:
                     "vendor_pressure_washing",
                     "--limit",
                     "2",
-                    "--no-sheets",
                 ],
             )
         )

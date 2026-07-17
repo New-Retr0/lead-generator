@@ -268,6 +268,7 @@ def _fulfill_discovery_loop(
                     lead_score=enriched.lead_score,
                     request_id=request_id,
                 )
+                store.commit_cost_events()
 
                 if _lead_matches_spec(
                     enriched,

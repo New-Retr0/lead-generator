@@ -144,7 +144,8 @@ def validate_all_config(config_dir: Path) -> list[str]:
             for county_key in campaign.get("exclude_counties") or []:
                 if county_key not in jurisdictions.counties:
                     problems.append(
-                        f"campaign {key!r}: exclude_counties references unknown county {county_key!r}"
+                        "campaign "
+                        f"{key!r}: exclude_counties references unknown county {county_key!r}"
                     )
 
     for category_key, cfg in categories.items():

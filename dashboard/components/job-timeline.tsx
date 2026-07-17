@@ -140,6 +140,26 @@ function groupByLead(events: JobEvent[]): { runEvents: JobEvent[]; leads: LeadGr
   return { runEvents, leads: [...map.values()] };
 }
 
+function eventKey(event: JobEvent): string {
+  if (event.id != null) return `id:${String(event.id)}`;
+  return [
+    event.ts,
+    event.event,
+    event.stage ?? "",
+    event.place_id ?? "",
+    event.reason ?? "",
+    typeof event.duration_ms === "number" ? String(event.duration_ms) : "",
+  ].join("|");
+}
+
+type JobRecordResponse = {
+  job?: {
+    status?: string;
+    logs?: unknown[];
+    events?: unknown[];
+  };
+};
+
 const EventRow = memo(function EventRow({
   event,
   active,
@@ -202,17 +222,23 @@ const LeadGroupCard = memo(function LeadGroupCard({
   group,
   defaultOpen,
   nowMs,
+  streamRunning,
+  compact = false,
 }: {
   group: LeadGroup;
   defaultOpen: boolean;
   nowMs: number;
+  streamRunning: boolean;
+  compact?: boolean;
 }) {
   const rejected = group.events.filter((e) => e.event === "verification_rejected").length;
+  const visibleEvents = compact ? group.events.slice(-4) : group.events;
+  const hiddenEventCount = group.events.length - visibleEvents.length;
   const lastEventTs = group.events.length
     ? Date.parse(group.events[group.events.length - 1]?.ts ?? "")
     : 0;
   const isStale =
-    !group.done && lastEventTs > 0 && nowMs - lastEventTs > 5 * 60 * 1000;
+    streamRunning && !group.done && lastEventTs > 0 && nowMs - lastEventTs > 5 * 60 * 1000;
   return (
     <SlideIn>
       <Collapsible defaultOpen={defaultOpen}>
@@ -240,6 +266,10 @@ const LeadGroupCard = memo(function LeadGroupCard({
                 {group.done.verification_level ?? "done"}
                 {typeof group.done.score === "number" ? ` · ${group.done.score}` : ""}
               </span>
+            ) : !streamRunning ? (
+              <span className="shrink-0 rounded-full border border-destructive/35 bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold text-destructive">
+                stopped
+              </span>
             ) : (
               <LiveDot tone="primary" className="shrink-0" />
             )}
@@ -247,20 +277,27 @@ const LeadGroupCard = memo(function LeadGroupCard({
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="space-y-0.5 border-t border-border/40 px-1.5 py-1.5">
-              {group.events.map((evt, i) => (
+              {visibleEvents.map((evt, i) => (
                 <EventRow
                   key={`${evt.ts}-${evt.event}-${i}`}
                   event={evt}
-                  active={!group.done && i === group.events.length - 1}
+                  active={!group.done && i === visibleEvents.length - 1}
                 />
               ))}
+              {compact && hiddenEventCount > 0 ? (
+                <p className="px-2 py-1 text-[11px] text-muted-foreground">
+                  {hiddenEventCount} earlier event{hiddenEventCount === 1 ? "" : "s"} hidden.
+                </p>
+              ) : null}
               {!group.done ? (
                 <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-2">
                   <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-primary/40 bg-primary/12 text-primary">
                     <TypingDots />
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {isStale
+                    {!streamRunning
+                      ? "stopped before completion"
+                      : isStale
                       ? "possibly hung — waiting for next event…"
                       : "working — next step streaming in…"}
                   </span>
@@ -279,55 +316,104 @@ const LOG_CAP = 200;
 function JobTimelineStream({
   jobId,
   onDone,
+  compact = false,
 }: {
   jobId: string;
   onDone?: (status: string) => void;
+  compact?: boolean;
 }) {
   const [lines, setLines] = useState<string[]>([]);
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [status, setStatus] = useState("running");
+  const [streamIssue, setStreamIssue] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
   const [paused, setPaused] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const wasLiveRef = useRef(false);
+  const seenLinesRef = useRef(new Set<string>());
+  const seenEventsRef = useRef(new Set<string>());
 
   useEffect(() => {
     let cancelled = false;
     wasLiveRef.current = false;
+    seenLinesRef.current.clear();
+    seenEventsRef.current.clear();
     // Reset stream UI when switching jobs (not an external-store subscription).
     // eslint-disable-next-line react-hooks/set-state-in-effect -- jobId change reset
     setLines([]);
     setEvents([]);
     setStatus("running");
+    setStreamIssue(false);
 
-    void fetch(`/api/jobs/${jobId}`)
-      .then((r) => r.json())
-      .then((body: { job?: { status: string } }) => {
+    const hydrateFromJobRecord = async () => {
+      try {
+        const body = (await fetch(`/api/jobs/${jobId}`).then((r) =>
+          r.json(),
+        )) as JobRecordResponse;
         if (cancelled) return;
         const initial = body.job?.status ?? "running";
         setStatus(initial);
         wasLiveRef.current = initial === "running";
-      })
-      .catch(() => {
+
+        const normalizedLines = (body.job?.logs ?? []).filter(
+          (line): line is string => typeof line === "string",
+        );
+        if (normalizedLines.length > 0) {
+          setLines(normalizedLines);
+          for (const line of normalizedLines) {
+            seenLinesRef.current.add(line);
+          }
+        }
+
+        const normalizedEvents = (body.job?.events ?? []).filter(
+          (event): event is JobEvent =>
+            typeof event === "object" &&
+            event !== null &&
+            (event as { t?: unknown }).t === "evt" &&
+            typeof (event as { event?: unknown }).event === "string" &&
+            typeof (event as { ts?: unknown }).ts === "string",
+        );
+        if (normalizedEvents.length > 0) {
+          setEvents(normalizedEvents);
+          for (const event of normalizedEvents) {
+            seenEventsRef.current.add(eventKey(event));
+          }
+        }
+      } catch {
         if (!cancelled) wasLiveRef.current = true;
-      });
+      }
+    };
+
+    void hydrateFromJobRecord();
 
     const source = new EventSource(`/api/jobs/${jobId}/stream`);
 
+    source.onopen = () => {
+      setStreamIssue(false);
+    };
+
     source.addEventListener("log", (event) => {
       const data = JSON.parse(event.data) as { line: string };
+      setStreamIssue(false);
+      if (seenLinesRef.current.has(data.line)) return;
+      seenLinesRef.current.add(data.line);
       setLines((prev) => [...prev, data.line]);
     });
 
     source.addEventListener("event", (event) => {
       const data = JSON.parse(event.data) as JobEvent;
+      setStreamIssue(false);
+      const key = eventKey(data);
+      if (seenEventsRef.current.has(key)) return;
+      seenEventsRef.current.add(key);
       setEvents((prev) => [...prev, data]);
     });
 
     source.addEventListener("done", (event) => {
       const data = JSON.parse(event.data) as { status: string };
+      setStreamIssue(false);
       setStatus(data.status);
       if (wasLiveRef.current) onDone?.(data.status);
       source.close();
@@ -335,8 +421,7 @@ function JobTimelineStream({
 
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) return;
-      setStatus("error");
-      source.close();
+      setStreamIssue(true);
     };
 
     return () => {
@@ -373,6 +458,16 @@ function JobTimelineStream({
   }, [events]);
 
   const { runEvents, leads } = useMemo(() => groupByLead(events), [events]);
+  const visibleRunEvents = useMemo(
+    () => (compact ? runEvents.slice(-4) : runEvents),
+    [compact, runEvents],
+  );
+  const visibleLeads = useMemo(
+    () => (compact ? leads.slice(-3) : leads),
+    [compact, leads],
+  );
+  const hiddenActivityCount =
+    runEvents.length - visibleRunEvents.length + leads.length - visibleLeads.length;
   const visibleLines = useMemo(
     () => (showFullLog ? lines : lines.slice(-LOG_CAP)),
     [lines, showFullLog],
@@ -414,34 +509,38 @@ function JobTimelineStream({
                 </p>
                 <p className="text-xs capitalize text-muted-foreground">
                   {running
-                    ? isStale
+                    ? streamIssue
+                      ? "reconnecting - holding last telemetry"
+                      : isStale
                       ? "possibly hung — no events for 5+ minutes"
                       : "streaming events…"
                     : status}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <Button
-                type="button"
-                size="sm"
-                variant={showRaw ? "secondary" : "ghost"}
-                className="h-7 px-2.5 text-xs"
-                onClick={() => setShowRaw((v) => !v)}
-              >
-                <SquareTerminal className="size-3.5" />
-                Raw
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2.5 text-xs"
-                onClick={() => setPaused((v) => !v)}
-              >
-                {paused ? "Follow" : "Pause"}
-              </Button>
-            </div>
+            {!compact ? (
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={showRaw ? "secondary" : "ghost"}
+                  className="h-7 px-2.5 text-xs"
+                  onClick={() => setShowRaw((v) => !v)}
+                >
+                  <SquareTerminal className="size-3.5" />
+                  Raw
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2.5 text-xs"
+                  onClick={() => setPaused((v) => !v)}
+                >
+                  {paused ? "Follow" : "Pause"}
+                </Button>
+              </div>
+            ) : null}
           </div>
 
           {/* live counters */}
@@ -486,7 +585,7 @@ function JobTimelineStream({
 
         {/* body */}
         <div className="p-3">
-          {showRaw ? (
+          {showRaw && !compact ? (
             <div className="space-y-2">
               {!showFullLog && lines.length > LOG_CAP ? (
                 <Button
@@ -505,7 +604,12 @@ function JobTimelineStream({
               </pre>
             </div>
           ) : (
-            <div className="max-h-96 space-y-2 overflow-auto pr-1">
+            <div
+              className={cn(
+                "space-y-2 overflow-auto pr-1",
+                compact ? "max-h-[22rem]" : "max-h-96",
+              )}
+            >
               {events.length === 0 ? (
                 <div className="space-y-2 py-2">
                   <div className="shimmer h-12 rounded-xl border border-border/40" />
@@ -516,23 +620,31 @@ function JobTimelineStream({
                 </div>
               ) : (
                 <>
-                  {runEvents.length > 0 ? (
+                  {visibleRunEvents.length > 0 ? (
                     <SlideIn>
                       <div className="glass space-y-0.5 rounded-xl px-1.5 py-1.5">
-                        {runEvents.map((evt, i) => (
+                        {visibleRunEvents.map((evt, i) => (
                           <EventRow key={`run-${evt.ts}-${i}`} event={evt} />
                         ))}
                       </div>
                     </SlideIn>
                   ) : null}
-                  {leads.map((group, i) => (
+                  {visibleLeads.map((group, i) => (
                     <LeadGroupCard
                       key={group.key}
                       group={group}
-                      defaultOpen={i === leads.length - 1}
+                      defaultOpen={i === visibleLeads.length - 1}
                       nowMs={now}
+                      streamRunning={running}
+                      compact={compact}
                     />
                   ))}
+                  {compact && hiddenActivityCount > 0 ? (
+                    <p className="px-2 pb-1 text-center text-[11px] text-muted-foreground">
+                      Showing latest activity - {hiddenActivityCount} earlier item
+                      {hiddenActivityCount === 1 ? "" : "s"} tucked away.
+                    </p>
+                  ) : null}
                 </>
               )}
               <div ref={bottomRef} />
@@ -547,9 +659,11 @@ function JobTimelineStream({
 export function JobTimeline({
   jobId,
   onDone,
+  compact,
 }: {
   jobId: string;
   onDone?: (status: string) => void;
+  compact?: boolean;
 }) {
-  return <JobTimelineStream key={jobId} jobId={jobId} onDone={onDone} />;
+  return <JobTimelineStream key={jobId} jobId={jobId} onDone={onDone} compact={compact} />;
 }

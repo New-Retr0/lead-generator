@@ -14,13 +14,13 @@ from firecrawl import Firecrawl
 from firecrawl.v2.types import ScrapeOptions
 from firecrawl.v2.utils.error_handler import PaymentRequiredError, RateLimitError
 
+from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.enrich.contact_extract import candidate_paths
 from pallares_leads.enrich.contact_requirements import (
     EnrichmentRules,
     investigation_meets_bar,
 )
 from pallares_leads.enrich.domain_verify import pick_verified_website_url, verify_website_url
-from pallares_leads.db.raw_archive import record_capture
 from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
 from pallares_leads.enrich.firecrawl_types import FirecrawlStageMeta
 from pallares_leads.enrich.google_gaps import is_corporate_locator_url
@@ -34,7 +34,6 @@ from pallares_leads.settings import Settings
 from pallares_leads.utils.http_retry import OutOfCreditsError, request_with_retry
 
 if TYPE_CHECKING:
-    from pallares_leads.config_loader import CountyJurisdictionConfig, StateJurisdictionConfig
     from pallares_leads.db.store import LeadStore
 
 logger = logging.getLogger(__name__)
@@ -746,7 +745,10 @@ class FirecrawlClient:
         return cleaned
 
     def _scrape_json(self, url: str, raw: RawLead) -> LeadInvestigationResult | None:
-        """Markdown scrape (1 credit) + AI Gateway contact extract (replaces Firecrawl JSON mode)."""
+        """Markdown scrape plus AI Gateway contact extract.
+
+        This replaces Firecrawl JSON mode.
+        """
         cache_key_content = "json_grounded"
         if self._store:
             cached = self._store.get_page_cache(
@@ -1046,7 +1048,7 @@ class FirecrawlClient:
         max_credits: int = 100,
     ) -> dict[str, Any] | None:
         """Research-preview Firecrawl /agent for SOS/recorder/parcel owner lookups."""
-        from pallares_leads.enrich.task_templates import render_task, SOS_BIZFILE_TASK
+        from pallares_leads.enrich.task_templates import SOS_BIZFILE_TASK, render_task
 
         prompt_parts = [
             render_task(
@@ -1127,7 +1129,7 @@ class FirecrawlClient:
 
         if used is None and remaining is not None and plan is not None:
             try:
-                used = float(plan) - float(remaining)
+                used = max(0.0, float(plan) - float(remaining))
             except (TypeError, ValueError):
                 used = None
 

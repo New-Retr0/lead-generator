@@ -35,6 +35,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { CostSeries } from "@/lib/types";
 import { buildCostBudget } from "@/lib/cost-budget";
 import {
@@ -53,8 +58,12 @@ const FIRECRAWL_CREDIT_REFERENCE = [
   { operation: "JSON mode", cost: "+4 credits per page" },
   { operation: "PDF", cost: "+1 credit per page" },
   {
-    operation: "Standard plan",
-    cost: "100,000 cr / $99 mo → $0.00099 per credit",
+    operation: "Standard public plan",
+    cost: "100,000 cr / $83 mo billed yearly -> $0.00083 per credit",
+  },
+  {
+    operation: "Growth / Scale",
+    cost: "500,000 cr / $333 mo, 1,000,000 cr / $599 mo",
   },
 ] as const;
 
@@ -89,13 +98,17 @@ export function CostsClient({
   initialData: CostSeries;
 }) {
   const [days, setDays] = useState(initialDays);
-  const [fetchedData, setFetchedData] = useState<CostSeries | null>(null);
+  const [rangeData, setRangeData] = useState<{ days: number; data: CostSeries } | null>(
+    null,
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [liveCredits, setLiveCredits] = useState<{
     firecrawl: {
       remaining: number | null;
       plan: number | null;
       used: number | null;
+      planName?: string | null;
+      creditUsd?: number | null;
       billingPeriodStart: string | null;
       billingPeriodEnd: string | null;
       live: boolean;
@@ -109,14 +122,22 @@ export function CostsClient({
       .then((body) => setLiveCredits(body));
   }, []);
 
-  const data = days === initialDays ? initialData : (fetchedData ?? initialData);
+  const data = rangeData?.days === days ? rangeData.data : initialData;
 
   useEffect(() => {
-    if (days === initialDays && !fetchedData) return;
-    fetch(`/api/costs?days=${days}`)
+    if (days === initialDays) return;
+    const controller = new AbortController();
+    fetch(`/api/costs?days=${days}`, { signal: controller.signal })
       .then((r) => r.json())
-      .then(setFetchedData);
-  }, [days, initialDays, fetchedData]);
+      .then((body) => {
+        setRangeData({ days, data: body as CostSeries });
+      })
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.error("Failed to load costs", err);
+      });
+    return () => controller.abort();
+  }, [days, initialDays]);
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
@@ -125,7 +146,7 @@ export function CostsClient({
         fetch(`/api/costs?days=${days}`).then((r) => r.json()),
         fetch("/api/credits").then((r) => r.json()),
       ]);
-      setFetchedData(costBody as CostSeries);
+      setRangeData({ days, data: costBody as CostSeries });
       setLiveCredits(credBody);
     } finally {
       setRefreshing(false);
@@ -160,6 +181,8 @@ export function CostsClient({
             remaining: liveFc.remaining,
             plan: liveFc.plan,
             used: liveFc.used,
+            planName: liveFc.planName,
+            creditUsd: liveFc.creditUsd,
             billingPeriodEnd: liveFc.billingPeriodEnd,
           }
         : (firecrawlBalance ?? undefined);
@@ -198,7 +221,7 @@ export function CostsClient({
           frameCount={300}
           quality="medium"
           fps={30}
-          className="absolute inset-x-0 bottom-0 h-40 w-full [mask-image:linear-gradient(to_top,black_50%,transparent_100%)]"
+          className="absolute inset-x-0 bottom-0 h-[8.5rem] w-full [mask-image:linear-gradient(to_top,black_50%,transparent_100%)]"
           gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
           lazy
           ariaLabel="Wave animation"
@@ -214,25 +237,37 @@ export function CostsClient({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Tabs value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-              <TabsList>
-                {RANGES.map((r) => (
-                  <TabsTrigger key={r} value={String(r)}>
-                    {r}d
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={refreshing}
-              onClick={() => void refreshAll()}
-            >
-              <RotateCw className={refreshing ? "size-4 animate-spin" : "size-4"} />
-              Refresh
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Tabs value={String(days)} onValueChange={(v) => setDays(Number(v))}>
+                    <TabsList>
+                      {RANGES.map((r) => (
+                        <TabsTrigger key={r} value={String(r)}>
+                          {r}d
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
+                  </Tabs>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>Spend window.</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={refreshing}
+                  onClick={() => void refreshAll()}
+                >
+                  <RotateCw className={refreshing ? "size-4 animate-spin" : "size-4"} />
+                  Refresh
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Reload live balances.</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </div>
@@ -331,6 +366,7 @@ export function CostsClient({
               ) : null}
             </CardTitle>
             <CardDescription>
+              {budget.planName ? `${budget.planName} - ` : ""}
               {budget.planCredits != null
                 ? `${formatCredits(budget.planCredits)} credits/mo`
                 : "Plan size unknown"}
@@ -339,6 +375,11 @@ export function CostsClient({
                 : ""}
               {" · from api.firecrawl.dev"}
             </CardDescription>
+            {budget.remainingCredits != null && budget.remainingCredits > budget.planCredits ? (
+              <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                Balance includes extra/recharge credits beyond monthly plan.
+              </p>
+            ) : null}
             {liveFirecrawlSub ? (
               <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
                 {liveFirecrawlSub}
@@ -727,7 +768,7 @@ export function CostsClient({
           <CollapsibleTrigger asChild>
             <CardHeader className="cursor-pointer">
               <CardTitle className="font-mono text-sm">Firecrawl credit reference</CardTitle>
-              <CardDescription>Per-operation costs from Firecrawl docs (Standard plan)</CardDescription>
+              <CardDescription>Per-operation costs from Firecrawl docs and public plan examples</CardDescription>
             </CardHeader>
           </CollapsibleTrigger>
           <CollapsibleContent>

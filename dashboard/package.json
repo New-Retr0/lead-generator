@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "portless",
+    "dev": "node scripts/dev-portless.mjs",
     "dev:app": "next dev",
     "dev:direct": "next dev",
     "build": "next build",

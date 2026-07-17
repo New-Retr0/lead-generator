@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
+import psycopg
 import pytest
 
 from pallares_leads.costs import load_pricing, usd_for
@@ -43,6 +43,7 @@ def test_record_cost_event_and_summary(store: LeadStore) -> None:
     assert summary["usd_total"] >= 0.082
     assert "firecrawl" in summary["by_provider"]
     assert summary["by_provider"]["firecrawl"]["units_total"] >= 5
+    assert store.lead_run_credits(run_id, "places/cost-isolated") == 5
 
     row = store._conn.execute(
         """
@@ -120,7 +121,7 @@ def test_page_cache_ttl_expiry(store: LeadStore) -> None:
 def test_usd_for_firecrawl_credits() -> None:
     pricing = load_pricing()
     assert usd_for(pricing, provider="firecrawl", operation="scrape", units=10) == pytest.approx(
-        0.0099
+        0.0083
     )
 
 
@@ -214,3 +215,67 @@ def test_record_cost_event_queues_on_persistent_operational_error(
     finally:
         store._conn = original_conn
         store._pending_cost_events.clear()
+
+
+def test_cost_event_waits_for_lead_before_fk_insert(store: LeadStore) -> None:
+    from helpers import ensure_lead
+
+    run_id = store.start_run(run_type="market", market_key="reedley", category_key="gas_station")
+    place_id = "places/cost-before-lead"
+
+    store.record_cost_event(
+        provider="firecrawl",
+        operation="scrape",
+        units=3,
+        unit_type="credits",
+        usd=0.03,
+        run_id=run_id,
+        place_id=place_id,
+    )
+    store.commit_cost_events()
+    assert len(store._pending_cost_events) == 1
+    assert store.run_credits_total(run_id) == 0
+
+    ensure_lead(store, place_id)
+    store.commit_cost_events()
+
+    assert len(store._pending_cost_events) == 0
+    assert store.run_credits_total(run_id) == 3
+
+
+def test_finish_run_recovers_from_aborted_transaction(store: LeadStore) -> None:
+    run_id = store.start_run(run_type="market", market_key="reedley", category_key="gas_station")
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        store._conn.execute(
+            """
+            INSERT INTO cost_events (
+                run_id, place_id, provider, operation, units, unit_type, usd,
+                model, meta_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                "places/missing-for-fk",
+                "firecrawl",
+                "scrape",
+                1,
+                "credits",
+                0.01,
+                None,
+                {},
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+
+    store.finish_run(
+        run_id,
+        discovered_count=0,
+        skipped_known_count=0,
+        enriched_count=0,
+        status="failed",
+    )
+
+    row = store._conn.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    assert row is not None
+    assert row["status"] == "failed"

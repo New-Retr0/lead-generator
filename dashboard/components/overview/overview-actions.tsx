@@ -81,15 +81,15 @@ export function OverviewActions({
           }
         }}
       >
-        <DialogContent className="glass-strong glass-sheen flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl">
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden border-primary/20 bg-card p-4 shadow-2xl sm:max-w-2xl sm:p-6">
           <DialogHeader className="shrink-0">
             <DialogTitle>System health check</DialogTitle>
             <DialogDescription>
-              Verifies Google Places, Firecrawl, AI Gateway, Browser Use balances, Google Sheets,
-              and the lead database.
+              Verifies Google Places, Firecrawl, AI Gateway, Browser Use balances, and the lead
+              database.
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             {doctorError ? (
               <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-destructive/40 p-8 text-center">
                 <p className="text-sm text-destructive">{doctorError}</p>

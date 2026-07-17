@@ -63,14 +63,13 @@ pallares-leads doctor
 ## Local dashboard
 
 ```powershell
-cd dashboard
-npm install
+npm --prefix dashboard install
 npm run dev
 ```
 
 Open **https://pallares.localhost** — overview KPIs, lead table with verification levels, natural-language requests, live run timeline (JSON progress), cost charts, triage at `/triage`.
 
-Uses [Portless](https://portless.sh) for a stable `.localhost` URL instead of `localhost:3000`. First run on Windows: `npx portless trust` if the browser warns about HTTPS. To skip Portless: `npm run dev:direct` → http://localhost:3000.
+Uses [Portless](https://portless.sh) for a stable `.localhost` URL instead of `localhost:3000`. First run on Windows: `npm --prefix dashboard exec portless trust` if the browser warns about HTTPS. To skip Portless: `npm run dev:direct` → http://localhost:3000.
 
 Dashboard nav: **Pipeline** (overview, requests, runs) vs **Sales** (CRM, leads, triage) vs **Operations** (costs). Runs are single-pass — each place is discovered and processed together.
 
@@ -111,7 +110,6 @@ src/pallares_leads/
   eval/              stage-traced eval replay
 supabase/            canonical schema (migrations) + partner-api Edge Function
 dashboard/           local Next.js operator console + CRM
-sales-app/           Vercel Developer Console (Supabase Auth + RLS)
 data/                local-only runtime (canonical data lives in Supabase)
   local_cache.db     page_cache / domain_cache / extraction_cache
   raw_archive.db     compressed raw API payloads for feature replay + eval

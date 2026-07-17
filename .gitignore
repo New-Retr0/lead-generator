@@ -31,9 +31,6 @@ data/evals/
 data/runs/
 dashboard/node_modules/
 dashboard/.next/
-sales-app/node_modules/
-sales-app/.next/
-sales-app/.vercel/
 !.gitkeep
 
 # Stray credential files (if saved outside secrets/)

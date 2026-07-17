@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from pallares_leads.config_loader import load_categories, load_markets
+from pallares_leads.costs import firecrawl_credit_usd, infer_firecrawl_plan, load_pricing
 from pallares_leads.enrich.ai_gateway_client import gateway_chat_completion, gateway_configured
 from pallares_leads.enrich.sales_copy import parse_json_from_llm
 from pallares_leads.request.spec import BudgetCap, CorridorFilter, LeadRequestSpec
@@ -44,7 +46,6 @@ Return JSON only with these fields:
 - require_decision_maker: boolean
 - recurring_only: boolean
 - min_lead_score: integer 0-100
-- budget: {max_firecrawl_credits, max_usd}
 - needs_confirmation: list of strings
 """
 
@@ -73,13 +74,6 @@ def _spec_schema() -> dict[str, Any]:
             "require_decision_maker": {"type": "boolean"},
             "recurring_only": {"type": "boolean"},
             "min_lead_score": {"type": "integer", "minimum": 0, "maximum": 100},
-            "budget": {
-                "type": "object",
-                "properties": {
-                    "max_firecrawl_credits": {"type": "integer"},
-                    "max_usd": {"type": "number"},
-                },
-            },
             "needs_confirmation": {"type": "array", "items": {"type": "string"}},
         },
         "required": [
@@ -89,7 +83,6 @@ def _spec_schema() -> dict[str, Any]:
             "require_decision_maker",
             "recurring_only",
             "min_lead_score",
-            "budget",
             "needs_confirmation",
         ],
     }
@@ -102,6 +95,28 @@ def _build_context(settings: Settings) -> dict[str, list[str]]:
         "markets": sorted(markets.keys()),
         "categories": sorted(categories.keys()),
     }
+
+
+def _default_firecrawl_credit_cap(settings: Settings) -> int:
+    env_cap = os.environ.get("PALLARES_REQUEST_MAX_FIRECRAWL_CREDITS")
+    if env_cap:
+        try:
+            cap = int(float(env_cap))
+            if cap > 0:
+                return cap
+        except ValueError:
+            pass
+
+    pricing = load_pricing(settings.config_dir)
+    _, plan = infer_firecrawl_plan(pricing)
+    if plan:
+        try:
+            cap = int(plan.get("monthly_credits") or 0)
+            if cap > 0:
+                return cap
+        except (TypeError, ValueError):
+            pass
+    return BudgetCap().max_firecrawl_credits
 
 
 def _fallback_spec(prompt: str, settings: Settings) -> LeadRequestSpec:
@@ -151,7 +166,7 @@ def _fallback_spec(prompt: str, settings: Settings) -> LeadRequestSpec:
         require_decision_maker=True,
         recurring_only=False,
         min_lead_score=40,
-        budget=BudgetCap(),
+        budget=BudgetCap(max_firecrawl_credits=_default_firecrawl_credit_cap(settings)),
         needs_confirmation=["Parsed without AI Gateway — review spec before running"],
         raw_prompt=prompt,
     )
@@ -180,11 +195,7 @@ def _dict_to_spec(data: dict[str, Any], *, prompt: str, settings: Settings) -> L
             buffer_m=int(corridor_data.get("buffer_m") or 800),
         )
 
-    budget_data = data.get("budget") or {}
-    budget = BudgetCap(
-        max_firecrawl_credits=int(budget_data.get("max_firecrawl_credits") or 200),
-        max_usd=float(budget_data.get("max_usd") or 10.0),
-    )
+    budget = BudgetCap(max_firecrawl_credits=_default_firecrawl_credit_cap(settings))
 
     return LeadRequestSpec(
         target_kind=data.get("target_kind") or "property",
@@ -270,10 +281,10 @@ def estimate_request_cost(spec: LeadRequestSpec) -> dict[str, float | int]:
     discovery_credits = len(spec.categories) * len(spec.market_keys) * 2
     enrich_credits = spec.count * per_lead_credits
     total_credits = discovery_credits + enrich_credits
-    usd = total_credits * 0.00099
+    usd = total_credits * firecrawl_credit_usd(load_pricing())
     return {
         "discovery_credits_est": discovery_credits,
         "enrich_credits_est": enrich_credits,
-        "total_credits_est": min(total_credits, spec.budget.max_firecrawl_credits),
-        "usd_est": min(usd, spec.budget.max_usd),
+        "total_credits_est": total_credits,
+        "usd_est": usd,
     }

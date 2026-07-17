@@ -2,8 +2,6 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 from pallares_leads.db.store import LeadStore
 from pallares_leads.schemas import RawLead
 

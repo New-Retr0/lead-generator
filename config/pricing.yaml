@@ -1,8 +1,77 @@
 # USD estimates for pipeline cost tracking.
-# Firecrawl Standard: $99 / 100,000 credits ≈ $0.00099 per credit.
+# Firecrawl public pricing verified 2026-07-07:
+# https://www.firecrawl.dev/pricing and https://docs.firecrawl.dev/rate-limits
+# Default rate uses the current Standard annual-billing price:
+# $83 / 100,000 credits ~= $0.00083 per credit.
 
 firecrawl:
-  credit_usd: 0.00099
+  default_plan_key: standard
+  credit_usd: 0.00083
+  plans:
+    free:
+      name: Free
+      monthly_credits: 1000
+      monthly_usd: 0
+      concurrent_browsers: 2
+      max_queued_jobs: 50000
+      rate_limits_rpm:
+        scrape: 10
+        map: 10
+        crawl: 1
+        search: 5
+        agent: 10
+    hobby:
+      name: Hobby
+      monthly_credits: 5000
+      monthly_usd: 16
+      billing: billed yearly
+      concurrent_browsers: 5
+      max_queued_jobs: 50000
+      rate_limits_rpm:
+        scrape: 100
+        map: 100
+        crawl: 15
+        search: 50
+        agent: 100
+    standard:
+      name: Standard
+      monthly_credits: 100000
+      monthly_usd: 83
+      billing: billed yearly
+      concurrent_browsers: 50
+      max_queued_jobs: 100000
+      rate_limits_rpm:
+        scrape: 500
+        map: 500
+        crawl: 50
+        search: 250
+        agent: 500
+    growth:
+      name: Growth
+      monthly_credits: 500000
+      monthly_usd: 333
+      billing: billed yearly
+      concurrent_browsers: 100
+      max_queued_jobs: 200000
+      rate_limits_rpm:
+        scrape: 5000
+        map: 5000
+        crawl: 250
+        search: 2500
+        agent: 1000
+    scale:
+      name: Scale
+      monthly_credits: 1000000
+      monthly_usd: 599
+      billing: billed yearly
+      concurrent_browsers: 150
+      max_queued_jobs: 300000
+      rate_limits_rpm:
+        scrape: 7500
+        map: 7500
+        crawl: 750
+        search: 7500
+        agent: 1000
 
 google_places:
   # Enterprise + Atmosphere SKU (reviews, parkingOptions, paymentOptions, editorialSummary)

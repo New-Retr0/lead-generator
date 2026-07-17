@@ -1,4 +1,4 @@
--- Enable Supabase Realtime for developer console live streams.
+-- Enable Supabase Realtime for live stream consumers.
 
 do $$
 begin

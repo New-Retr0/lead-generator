@@ -1,8 +1,84 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dbAvailable, getSql } from "@/lib/pg";
-import { getFirecrawlCreditUsd, getPipelineConfig } from "@/lib/config";
+import {
+  getFirecrawlCreditUsd,
+  getNextFirecrawlPlan,
+  getPipelineConfig,
+} from "@/lib/config";
 
 export const dynamic = "force-dynamic";
+
+type ProviderEstimate = {
+  provider: string;
+  share: number;
+  estimatedUsd: number;
+  basis: "current_credit_rate" | "historical_non_firecrawl";
+};
+
+type CostSample = {
+  leadCount: number;
+  firecrawlUnits: number;
+  providers: { provider: string; usd: number; units: number }[];
+};
+
+async function loadSample(categoryKey?: string): Promise<CostSample> {
+  const sql = getSql();
+  if (categoryKey) {
+    const rows = await sql`
+      SELECT
+        COUNT(DISTINCT ce.place_id)::float AS lead_count,
+        COALESCE(SUM(ce.units) FILTER (WHERE ce.provider = 'firecrawl'), 0)::float AS firecrawl_units
+      FROM cost_events ce
+      JOIN leads l ON l.place_id = ce.place_id
+      WHERE ce.place_id IS NOT NULL AND l.category_key = ${categoryKey}
+    `;
+    const providerRows = await sql`
+      SELECT ce.provider,
+             COALESCE(SUM(ce.usd), 0)::float AS usd,
+             COALESCE(SUM(ce.units), 0)::float AS units
+      FROM cost_events ce
+      JOIN leads l ON l.place_id = ce.place_id
+      WHERE ce.place_id IS NOT NULL AND l.category_key = ${categoryKey}
+      GROUP BY ce.provider
+      ORDER BY usd DESC
+    `;
+    return {
+      leadCount: Number(rows[0]?.lead_count ?? 0),
+      firecrawlUnits: Number(rows[0]?.firecrawl_units ?? 0),
+      providers: providerRows.map((row) => ({
+        provider: String(row.provider),
+        usd: Number(row.usd),
+        units: Number(row.units),
+      })),
+    };
+  }
+
+  const rows = await sql`
+    SELECT
+      COUNT(DISTINCT place_id)::float AS lead_count,
+      COALESCE(SUM(units) FILTER (WHERE provider = 'firecrawl'), 0)::float AS firecrawl_units
+    FROM cost_events
+    WHERE place_id IS NOT NULL
+  `;
+  const providerRows = await sql`
+    SELECT provider,
+           COALESCE(SUM(usd), 0)::float AS usd,
+           COALESCE(SUM(units), 0)::float AS units
+    FROM cost_events
+    WHERE place_id IS NOT NULL
+    GROUP BY provider
+    ORDER BY usd DESC
+  `;
+  return {
+    leadCount: Number(rows[0]?.lead_count ?? 0),
+    firecrawlUnits: Number(rows[0]?.firecrawl_units ?? 0),
+    providers: providerRows.map((row) => ({
+      provider: String(row.provider),
+      usd: Number(row.usd),
+      units: Number(row.units),
+    })),
+  };
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -29,68 +105,60 @@ export async function GET(req: NextRequest) {
     const estimatedLeads = combos * limit;
 
     let avgCreditsPerLead = 45;
-    let avgUsdPerLead = 0.12;
+    let avgUsdPerLead = 0;
     let sampleSize = 0;
+    let sample: CostSample | null = null;
 
     if (dbAvailable()) {
-      const sql = getSql();
-      const rows = await sql`
-        SELECT
-          COUNT(DISTINCT place_id)::float AS lead_count,
-          COALESCE(SUM(units) FILTER (WHERE provider = 'firecrawl'), 0)::float AS firecrawl_units,
-          COALESCE(SUM(usd), 0)::float AS total_usd
-        FROM cost_events
-        WHERE place_id IS NOT NULL
-      `;
-      const row = rows[0];
-      sampleSize = Number(row?.lead_count ?? 0);
-      if (sampleSize > 0) {
-        avgCreditsPerLead = Number(row.firecrawl_units) / sampleSize;
-        avgUsdPerLead = Number(row.total_usd) / sampleSize;
-      }
+      sample = await loadSample();
+      sampleSize = sample.leadCount;
 
       if (categoryKeys.length === 1 && sampleSize >= 20) {
-        const catRows = await sql`
-          SELECT
-            COUNT(DISTINCT ce.place_id)::float AS lead_count,
-            COALESCE(SUM(ce.units) FILTER (WHERE ce.provider = 'firecrawl'), 0)::float AS firecrawl_units,
-            COALESCE(SUM(ce.usd), 0)::float AS total_usd
-          FROM cost_events ce
-          JOIN leads l ON l.place_id = ce.place_id
-          WHERE ce.place_id IS NOT NULL AND l.category_key = ${categoryKeys[0]}
-        `;
-        const catRow = catRows[0];
-        const catSample = Number(catRow?.lead_count ?? 0);
-        if (catSample >= 20) {
-          avgCreditsPerLead = Number(catRow.firecrawl_units) / catSample;
-          avgUsdPerLead = Number(catRow.total_usd) / catSample;
-          sampleSize = catSample;
+        const categorySample = await loadSample(categoryKeys[0]);
+        if (categorySample.leadCount >= 20) {
+          sample = categorySample;
+          sampleSize = categorySample.leadCount;
         }
+      }
+
+      if (sampleSize > 0 && sample) {
+        avgCreditsPerLead = sample.firecrawlUnits / sampleSize;
       }
     }
 
     const estimatedCredits = Math.round(estimatedLeads * avgCreditsPerLead);
-    const estimatedUsd = estimatedLeads * avgUsdPerLead;
     const creditUsd = getFirecrawlCreditUsd();
     const estimatedFirecrawlUsd = estimatedCredits * creditUsd;
+    const nextPlan = getNextFirecrawlPlan(estimatedCredits);
 
-    let providers: { provider: string; share: number; estimatedUsd: number }[] = [];
-    if (dbAvailable()) {
-      const sql = getSql();
-      const providerRows = await sql`
-        SELECT provider, COALESCE(SUM(usd), 0)::float AS usd
-        FROM cost_events
-        WHERE place_id IS NOT NULL
-        GROUP BY provider
-        ORDER BY usd DESC
-      `;
-      const totalUsdAll = providerRows.reduce((s, r) => s + Number(r.usd), 0);
-      providers = providerRows.map((r) => ({
-        provider: r.provider as string,
-        share: totalUsdAll > 0 ? Number(r.usd) / totalUsdAll : 0,
-        estimatedUsd: totalUsdAll > 0 ? estimatedUsd * (Number(r.usd) / totalUsdAll) : 0,
-      }));
+    let providers: ProviderEstimate[] = [
+      {
+        provider: "firecrawl",
+        share: 1,
+        estimatedUsd: estimatedFirecrawlUsd,
+        basis: "current_credit_rate",
+      },
+    ];
+    if (sample && sampleSize > 0) {
+      const nonFirecrawl = sample.providers
+        .filter((row) => row.provider !== "firecrawl")
+        .map((row) => ({
+          provider: row.provider,
+          share: 0,
+          estimatedUsd: estimatedLeads * (row.usd / sampleSize),
+          basis: "historical_non_firecrawl" as const,
+        }))
+        .filter((row) => row.estimatedUsd > 0);
+      providers = [...providers, ...nonFirecrawl];
     }
+    const estimatedUsd = providers.reduce((sum, row) => sum + row.estimatedUsd, 0);
+    avgUsdPerLead = estimatedLeads > 0 ? estimatedUsd / estimatedLeads : 0;
+    providers = providers
+      .map((row) => ({
+        ...row,
+        share: estimatedUsd > 0 ? row.estimatedUsd / estimatedUsd : 0,
+      }))
+      .sort((a, b) => b.estimatedUsd - a.estimatedUsd);
 
     return NextResponse.json({
       campaign: campaignKey,
@@ -102,6 +170,9 @@ export async function GET(req: NextRequest) {
       estimatedFirecrawlUsd,
       estimatedUsd,
       creditUsd,
+      nextPlan,
+      pricingBasis:
+        "Firecrawl uses current configured plan USD/credit; other providers use historical non-Firecrawl USD/lead.",
       avgCreditsPerLead: Math.round(avgCreditsPerLead * 10) / 10,
       avgUsdPerLead: Math.round(avgUsdPerLead * 1000) / 1000,
       sampleSize,

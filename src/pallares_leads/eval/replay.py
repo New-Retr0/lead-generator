@@ -11,7 +11,6 @@ from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.eval.compare import compare_to_prior, write_compare
 from pallares_leads.eval.trace import LeadEvalTrace, write_lead_report
 from pallares_leads.pipeline.export_csv import export_csv
-from pallares_leads.pipeline.export_sheets import export_sheets, sheets_configured
 from pallares_leads.pipeline.run_market import enrich_lead
 from pallares_leads.schemas import EnrichedLead, RawLead
 from pallares_leads.settings import Settings
@@ -172,8 +171,6 @@ def run_eval_replay(
     from_jsonl: Path,
     batch_size: int = 3,
     limit: int | None = None,
-    skip_sheets: bool = True,
-    sync_sheets: bool = False,
     batch_offset: int = 0,
     batch_limit: int | None = None,
     db_only: bool = False,
@@ -300,12 +297,6 @@ def run_eval_replay(
     )
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     write_findings_md(eval_dir / "FINDINGS.md", summary, all_reports)
-
-    if sync_sheets and not skip_sheets and sheets_configured(settings):
-        added = export_sheets(all_enriched, settings)
-        logger.info("Google Sheets: %d row(s) appended from eval replay", added)
-    elif sync_sheets and skip_sheets:
-        logger.info("Sheets sync skipped (--skip-sheets)")
 
     logger.info("Eval replay complete: %s", eval_dir)
     return eval_dir, summary

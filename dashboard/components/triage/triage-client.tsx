@@ -3,7 +3,7 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { ShieldAlert } from "lucide-react";
-import { SalesStatusBadge, ScoreBadge, VerificationBadge } from "@/components/badges";
+import { SalesStatusBadge, VerificationBadge } from "@/components/badges";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -23,7 +23,6 @@ const LeadDetailModal = dynamic(
 );
 
 function triageReason(lead: LeadRow): string {
-  if ((lead.lead_score ?? 0) < 40) return "Low score";
   if (lead.verification_level === "unverified") return "Unverified contact";
   if (lead.enrichment_status === "needs_manual") return "Needs manual review";
   if (lead.confidence === "Low") return "Low confidence";
@@ -49,9 +48,6 @@ const TriageTableRow = memo(function TriageTableRow({
       <TableCell className="font-medium">{lead.business_name}</TableCell>
       <TableCell>{lead.market_key ?? "—"}</TableCell>
       <TableCell>{categoryLabel}</TableCell>
-      <TableCell className="text-center">
-        <ScoreBadge score={lead.lead_score} />
-      </TableCell>
       <TableCell>
         <VerificationBadge level={lead.verification_level} />
       </TableCell>
@@ -84,7 +80,7 @@ export function TriageClient({
 
   return (
     <div className="space-y-6">
-      <PageHeader description="Leads that need attention — low score, unverified contacts, or flagged for manual follow-up. Open a row to inspect provenance; start a fresh market/category run to retry a lead (single-pass only — no separate re-enrich step)." />
+      <PageHeader description="Leads that need attention, unverified contacts, or manual follow-up. Open a row to inspect provenance; start a fresh market/category run to retry a lead." />
 
       <Card className="glass min-w-0 !overflow-visible px-4 py-0">
         <div className="overflow-x-auto">
@@ -94,7 +90,6 @@ export function TriageClient({
                 <TableHead>Business</TableHead>
                 <TableHead>Market</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead className="text-center">Score</TableHead>
                 <TableHead>Verification</TableHead>
                 <TableHead>Why</TableHead>
                 <TableHead>Status</TableHead>
@@ -103,7 +98,7 @@ export function TriageClient({
             <TableBody>
               {leads.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center">
+                  <TableCell colSpan={6} className="h-32 text-center">
                     <ShieldAlert className="mx-auto mb-2 size-8 text-muted-foreground/50" />
                     <p className="text-sm text-muted-foreground">No leads need triage right now.</p>
                   </TableCell>

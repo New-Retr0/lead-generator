@@ -3,10 +3,9 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import { Phone, Search, ShieldAlert, SlidersHorizontal } from "lucide-react";
+import { Phone, Search, ShieldAlert } from "lucide-react";
 import {
   SalesStatusBadge,
-  ScoreBadge,
   VerificationBadge,
 } from "@/components/badges";
 import { SectionHeading } from "@/components/console/section-heading";
@@ -21,7 +20,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import {
   Table,
   TableBody,
@@ -41,7 +39,6 @@ const LeadDetailModal = dynamic(
 const ALL = "__all__";
 
 function triageReason(lead: LeadRow): string {
-  if ((lead.lead_score ?? 0) < 40) return "Low score";
   if (lead.verification_level === "unverified") return "Unverified contact";
   if (lead.enrichment_status === "needs_manual") return "Needs manual review";
   if (lead.confidence === "Low") return "Low confidence";
@@ -50,7 +47,6 @@ function triageReason(lead: LeadRow): string {
 
 function isTriageLead(lead: LeadRow): boolean {
   return (
-    (lead.lead_score ?? 0) < 40 ||
     lead.verification_level === "unverified" ||
     lead.enrichment_status === "needs_manual" ||
     lead.confidence === "Low" ||
@@ -90,9 +86,6 @@ const DataTableRow = memo(function DataTableRow({
       </TableCell>
       <TableCell>
         <Badge variant="outline">{categoryLabel}</Badge>
-      </TableCell>
-      <TableCell className="text-center">
-        <ScoreBadge score={lead.lead_score} />
       </TableCell>
       <TableCell>
         <VerificationBadge level={lead.verification_level} />
@@ -141,7 +134,6 @@ export function DataExplorer({
   const [category, setCategory] = useState(ALL);
   const [status, setStatus] = useState(ALL);
   const [verification, setVerification] = useState(ALL);
-  const [minScore, setMinScore] = useState(0);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -165,7 +157,6 @@ export function DataExplorer({
     if (market !== ALL) params.set("market", market);
     if (category !== ALL) params.set("category", category);
     if (status !== ALL) params.set("status", status);
-    if (minScore > 0) params.set("minScore", String(minScore));
     params.set("limit", "1000");
 
     void fetch(`/api/leads?${params.toString()}`)
@@ -183,7 +174,7 @@ export function DataExplorer({
     return () => {
       cancelled = true;
     };
-  }, [tab, market, category, status, minScore]);
+  }, [tab, market, category, status]);
 
   const visible = useMemo(() => {
     let rows = leads;
@@ -302,19 +293,6 @@ export function DataExplorer({
             </Select>
           </div>
 
-          <div className="w-44 space-y-1.5">
-            <Label className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              <SlidersHorizontal className="size-3" />
-              Min score: <span className="font-semibold tabular-nums">{minScore}</span>
-            </Label>
-            <Slider
-              min={0}
-              max={100}
-              step={5}
-              value={[minScore]}
-              onValueChange={([v]) => setMinScore(v)}
-            />
-          </div>
         </CardContent>
       </Card>
 
@@ -327,7 +305,6 @@ export function DataExplorer({
                 <TableHead>Type</TableHead>
                 <TableHead>Market</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead className="text-center">Score</TableHead>
                 <TableHead>Verification</TableHead>
                 <TableHead>{tab === "triage" ? "Why" : "Status"}</TableHead>
                 <TableHead>Phone</TableHead>
@@ -336,13 +313,13 @@ export function DataExplorer({
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
                     Loading leads…
                   </TableCell>
                 </TableRow>
               ) : visible.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-32 text-center">
+                  <TableCell colSpan={7} className="h-32 text-center">
                     <ShieldAlert className="mx-auto mb-2 size-8 text-muted-foreground/50" />
                     <p className="text-sm text-muted-foreground">No leads match these filters.</p>
                   </TableCell>

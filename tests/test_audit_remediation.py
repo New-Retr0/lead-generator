@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from pallares_leads.db.store import LeadStore
 
 

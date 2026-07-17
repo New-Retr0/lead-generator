@@ -11,8 +11,6 @@ from pallares_leads.schemas import (
     SalesExportRow,
     SiteContact,
 )
-
-
 from pallares_leads.utils.safe_url import sanitize_csv_cell
 
 
@@ -27,13 +25,15 @@ def export_csv(leads: list[EnrichedLead], output_path: Path) -> Path:
         for row in rows:
             dumped = row.model_dump()
             dumped["_place_id"] = dumped.pop("place_id")
-            writer.writerow({k: sanitize_csv_cell(str(v)) if v is not None else v for k, v in dumped.items()})
+            writer.writerow(
+                {k: sanitize_csv_cell(str(v)) if v is not None else v for k, v in dumped.items()}
+            )
 
     return output_path
 
 
 def load_enriched_from_csv(csv_path: Path) -> list[EnrichedLead]:
-    """Load leads from slim sales CSV for sync-sheets."""
+    """Load leads from a slim sales CSV export."""
     leads: list[EnrichedLead] = []
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)

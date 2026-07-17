@@ -122,8 +122,6 @@ def build_cli_args(kind: str, payload: dict[str, Any]) -> list[str]:
         args.append("--discover-only")
     if _truthy(payload.get("dry_run")):
         args.append("--dry-run")
-    if _truthy(payload.get("no_sheets", True)) and kind in {"run", "run_campaign"}:
-        args.append("--no-sheets")
     if _truthy(payload.get("no_skip_known")) and kind in {"run", "run_campaign"}:
         args.append("--no-skip-known")
     if payload.get("refresh_after_days") not in (None, "") and kind in {"run", "run_campaign"}:

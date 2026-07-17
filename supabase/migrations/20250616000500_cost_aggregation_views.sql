@@ -1,4 +1,4 @@
--- Aggregation views for sales-app / dashboard cost charts (security_invoker).
+-- Aggregation views for dashboard cost charts (security_invoker).
 
 create view public.cost_by_day
 with (security_invoker = true)

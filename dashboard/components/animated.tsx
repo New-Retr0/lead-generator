@@ -60,7 +60,7 @@ function climbTiming(seconds: number): EffectTiming {
   return { duration: Math.round(seconds * 1000), easing: "ease-out" };
 }
 
-export function AnimatedNumber({
+export function AnimateNumber({
   value,
   format,
   className,
@@ -69,15 +69,20 @@ export function AnimatedNumber({
   format?: FormatProp;
   className?: string;
 }) {
+  const timing = climbTiming(0.7);
   return (
     <NumberFlow
       value={value}
       format={toIntlFormat(format) as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
+      transformTiming={timing}
+      spinTiming={timing}
       className={cn("font-mono tabular-nums", className)}
       willChange
     />
   );
 }
+
+export const AnimatedNumber = AnimateNumber;
 
 const containerVariants = {
   hidden: {},

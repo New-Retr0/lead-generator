@@ -10,7 +10,7 @@ This file is a **saved, re-runnable planning prompt** for a future architecture 
 
 **How to use it:**
 
-1. Open a new planning session with full repo access (or at minimum `AGENTS.md`, `supabase/migrations/`, `config/`, `src/pallares_leads/`, `sales-app/`).
+1. Open a new planning session with full repo access (or at minimum `AGENTS.md`, `supabase/migrations/`, `config/`, `src/pallares_leads/`, `dashboard/`).
 2. Copy everything inside the fenced **PROMPT** block below (from `---BEGIN PROMPT---` through `---END PROMPT---`).
 3. Paste it as the user message. Review the output, iterate on open questions, then use the phased plan to drive implementation work in separate sessions.
 
@@ -37,17 +37,17 @@ Read `AGENTS.md` and `supabase/migrations/` to validate details. As of today:
 - **Row Level Security (RLS)** is enabled on core tables. Policies grant **full read parity to any `authenticated` user** (`using (true)` on select). The only rep-writable surface is CRM fields on `sales_feedback` (status, addressed, feedback_notes).
 - **`app_state`** has RLS on with **no authenticated policy** — operator-only via service role / direct DB connection.
 - **Local operator dashboard** (`dashboard/`) connects with `SUPABASE_DB_URL` via `postgres` npm and **bypasses RLS** (direct Postgres). No login.
-- **Developer Console** (`sales-app/` on Vercel) uses `@supabase/ssr` + anon key; authenticated users get full read on leads/runs/costs/jobs.
+- No hosted customer console is currently in repo. The local operator dashboard (`dashboard/`) uses direct Postgres and bypasses RLS.
 
 #### Identity and admin
 
-- **Supabase Auth** for sales-app users. Admin capability is **`app_metadata.is_admin`** (checked in `sales-app/lib/admin.ts`) — used for partner-key CRUD at `/api/admin/partner-keys` (server-only service role).
+- Historical Supabase Auth UI/admin routes were removed with the old hosted console. Partner API keys are currently managed by `scripts/create_partner_api_key.py`.
 - **Partner API** (`supabase/functions/partner-api/`): hashed API keys in `partner_api_keys`, global (not scoped to tenant). Keys have scopes, rate limits, daily row limits. Edge function reads via service role; OpenAPI at `docs/partner-api.openapi.yaml`.
 
 #### Worker and jobs
 
 - **Python CLI** `pallares-leads` writes to Supabase via `psycopg` + `SUPABASE_DB_URL`.
-- **Queue worker** (`queue_worker.py`) runs on the **operator machine**, reads credentials from **`.env`**, polls **pgmq** queue `pipeline_jobs`, spawns CLI subprocesses. Job enqueue via RPC `enqueue_pipeline_job` from sales-app `/api/jobs`.
+- **Queue worker** (`queue_worker.py`) runs on the **operator machine**, reads credentials from **`.env`**, polls **pgmq** queue `pipeline_jobs`, spawns CLI subprocesses. Job enqueue flows through the dashboard job APIs.
 - **`pipeline_jobs`** table tracks job metadata; `requested_by` links to `auth.users`. Per-run **`env_overrides`** (allowlisted keys like `FIRECRAWL_MAX_CREDITS_PER_RUN`, `BROWSER_USE_ENABLED`) can override worker subprocess env — but CLI-launched runs still use `.env` only.
 - **`worker_status`** table + Realtime for live worker heartbeat.
 
@@ -61,7 +61,7 @@ Read `AGENTS.md` and `supabase/migrations/` to validate details. As of today:
 - **`cost_events`** is a **per-tool-call granular financial ledger**: `provider`, `operation`, `model`, `units`, `unit_type`, `usd`, `place_id`, `run_id`, `request_id`, `meta_json` (stage, duration_ms, etc.). Indexed by run, place, provider, created_at. **Kept forever** (financial record).
 - **`run_events`** stores pipeline progress per lead/stage (`stage`, `ran`, `duration_ms`, `meta_json`). Realtime-enabled. Retention policy (planned): prune rows older than 90 days after nightly rollup.
 - **Aggregation views**: `cost_by_run`, `cost_by_day`, `cost_by_provider`, `cost_by_model`, `cost_by_market`, `cost_by_hour`; pipeline trend views (`stage_stats_by_run`, `stage_trends_by_day`, etc.) and `pipeline_daily_rollup` (planned).
-- **Developer Console** Pipeline Studio (`/pipeline`): live/replay DAG, granularity slider (run → provider → stage → operation → tool call), trends tab — all fed from `run_events` + `cost_events` via Realtime and REST.
+- **Dashboard** run detail / Pipeline Studio work: replay DAG, granularity slider (run → provider → stage → operation → tool call), trends tab — fed from `run_events` + `cost_events` through polling REST endpoints.
 
 #### Caches and isolation gaps
 
@@ -91,7 +91,7 @@ Evaluate against:
 
 - Supabase **free/pro tier caps** (DB size, Realtime connections, Edge Function invocations)
 - **Migration tooling** (`supabase/migrations/` today is single-project)
-- **Realtime** (`run_events`, `cost_events`, `worker_status` subscriptions in sales-app)
+- **Realtime vs polling** (current dashboard polls `run_events`, `cost_events`, and `worker_status`; future hosted clients may subscribe)
 - **Blast radius** (one tenant's bad query vs cross-tenant data leak)
 - **Partner API** and Edge Functions (one deployment vs many)
 
@@ -126,7 +126,7 @@ Evaluate against:
 
 - Migrate **YAML → DB-backed per-tenant config**: markets, categories, campaigns, licensing, jurisdictions, search templates.
 - **YAML as platform defaults**, tenant overrides layered on top?
-- **Validation and versioning:** how do tenants edit config — Developer Console UI, API, or operator-managed only at first?
+- **Validation and versioning:** how do tenants edit config — hosted customer console UI, API, or operator-managed only at first?
 - **Campaign isolation:** can two tenants run the same market/category without interfering?
 
 #### 6. Isolation and safety
@@ -170,9 +170,9 @@ End each section with a **recommended choice** and **conditions that would chang
 
 #### C. Recommended target architecture
 
-- Diagram (mermaid or ASCII) of: Auth → tenant context → RLS → apps (sales-app, partner API) → worker → providers → `cost_events` billing export
+- Diagram (mermaid or ASCII) of: Auth → tenant context → RLS → apps (dashboard, future hosted console, Partner API) → worker → providers → `cost_events` billing export
 - Table of **schema changes** (new tables, new columns, new indexes, new RLS policies)
-- Table of **app changes** (sales-app, dashboard, edge functions, Python CLI/worker)
+- Table of **app changes** (future hosted console, dashboard, edge functions, Python CLI/worker)
 - **Secrets and config** layout per tenant
 
 #### D. Phased migration plan
@@ -182,7 +182,7 @@ Minimum phases:
 | Phase | Goal | Non-breaking? | Key deliverables |
 |-------|------|---------------|------------------|
 | **1** | Add `tenant_id` columns + backfill `'pallares'` | Yes | Migration SQL, updated write paths in Python, no RLS tightening yet |
-| **2** | Tenant membership + RLS enforcement | Partial (flag-gated) | `tenants`, `tenant_members`, RLS policies, sales-app tenant switcher |
+| **2** | Tenant membership + RLS enforcement | Partial (flag-gated) | `tenants`, `tenant_members`, RLS policies, hosted console tenant switcher |
 | **3** | Worker + queue tenant awareness | No for new tenants | Queue payload, worker context, per-tenant env/secrets |
 | **4** | Billing meter + Stripe | No | `cost_events` export, pricing tables, usage webhooks |
 | **5** | Per-tenant config UI | No | DB-backed markets/categories, admin UI |

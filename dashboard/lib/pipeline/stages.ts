@@ -287,7 +287,11 @@ export function eventToStage(event: JobEvent): string | null {
       return "discovery";
     case "lead_started":
       return "lead_started";
+    case "run_started":
+      return "discovery";
     case "lead_done":
+      return "lead_done";
+    case "run_done":
       return "lead_done";
     case "stage_done":
       return event.stage ?? null;

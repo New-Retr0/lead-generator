@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -64,21 +64,20 @@ export function RunsPageClient({
   const [repairing, setRepairing] = useState(false);
   const router = useRouter();
 
-  const refreshRuns = () => {
-    void fetch("/api/runs")
+  const refreshRuns = useCallback(() => {
+    void fetch("/api/runs", { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
         setRuns(data.runs ?? []);
       });
-  };
+  }, []);
 
   const hasRunning = runs.some((r) => r.status === "running");
 
   useEffect(() => {
-    if (!hasRunning) return;
     const id = window.setInterval(refreshRuns, 10_000);
     return () => window.clearInterval(id);
-  }, [hasRunning]);
+  }, [refreshRuns]);
 
   const analytics = useMemo(() => {
     const total = runs.length;
@@ -87,8 +86,8 @@ export function RunsPageClient({
     const failed = runs.filter((r) => r.status === "failed").length;
     const discovered = runs.reduce((sum, r) => sum + r.discovered_count, 0);
     const enriched = runs.reduce((sum, r) => sum + r.enriched_count, 0);
-    const completedPct = total > 0 ? (completed / total) * 100 : 0;
-    return { total, completedPct, running, failed, discovered, enriched };
+    const completedRate = total > 0 ? completed / total : 0;
+    return { total, completed, completedRate, running, failed, discovered, enriched };
   }, [runs]);
 
   const runTypes = useMemo(
@@ -154,9 +153,8 @@ export function RunsPageClient({
           <StatCard label="Total runs" value={analytics.total} icon={Database} />
           <StatCard
             label="Completed"
-            value={Math.round(analytics.completedPct)}
-            format={(n) => formatPct(n)}
-            sub={`${runs.filter((r) => r.status === "completed").length} runs`}
+            value={analytics.completed}
+            sub={`${formatPct(analytics.completedRate)} completed`}
             icon={CheckCircle2}
             tone="success"
           />

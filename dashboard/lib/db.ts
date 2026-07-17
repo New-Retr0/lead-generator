@@ -1,5 +1,6 @@
 import { cache } from "react";
 import { buildCostBudget } from "./cost-budget";
+import { inferFirecrawlPlan } from "./config";
 import { dbAvailable, getSql } from "./pg";
 import type {
   CostSeries,
@@ -88,6 +89,8 @@ function parseFirecrawlSnapshotBalance(
   remaining: number | null;
   used: number | null;
   plan: number | null;
+  planName: string | null;
+  creditUsd: number | null;
   billingPeriodEnd: string | null;
 } {
   const payload = snapshotPayload(snapshotJson);
@@ -108,7 +111,7 @@ function parseFirecrawlSnapshotBalance(
       snapRemaining = remRaw != null ? Number(remRaw) : null;
       let usedRaw = data.usedCredits ?? data.used_credits;
       if (usedRaw == null && snapRemaining != null && plan != null) {
-        usedRaw = plan - snapRemaining;
+        usedRaw = Math.max(0, plan - snapRemaining);
       }
       snapUsed = usedRaw != null ? Number(usedRaw) : null;
       const billingRaw = data.billingPeriodEnd ?? data.billing_period_end;
@@ -122,6 +125,13 @@ function parseFirecrawlSnapshotBalance(
     remaining: remaining ?? snapRemaining,
     used: used ?? snapUsed,
     plan,
+    planName: inferFirecrawlPlan({ planCredits: plan })?.name ?? null,
+    creditUsd: (() => {
+      const inferred = inferFirecrawlPlan({ planCredits: plan });
+      return inferred && inferred.monthlyUsd > 0 && inferred.monthlyCredits > 0
+        ? inferred.monthlyUsd / inferred.monthlyCredits
+        : null;
+    })(),
     billingPeriodEnd,
   };
 }
@@ -149,6 +159,8 @@ export const getCreditBalances = cache(async function getCreditBalances(): Promi
             remaining: row.remaining_credits as number | null,
             used: row.used_credits as number | null,
             plan: null,
+            planName: null,
+            creditUsd: null,
             billingPeriodEnd: null,
           };
     return {
@@ -156,6 +168,8 @@ export const getCreditBalances = cache(async function getCreditBalances(): Promi
       remaining: parsed.remaining,
       used: parsed.used,
       plan: parsed.plan,
+      planName: parsed.planName,
+      creditUsd: parsed.creditUsd,
       billingPeriodEnd: parsed.billingPeriodEnd,
       unitLabel: balanceUnitLabel(String(row.provider)),
       snapshotAt: toIsoOrNull(row.created_at),
@@ -894,9 +908,19 @@ export async function getRunCosts(runId: string): Promise<RunCosts> {
   for (const row of rows) {
     if (row.place_id) leadIds.add(String(row.place_id));
   }
+  const countRows = await sql`
+    SELECT discovered_count, enriched_count
+    FROM runs
+    WHERE run_id = ${runId}
+  `;
+  const runLeadCount = Math.max(
+    Number(countRows[0]?.discovered_count ?? 0),
+    Number(countRows[0]?.enriched_count ?? 0),
+  );
+  const leadCount = Math.max(leadIds.size, runLeadCount);
 
   if (rows.length === 0) {
-    return { ...emptyRunCosts(), firecrawlCreditsEst, leadCount: leadIds.size };
+    return { ...emptyRunCosts(), firecrawlCreditsEst, leadCount };
   }
 
   type OpBucket = RunCosts["byProvider"][number]["operations"][number];
@@ -979,7 +1003,7 @@ export async function getRunCosts(runId: string): Promise<RunCosts> {
     estimatedUsd,
     firecrawlCreditsEst,
     eventCount: rows.length,
-    leadCount: leadIds.size,
+    leadCount,
     byProvider,
   };
 }
@@ -1049,7 +1073,7 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
   };
 }
 
-export const getRunDetail = cache(async function getRunDetail(runId: string): Promise<RunDetail | null> {
+export async function getRunDetail(runId: string): Promise<RunDetail | null> {
   const run = await getRun(runId);
   if (!run) return null;
   return {
@@ -1057,9 +1081,9 @@ export const getRunDetail = cache(async function getRunDetail(runId: string): Pr
     costs: await getRunCosts(runId),
     timeline: await getRunTimeline(runId),
   };
-});
+}
 
-export const listRuns = cache(async function listRuns(limit = 50): Promise<RunRow[]> {
+export async function listRuns(limit = 50): Promise<RunRow[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
 
@@ -1083,7 +1107,7 @@ export const listRuns = cache(async function listRuns(limit = 50): Promise<RunRo
     enriched_count: Number(row.enriched_count),
     status: String(row.status),
   }));
-});
+}
 
 function parseSpecJson(raw: unknown): Record<string, unknown> {
   if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {

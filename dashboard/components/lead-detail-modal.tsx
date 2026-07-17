@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import {
   SalesStatusBadge,
-  ScoreBadge,
   VerificationBadge,
 } from "@/components/badges";
 import { SocialIcon, socialPlatformLabel } from "@/components/social-icon";
@@ -556,7 +555,6 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <ScoreBadge score={lead.lead_score} />
               <SalesStatusBadge status={lead.status} />
               <VerificationBadge level={lead.verification_level ?? lead.confidence} />
             </div>

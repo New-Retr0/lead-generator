@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from pallares_leads.enrich.apply import _ROLE_PRIORITY, _role_priority_rank
 from pallares_leads.enrich.contact_requirements import is_callable_phone
 from pallares_leads.enrich.contacts_format import primary_phone
-from pallares_leads.schemas import EnrichedLead, NOT_FOUND
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead
 
 FEATURE_VERSION = 1
 

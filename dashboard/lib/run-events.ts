@@ -36,6 +36,7 @@ export function runEventRowToJobEvent(row: RunEventRowLike): JobEvent {
     typeof meta.event === "string" ? meta.event : row.stage;
 
   const evt: JobEvent = {
+    id: row.id,
     t: "evt",
     ts: typeof meta.ts === "string" ? meta.ts : row.created_at,
     event: eventName,

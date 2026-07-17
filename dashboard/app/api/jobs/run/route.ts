@@ -120,7 +120,6 @@ export async function POST(req: NextRequest) {
     }
     if (limit) args.push("--limit", String(limit));
     if (body.discoverOnly) args.push("--discover-only");
-    args.push("--no-sheets");
 
     const extraEnv: Record<string, string> = {};
     if (body.maxCreditsPerRun != null) {

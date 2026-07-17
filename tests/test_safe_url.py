@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from pallares_leads.utils.safe_url import (
     is_private_or_local_host,
     is_safe_http_url,

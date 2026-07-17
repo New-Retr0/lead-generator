@@ -8,7 +8,7 @@ import pytest
 
 from pallares_leads.config_loader import validate_all_config
 from pallares_leads.enrich.apply import derive_best_contact_fields
-from pallares_leads.enrich.firecrawl_client import FirecrawlClient, _SHARED_MAP_CACHE
+from pallares_leads.enrich.firecrawl_client import _SHARED_MAP_CACHE, FirecrawlClient
 from pallares_leads.enrich.registries.bbb import bbb_contacts, parse_bbb_profile
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead, SiteContact
 from pallares_leads.settings import Settings

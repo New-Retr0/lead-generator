@@ -9,5 +9,5 @@ export async function GET(
 ) {
   const { id } = await context.params;
   const events = await getRunEvents(id);
-  return NextResponse.json({ events });
+  return NextResponse.json({ events }, { headers: { "Cache-Control": "no-store" } });
 }

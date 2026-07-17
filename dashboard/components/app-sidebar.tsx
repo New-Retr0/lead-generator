@@ -26,13 +26,48 @@ import {
 } from "@/components/ui/sidebar";
 
 const navItems = [
-  { href: "/", label: "Command Center", icon: LayoutDashboard },
-  { href: "/campaigns", label: "Campaigns", icon: Rocket },
-  { href: "/runs", label: "Runs", icon: PlayCircle },
-  { href: "/requests", label: "Requests", icon: MessageSquareText },
-  { href: "/data", label: "Data", icon: Database },
-  { href: "/costs", label: "Costs", icon: Receipt },
-  { href: "/settings", label: "Settings", icon: Settings2 },
+  {
+    href: "/",
+    label: "Command Center",
+    icon: LayoutDashboard,
+    tooltip: "Overview",
+  },
+  {
+    href: "/campaigns",
+    label: "Campaigns",
+    icon: Rocket,
+    tooltip: "Stage campaigns",
+  },
+  {
+    href: "/runs",
+    label: "Runs",
+    icon: PlayCircle,
+    tooltip: "Run history",
+  },
+  {
+    href: "/requests",
+    label: "Requests",
+    icon: MessageSquareText,
+    tooltip: "Lead requests",
+  },
+  {
+    href: "/data",
+    label: "Data",
+    icon: Database,
+    tooltip: "Lead explorer",
+  },
+  {
+    href: "/costs",
+    label: "Costs",
+    icon: Receipt,
+    tooltip: "Cost ledger",
+  },
+  {
+    href: "/settings",
+    label: "Settings",
+    icon: Settings2,
+    tooltip: "Config",
+  },
 ];
 
 export function AppSidebar() {
@@ -76,7 +111,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       asChild
                       isActive={active}
-                      tooltip={item.label}
+                      tooltip={item.tooltip}
                       className="relative font-mono text-[10px] uppercase tracking-[0.12em]"
                     >
                       <Link href={item.href}>

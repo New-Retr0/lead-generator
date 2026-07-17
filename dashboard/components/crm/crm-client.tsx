@@ -4,7 +4,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useSta
 import dynamic from "next/dynamic";
 import { Phone, PhoneCall, Search } from "lucide-react";
 import { toast } from "sonner";
-import { ScoreBadge, VerificationBadge } from "@/components/badges";
+import { VerificationBadge } from "@/components/badges";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -116,9 +116,6 @@ const CrmTableRow = memo(function CrmTableRow({
       </TableCell>
       <TableCell>
         <Badge variant="outline">{categoryLabel}</Badge>
-      </TableCell>
-      <TableCell className="text-center">
-        <ScoreBadge score={lead.lead_score} />
       </TableCell>
       <TableCell>
         <VerificationBadge level={lead.verification_level} />
@@ -407,7 +404,6 @@ export function CrmClient({
                 <TableHead>Type</TableHead>
                 <TableHead>Market</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead className="text-center">Score</TableHead>
                 <TableHead>Verification</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead className="w-28">Activity</TableHead>
@@ -417,13 +413,13 @@ export function CrmClient({
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
                     Loading CRM…
                   </TableCell>
                 </TableRow>
               ) : visible.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={8} className="h-32 text-center text-sm text-muted-foreground">
                     No leads here yet. Launch a run, then work them from this board.
                   </TableCell>
                 </TableRow>

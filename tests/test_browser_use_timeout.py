@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import patch
 
 from pydantic import BaseModel
@@ -24,7 +23,7 @@ def test_browser_use_timeout_returns_none() -> None:
     with patch.object(
         client,
         "_run_cloud_task_async",
-        side_effect=asyncio.TimeoutError(),
+        side_effect=TimeoutError(),
     ):
         result = client._run_cloud_task("task", _Dummy, stage="sos_entity_lookup")
 

@@ -5,7 +5,7 @@ to capture exactly which APIs fire, what they return, and where fabricated data 
 
 ## Run A — auto_dealer, Reedley (the "vendor" ground-truth case)
 
-Command: `pallares-leads -v run --market reedley --category auto_dealer --limit 2 --no-sheets --force-refresh`
+Command: `pallares-leads -v run --market reedley --category auto_dealer --limit 2 --force-refresh`
 Run ID: `2fea451a-ac7c-44a1-b213-b2ef98b98e44` · Log: `data/obs_run_a_auto_dealer.log`
 
 ### API call sequence observed
@@ -46,7 +46,7 @@ Run ID: `2fea451a-ac7c-44a1-b213-b2ef98b98e44` · Log: `data/obs_run_a_auto_deal
 
 ## Run B — hotel, Reedley (random-site case)
 
-Command: `pallares-leads run --market reedley --category hotel --limit 2 --no-sheets`
+Command: `pallares-leads run --market reedley --category hotel --limit 2`
 Log: `data/obs_run_b_hotel.log`
 
 - Same Nearby Search 400 at discovery.

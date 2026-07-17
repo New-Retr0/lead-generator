@@ -52,6 +52,8 @@ const RunPipelinePanel = dynamic(
 
 type RunDetailResponse = RunDetail & {
   liveJobId?: string | null;
+  liveJobStatus?: string | null;
+  liveJobFinishedAt?: string | null;
   liveNames?: Record<string, string>;
   liveDiscovered?: number | null;
 };
@@ -177,7 +179,6 @@ function LeadTimelineCard({
             ) : lead.verification_level ? (
               <Badge variant="outline" className="shrink-0 text-[10px] capitalize">
                 {lead.verification_level}
-                {typeof lead.lead_score === "number" ? ` · ${lead.lead_score}` : ""}
               </Badge>
             ) : null}
             <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform duration-300 group-data-[state=open]/trigger:rotate-180" />
@@ -298,7 +299,11 @@ function RunCostSummary({
 
   if (costs.eventCount === 0 && costs.firecrawlCreditsEst === 0) {
     return (
-      <div className="flex items-center gap-3 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+      <motion.div
+        layout
+        className="flex items-center gap-3 rounded-xl border border-dashed p-4 text-sm text-muted-foreground"
+        transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+      >
         {running ? (
           <>
             <TypingDots className="text-primary" />
@@ -307,18 +312,20 @@ function RunCostSummary({
         ) : (
           "No cost events recorded for this run."
         )}
-      </div>
+      </motion.div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div
+    <motion.div layout className="space-y-4" transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}>
+      <motion.div layout className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <motion.div
+          layout
           className={cn(
             "glass space-y-1 rounded-xl border border-border/50 p-4",
             running && "border-warning/40 shadow-[0_0_24px_-12px_oklch(0.78_0.16_75/0.8)]",
           )}
+          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
         >
           <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Total recorded
@@ -337,8 +344,8 @@ function RunCostSummary({
               </>
             ) : null}
           </p>
-        </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        </motion.div>
+        <motion.div layout className="glass space-y-1 rounded-xl border border-border/50 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Verified
           </p>
@@ -346,8 +353,8 @@ function RunCostSummary({
             <Odometer value={costs.verifiedUsd} format={formatUsd} climbSeconds={1.8} />
           </p>
           <p className="text-xs text-muted-foreground">API-reported spend</p>
-        </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        </motion.div>
+        <motion.div layout className="glass space-y-1 rounded-xl border border-border/50 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Estimated
           </p>
@@ -355,9 +362,9 @@ function RunCostSummary({
             <Odometer value={costs.estimatedUsd} format={formatUsd} climbSeconds={1.8} />
           </p>
           <p className="text-xs text-muted-foreground">Map/search credit fallbacks</p>
-        </div>
+        </motion.div>
         {costs.firecrawlCreditsEst > 0 ? (
-          <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+          <motion.div layout className="glass space-y-1 rounded-xl border border-border/50 p-4">
             <p className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               <Coins className="size-3" />
               Credits est.
@@ -366,11 +373,11 @@ function RunCostSummary({
               <Odometer value={costs.firecrawlCreditsEst} climbSeconds={1.8} />
             </p>
             <p className="text-xs text-muted-foreground">
-              {formatUsdPrecise(creditUsdEst)} at Standard rate
+              {formatUsdPrecise(creditUsdEst)} at configured Firecrawl rate
             </p>
-          </div>
+          </motion.div>
         ) : null}
-      </div>
+      </motion.div>
 
       {costs.byProvider.length > 0 ? (
         <div className="space-y-2">
@@ -387,7 +394,7 @@ function RunCostSummary({
           ))}
         </div>
       ) : null}
-    </div>
+    </motion.div>
   );
 }
 
@@ -409,6 +416,11 @@ function PersistedTimeline({
   }, [timeline]);
 
   const hasContent = timeline.runEvents.length > 0 || timeline.leads.length > 0;
+  const visibleRunEvents = running ? timeline.runEvents.slice(-4) : timeline.runEvents;
+  const visibleLeads = running ? timeline.leads.slice(-4) : timeline.leads;
+  const hiddenActivityCount =
+    timeline.runEvents.length - visibleRunEvents.length +
+    timeline.leads.length - visibleLeads.length;
 
   if (!hasContent) {
     return (
@@ -461,14 +473,14 @@ function PersistedTimeline({
           </div>
         ) : null}
 
-        {timeline.runEvents.length > 0 ? (
+        {visibleRunEvents.length > 0 ? (
           <div className="glass space-y-0.5 rounded-xl px-1.5 py-1.5">
-            {timeline.runEvents.map((stage, i) => (
+            {visibleRunEvents.map((stage, i) => (
               <StageRow key={`run-${stage.stage}-${stage.created_at}-${i}`} stage={stage} />
             ))}
           </div>
         ) : null}
-        {timeline.leads.map((lead, i) => {
+        {visibleLeads.map((lead, i) => {
           const inFlight = running && !lead.done;
           return (
             <LeadTimelineCard
@@ -476,10 +488,16 @@ function PersistedTimeline({
               lead={lead}
               resolvedName={liveNames?.[lead.place_id] ?? null}
               inFlight={inFlight}
-              defaultOpen={inFlight || i === timeline.leads.length - 1}
+              defaultOpen={inFlight || i === visibleLeads.length - 1}
             />
           );
         })}
+        {running && hiddenActivityCount > 0 ? (
+          <p className="px-2 pb-1 text-center text-[11px] text-muted-foreground">
+            Showing latest activity - {hiddenActivityCount} earlier item
+            {hiddenActivityCount === 1 ? "" : "s"} tucked away.
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -487,6 +505,26 @@ function PersistedTimeline({
 
 function detailFingerprint(data: RunDetailResponse): string {
   const r = data.run;
+  const leadSignal = data.timeline.leads
+    .map((lead) => {
+      const lastStage = lead.stages[lead.stages.length - 1];
+      return [
+        lead.place_id,
+        lead.done ? "1" : "0",
+        lead.business_name ?? "",
+        lead.stages.length,
+        lead.creditsEst,
+        lastStage?.stage ?? "",
+        lastStage?.created_at ?? "",
+      ].join(":");
+    })
+    .join(",");
+  const runEventSignal = data.timeline.runEvents
+    .map((event) => `${event.stage}:${event.created_at}`)
+    .join(",");
+  const costSignal = data.costs.byProvider
+    .map((group) => `${group.provider}:${group.eventCount}:${group.usdTotal}:${group.unitsTotal}`)
+    .join(",");
   return [
     r.status,
     r.finished_at ?? r.started_at,
@@ -496,9 +534,29 @@ function detailFingerprint(data: RunDetailResponse): string {
     data.costs.eventCount,
     data.costs.totalUsd,
     data.costs.firecrawlCreditsEst,
+    costSignal,
+    data.timeline.runEvents.length,
     data.timeline.leads.length,
+    runEventSignal,
+    leadSignal,
     data.liveJobId ?? "",
+    data.liveJobStatus ?? "",
   ].join("|");
+}
+
+const MAX_TERMINAL_STAGE_REFRESHES = 12;
+
+function hasTimelineContent(timeline: RunDetail["timeline"]): boolean {
+  return timeline.runEvents.length > 0 || timeline.leads.length > 0;
+}
+
+function isTerminalStatus(status: string): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "interrupted" ||
+    status === "cancelled"
+  );
 }
 
 export function RunDetailContent({
@@ -511,21 +569,34 @@ export function RunDetailContent({
   const [detail, setDetail] = useState<RunDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [liveJobId, setLiveJobId] = useState<string | null>(null);
+  const [pollIssue, setPollIssue] = useState(false);
+  const [terminalPollCount, setTerminalPollCount] = useState(0);
 
   const loadDetail = useCallback(async () => {
-    const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
-    if (!res.ok) return null;
-    return (await res.json()) as RunDetailResponse;
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as RunDetailResponse;
+    } catch {
+      return null;
+    }
   }, [runId]);
 
   useEffect(() => {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- runId change reset
     setLoading(true);
+    setTerminalPollCount(0);
 
     void loadDetail()
       .then((data) => {
-        if (cancelled || !data) return;
+        if (cancelled || !data) {
+          if (!cancelled) setPollIssue(true);
+          return;
+        }
+        setPollIssue(false);
         setDetail(data);
         setLiveJobId(data.liveJobId ?? null);
       })
@@ -539,25 +610,48 @@ export function RunDetailContent({
   }, [loadDetail]);
 
   const running = detail?.run.status === "running";
+  const terminalNeedsHydration = Boolean(
+    detail && isTerminalStatus(detail.run.status) && !hasTimelineContent(detail.timeline),
+  );
+  const shouldPollWhileTerminal =
+    terminalNeedsHydration && terminalPollCount < MAX_TERMINAL_STAGE_REFRESHES;
 
   useEffect(() => {
-    if (!running) return;
+    if (!running && !shouldPollWhileTerminal) return;
 
     const interval = window.setInterval(() => {
       void loadDetail().then((data) => {
-        if (!data) return;
+        if (!data) {
+          setPollIssue(true);
+          return;
+        }
+        setPollIssue(false);
         setDetail((prev) => {
           if (!prev || detailFingerprint(prev) !== detailFingerprint(data)) {
             return data;
           }
           return prev;
         });
-        if (data.liveJobId) setLiveJobId(data.liveJobId);
+        if (!isTerminalStatus(data.run.status) || hasTimelineContent(data.timeline)) {
+          if (terminalPollCount !== 0) {
+            setTerminalPollCount(0);
+          }
+        } else {
+          const next = Math.min(
+            terminalPollCount + 1,
+            MAX_TERMINAL_STAGE_REFRESHES + 1,
+          );
+          setTerminalPollCount(next);
+          if (next >= MAX_TERMINAL_STAGE_REFRESHES) {
+            window.clearInterval(interval);
+          }
+        }
+        setLiveJobId((prev) => data.liveJobId ?? (data.run.status === "running" ? prev : null));
       });
-    }, 3000);
+    }, 2000);
 
     return () => window.clearInterval(interval);
-  }, [running, loadDetail]);
+  }, [running, shouldPollWhileTerminal, loadDetail, terminalPollCount]);
 
   const title = useMemo(() => {
     if (!detail) return "Run details";
@@ -594,6 +688,13 @@ export function RunDetailContent({
   }
 
   const discoveredLive = detail.liveDiscovered ?? null;
+  const attachedJobId = liveJobId ?? detail.liveJobId ?? null;
+  const attachedJobTerminal =
+    detail.liveJobStatus === "failed" ||
+    detail.liveJobStatus === "interrupted" ||
+    detail.liveJobStatus === "cancelled" ||
+    detail.liveJobStatus === "completed";
+  const showJobTimeline = Boolean(attachedJobId) && (running || attachedJobTerminal);
 
   return (
     <>
@@ -642,6 +743,7 @@ export function RunDetailContent({
             </h3>
             {detail ? (
               <RunPipelinePanel
+                key={runId}
                 runId={runId}
                 status={detail.run.status}
                 startedAt={detail.run.started_at}
@@ -655,17 +757,28 @@ export function RunDetailContent({
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               <SquareTerminal className="size-3.5" />
-              {running && liveJobId ? "Live run" : "Run progress"}
-              {running && !liveJobId ? <LiveDot tone="primary" /> : null}
+              {showJobTimeline ? "Live run summary" : "Run progress"}
+              {running && !showJobTimeline ? <LiveDot tone="primary" /> : null}
+              {pollIssue ? (
+                <span className="font-normal normal-case text-warning">
+                  reconnecting - last good telemetry held
+                </span>
+              ) : null}
             </h3>
-            {running && liveJobId ? (
+            {showJobTimeline && attachedJobId ? (
               <JobTimeline
-                jobId={liveJobId}
+                jobId={attachedJobId}
+                compact
                 onDone={() => {
                   void loadDetail().then((data) => {
                     if (data) {
+                      setPollIssue(false);
                       setDetail(data);
-                      setLiveJobId(null);
+                      setLiveJobId((prev) =>
+                        data.liveJobId ?? (data.run.status === "running" ? prev : null),
+                      );
+                    } else {
+                      setPollIssue(true);
                     }
                     onRunFinished?.();
                   });
@@ -679,19 +792,6 @@ export function RunDetailContent({
               />
             )}
           </section>
-
-          {running && liveJobId && detail.timeline.leads.length > 0 ? (
-            <section className="space-y-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Stage audit (persisted)
-              </h3>
-              <PersistedTimeline
-                timeline={detail.timeline}
-                running={running}
-                liveNames={detail.liveNames}
-              />
-            </section>
-          ) : null}
 
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">

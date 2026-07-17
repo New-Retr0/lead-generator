@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pallares_leads.config_loader import JurisdictionRegistry, load_jurisdictions, load_markets
+from pallares_leads.enrich.apply import derive_best_contact_fields
 from pallares_leads.enrich.browser_use_client import (
     BrowserUseClient,
     LoopNetResult,
@@ -13,7 +14,6 @@ from pallares_leads.enrich.browser_use_client import (
     SosEntityResult,
 )
 from pallares_leads.enrich.contact_requirements import EnrichmentRules, enriched_meets_bar
-from pallares_leads.enrich.apply import derive_best_contact_fields
 from pallares_leads.schemas import NOT_FOUND, EnrichedLead, ExtractedContact, RawLead, SiteContact
 
 if TYPE_CHECKING:

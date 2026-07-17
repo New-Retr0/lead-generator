@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from pallares_leads.enrich.firecrawl_client import FirecrawlClient, _SHARED_MAP_CACHE
+from pallares_leads.enrich.firecrawl_client import _SHARED_MAP_CACHE, FirecrawlClient
 from pallares_leads.enrich.sales_copy import (
     SalesCopyResult,
     generate_sales_copy,
@@ -56,7 +56,6 @@ def test_pick_broker_pdf_url_prefers_broker_domains() -> None:
 
 
 def test_map_cache_reuses_results() -> None:
-    from pallares_leads.enrich.firecrawl_client import _SHARED_MAP_CACHE
 
     _SHARED_MAP_CACHE.clear()
     settings = Settings(firecrawl_api_key="test-key")

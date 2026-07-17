@@ -12,12 +12,9 @@ from typing import TYPE_CHECKING
 
 from pallares_leads.config_loader import CategoryConfig, MarketConfig, load_markets
 from pallares_leads.db.store import LeadStore
-from pallares_leads.enrich.verify import Rejection
-from pallares_leads.intelligence.features import FEATURE_VERSION, build_feature_snapshot
 from pallares_leads.discover.county_filter import filter_excluded_counties
 from pallares_leads.discover.overpass import OverpassClient
 from pallares_leads.discover.places import PlacesClient
-from pallares_leads.utils.http_retry import OutOfCreditsError
 from pallares_leads.enrich.ai_gateway_client import gateway_configured, set_gateway_parallel_workers
 from pallares_leads.enrich.apply import (
     _ROLE_PRIORITY,
@@ -41,6 +38,7 @@ from pallares_leads.enrich.contact_requirements import (
     tier2_gap_reason,
 )
 from pallares_leads.enrich.domain_verify import scrub_unverified_website
+from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.enrich.gap_fill import (
     finalize_enrichment_notes,
@@ -48,6 +46,7 @@ from pallares_leads.enrich.gap_fill import (
     resolve_website,
 )
 from pallares_leads.enrich.google_gaps import GoogleGaps, gap_summary
+from pallares_leads.enrich.insurance import insurance_facts_from_pages, need_signals_ai_fallback
 from pallares_leads.enrich.lead_profile import (
     MULTI_TENANT_PROPERTY_TYPES,
     EnrichmentPlaybook,
@@ -81,17 +80,16 @@ from pallares_leads.enrich.registries.license_lookup import (
     parse_license_record,
     should_run_license_lookup,
 )
-from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
-from pallares_leads.enrich.insurance import insurance_facts_from_pages, need_signals_ai_fallback
 from pallares_leads.enrich.sales_copy import maybe_enrich_sales_copy
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.enrich.socials import social_facts_from_pages
 from pallares_leads.enrich.source_checklist import run_source_checklist
+from pallares_leads.enrich.verify import Rejection
+from pallares_leads.intelligence.features import FEATURE_VERSION, build_feature_snapshot
 from pallares_leads.pipeline.dedupe import dedupe_leads
 from pallares_leads.pipeline.export_csv import export_csv
-from pallares_leads.pipeline.export_sheets import export_sheets, sheets_configured
-from pallares_leads.progress import bind_progress, emit as progress_emit
-from pallares_leads.resolve.contact_hierarchy import pick_best_contact
+from pallares_leads.progress import bind_progress
+from pallares_leads.progress import emit as progress_emit
 from pallares_leads.resolve.lead_score import compute_lead_score
 from pallares_leads.resolve.verification import (
     compute_verification_level,
@@ -108,6 +106,7 @@ from pallares_leads.schemas import (
     SiteContact,
 )
 from pallares_leads.settings import Settings
+from pallares_leads.utils.http_retry import OutOfCreditsError
 from pallares_leads.utils.normalize import slugify
 from pallares_leads.utils.snapshots import append_jsonl
 
@@ -631,9 +630,9 @@ def _try_linkedin_serp_tier(
         if trace:
             trace.record("linkedin_serp", ran=False, reason="linkedin_serp not enabled")
         return enriched
-    has_callable = any(is_callable_phone(c.phone) for c in enriched.site_contacts) or is_callable_phone(
-        enriched.main_phone
-    )
+    has_callable = any(
+        is_callable_phone(c.phone) for c in enriched.site_contacts
+    ) or is_callable_phone(enriched.main_phone)
     has_named = any(c.name.strip() for c in enriched.site_contacts)
     if not has_callable or has_named:
         if trace:
@@ -1695,8 +1694,6 @@ def run_market_category(
     category: CategoryConfig,
     discover_only: bool = False,
     dry_run: bool = False,
-    skip_sheets: bool = False,
-    defer_sheets: bool = False,
     campaign_sink: list[EnrichedLead] | None = None,
     limit: int | None = None,
     skip_known: bool = True,
@@ -1749,8 +1746,6 @@ def run_market_category(
             category_key=category_key,
             category=category,
             discover_only=discover_only,
-            skip_sheets=skip_sheets or defer_sheets,
-            defer_sheets=defer_sheets,
             campaign_sink=campaign_sink,
             limit=limit,
             skip_known=skip_known,
@@ -1783,8 +1778,6 @@ def _run_market_category_body(
     category_key: str,
     category: CategoryConfig,
     discover_only: bool,
-    skip_sheets: bool,
-    defer_sheets: bool,
     campaign_sink: list[EnrichedLead] | None,
     limit: int | None,
     skip_known: bool,
@@ -1876,9 +1869,16 @@ def _run_market_category_body(
     )
     if skipped_known:
         logger.info(
-            "Skipped %d known lead(s) already in %s",
+            "Skipped %d known lead(s) already in configured database",
             skipped_known,
-            store.db_path.name,
+        )
+    for raw in raw_leads:
+        # Progress events reference leads by FK, so seed discovered rows before enrichment.
+        store.touch_discovered(
+            raw,
+            market_key=market_key,
+            category_key=category_key,
+            run_id=run_id,
         )
     if not raw_leads:
         logger.info("No new leads to process for %s / %s", market_key, category_key)
@@ -1946,6 +1946,7 @@ def _run_market_category_body(
                 credits_total=store.lead_run_credits(run_id, lead.place_id) or None,
                 lead_score=lead.lead_score,
             )
+            store.commit_cost_events()
         owner = store.get_owner_record(lead.place_id) or {}
         principals = owner.get("principals_json") or []
         if isinstance(principals, str):
@@ -2002,19 +2003,43 @@ def _run_market_category_body(
         active_store: LeadStore | None = None,
     ) -> EnrichedLead:
         enrich_store = active_store or store
+
+        def _baseline_discovered(*, notes: str = "") -> EnrichedLead:
+            started = time.perf_counter()
+            progress_emit(
+                "lead_started",
+                place_id=raw.place_id,
+                business=raw.business_name,
+                category=raw.lead_category,
+            )
+            lead = EnrichedLead.model_validate(raw.model_dump())
+            lead.source_tool = "google_places"
+            lead.investigation_status = InvestigationStatus.DISCOVERED
+            if notes:
+                lead.notes = notes
+            lead = apply_baseline_fields(lead, raw)
+            progress_emit(
+                "lead_done",
+                place_id=raw.place_id,
+                business=raw.business_name,
+                verification_level=lead.verification_level,
+                score=lead.lead_score,
+                credits=0,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+            return lead
         if _credits_budget_exceeded():
             logger.warning(
                 "Firecrawl credit cap reached (%d) — skipping enrichment for %s",
                 settings.firecrawl_max_credits_per_run,
                 raw.business_name,
             )
-            lead = EnrichedLead.model_validate(raw.model_dump())
-            lead.source_tool = "google_places"
-            lead.investigation_status = InvestigationStatus.DISCOVERED
-            lead.notes = (
-                f"Skipped enrichment: run credit cap ({settings.firecrawl_max_credits_per_run})"
+            return _baseline_discovered(
+                notes=(
+                    "Skipped enrichment: "
+                    f"run credit cap ({settings.firecrawl_max_credits_per_run})"
+                )
             )
-            return apply_baseline_fields(lead, raw)
         if client:
             return enrich_lead(
                 raw,
@@ -2024,10 +2049,7 @@ def _run_market_category_body(
                 run_id=run_id,
                 learn_profiles=True,
             )
-        lead = EnrichedLead.model_validate(raw.model_dump())
-        lead.source_tool = "google_places"
-        lead.investigation_status = InvestigationStatus.DISCOVERED
-        return apply_baseline_fields(lead, raw)
+        return _baseline_discovered()
 
     workers = max(1, settings.enrichment_parallel_workers)
     if workers > 1 and gateway_configured(settings):
@@ -2168,12 +2190,5 @@ def _run_market_category_body(
         credits=store.run_credits_total(run_id),
         duration_ms=int((time.perf_counter() - run_started_at) * 1000),
     )
-
-    if sheets_configured(settings) and not skip_sheets:
-        try:
-            added = export_sheets(enriched, settings, crm_status_map=store.get_crm_statuses())
-            logger.info("Google Sheets: %d new row(s) appended", added)
-        except Exception:
-            logger.exception("Google Sheets export failed")
 
     return out_path

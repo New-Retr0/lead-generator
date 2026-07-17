@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-
-import pytest
 
 from pallares_leads.db.store import LeadStore
 from pallares_leads.schemas import Confidence, EnrichedLead, InvestigationStatus, RawLead
@@ -106,6 +103,21 @@ def test_touch_discovered_does_not_block_enrichment(store: LeadStore) -> None:
         )
         is False
     )
+
+
+def test_progress_event_can_reference_touched_lead(store: LeadStore) -> None:
+    raw = _raw(place_id="places/progress-touched")
+    run_id = store.start_run(run_type="market", market_key="reedley", category_key="gas_station")
+    store.touch_discovered(raw, market_key="reedley", category_key="gas_station", run_id=run_id)
+    store.record_progress_event(
+        run_id=run_id,
+        event="lead_started",
+        ts="2026-01-01T00:00:00+00:00",
+        place_id=raw.place_id,
+        business=raw.business_name,
+    )
+    events = store.run_events_for_run(run_id)
+    assert any(event["stage"] == "lead_started" for event in events)
 
 
 def test_run_log(store: LeadStore) -> None:

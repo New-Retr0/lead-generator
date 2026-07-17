@@ -5,7 +5,9 @@ import json
 import logging
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from pallares_leads.config_loader import load_campaigns, load_categories, load_markets
 from pallares_leads.db.store import LeadStore
@@ -20,6 +22,26 @@ from pallares_leads.settings import Settings, get_settings
 from pallares_leads.utils.run_lock import PipelineLockedError, pipeline_lock
 
 SMOKE_SAMPLE_LIMIT = 5
+
+
+def _redact_connection_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "<configured>"
+    if not parsed.scheme or not parsed.netloc:
+        return value
+    host = parsed.netloc.rsplit("@", 1)[-1]
+    netloc = f"<credentials>@{host}" if "@" in parsed.netloc else host
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def _format_cli_timestamp(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")[:19]
+    if value is None:
+        return "unknown"
+    return str(value)[:19]
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -122,7 +144,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                 category=categories[cat_key],
                 discover_only=args.discover_only,
                 dry_run=args.dry_run,
-                skip_sheets=args.no_sheets,
                 limit=args.limit,
                 **db_kwargs,
             )
@@ -144,7 +165,6 @@ def cmd_run_campaign(args: argparse.Namespace) -> int:
                 limit=args.limit,
                 discover_only=args.discover_only,
                 dry_run=args.dry_run,
-                skip_sheets=args.no_sheets,
                 market_filter=market_filter,
                 category_filter=category_filter,
                 **_run_db_kwargs(args),
@@ -193,7 +213,6 @@ def cmd_smoke_sample(args: argparse.Namespace) -> int:
                 limit=limit,
                 discover_only=args.discover_only,
                 dry_run=args.dry_run,
-                skip_sheets=args.no_sheets,
                 market_filter=market_filter,
                 **_run_db_kwargs(args),
             )
@@ -271,21 +290,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         status = "OK" if fc_ok else "FAIL"
         print(f"Firecrawl: {status} — {fc_msg}")
         ok = ok and fc_ok
-        print(
-            "  Plan tier: Standard ($99/mo, 100k credits, 50 concurrent browsers, "
-            "500 scrape rpm, 250 search rpm)"
-        )
-        plan_concurrency = 50
-        if settings.firecrawl_max_concurrency > plan_concurrency:
-            print(
-                f"  WARNING: FIRECRAWL_MAX_CONCURRENCY={settings.firecrawl_max_concurrency} "
-                f"exceeds Standard plan limit ({plan_concurrency})"
-            )
-        else:
-            print(
-                f"  Concurrency: {settings.firecrawl_max_concurrency} "
-                f"(plan limit {plan_concurrency})"
-            )
         if settings.firecrawl_max_credits_per_run > 0:
             print(f"  Run credit cap: {settings.firecrawl_max_credits_per_run} credits/run")
         if settings.firecrawl_session_credit_stop > 0:
@@ -294,13 +298,44 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 "credits (refuse new runs above this)"
             )
         queue = fc.get_queue_status()
+        queue_max_conc = None
         if queue.get("error"):
             print(f"  Firecrawl queue: unavailable ({queue['error'][:80]})")
         else:
             jobs = queue.get("jobsInQueue", queue.get("jobs_in_queue"))
-            max_conc = queue.get("maxConcurrency", queue.get("max_concurrency"))
-            if jobs is not None or max_conc is not None:
-                print(f"  Firecrawl queue: {jobs or 0} queued, max concurrency {max_conc or '?'}")
+            queue_max_conc = queue.get("maxConcurrency", queue.get("max_concurrency"))
+            if jobs is not None or queue_max_conc is not None:
+                print(
+                    f"  Firecrawl queue: {jobs or 0} queued, "
+                    f"max concurrency {queue_max_conc or '?'}"
+                )
+        from pallares_leads.costs import infer_firecrawl_plan, load_pricing
+
+        pricing = load_pricing(settings.config_dir)
+        _, inferred_plan = infer_firecrawl_plan(pricing, max_concurrency=queue_max_conc)
+        plan_concurrency = (
+            int(inferred_plan.get("concurrent_browsers") or 0) if inferred_plan else None
+        )
+        if inferred_plan:
+            limits = inferred_plan.get("rate_limits_rpm") or {}
+            print(
+                f"  Plan status: {inferred_plan.get('name', 'unknown')} inferred from API "
+                f"({int(inferred_plan.get('monthly_credits') or 0):,} credits/mo, "
+                f"{plan_concurrency or '?'} concurrent browsers, "
+                f"{limits.get('scrape', '?')} scrape rpm, {limits.get('search', '?')} search rpm)"
+            )
+        else:
+            print("  Plan status: unavailable from Firecrawl API")
+        if plan_concurrency and settings.firecrawl_max_concurrency > plan_concurrency:
+            print(
+                f"  WARNING: FIRECRAWL_MAX_CONCURRENCY={settings.firecrawl_max_concurrency} "
+                f"exceeds API plan limit ({plan_concurrency})"
+            )
+        elif plan_concurrency:
+            print(
+                f"  Concurrency: {settings.firecrawl_max_concurrency} "
+                f"(API plan limit {plan_concurrency})"
+            )
 
     if not settings.supabase_db_url:
         print("Supabase: MISSING — set SUPABASE_DB_URL in .env")
@@ -326,7 +361,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         repaired = store.repair_stuck_runs()
         if repaired:
             print(f"  Repaired {repaired} stuck run(s) marked as failed")
-        print(f"Lead DB: {store.db_path} — {lead_count} lead(s), {enriched_count} enriched")
+        db_label = _redact_connection_url(store.db_path)
+        print(f"Lead DB: {db_label} — {lead_count} lead(s), {enriched_count} enriched")
 
         if settings.firecrawl_api_key:
             from pallares_leads.enrich.firecrawl_client import FirecrawlClient
@@ -343,9 +379,27 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 print(f"  Firecrawl balance snapshot: {detail}")
                 if used is None and plan is not None:
                     try:
-                        used = float(plan) - float(remaining)
+                        used = max(0.0, float(plan) - float(remaining))
                     except (TypeError, ValueError):
                         used = None
+                from pallares_leads.costs import (
+                    firecrawl_credit_usd,
+                    infer_firecrawl_plan,
+                    load_pricing,
+                )
+
+                pricing = load_pricing(settings.config_dir)
+                _, inferred_plan = infer_firecrawl_plan(pricing, plan_credits=plan)
+                if inferred_plan:
+                    print(
+                        f"  Firecrawl plan snapshot: {inferred_plan.get('name', 'unknown')} "
+                        f"({int(inferred_plan.get('monthly_credits') or 0):,} credits/mo, "
+                        f"${firecrawl_credit_usd(pricing, plan_credits=plan):.6f}/credit)"
+                    )
+                if plan is not None and remaining is not None and float(remaining) > float(plan):
+                    print(
+                        "  Firecrawl balance includes extra/recharge credits beyond monthly plan"
+                    )
                 if used is not None and plan is not None:
                     pct = (float(used) / float(plan)) * 100 if float(plan) > 0 else 0
                     print(f"  Billing cycle usage: {float(used):.0f} credits ({pct:.1f}% of plan)")
@@ -358,10 +412,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print(f"  Billing period ends: {billing_end}")
                     if used is not None:
                         try:
-                            from datetime import datetime, timezone
+                            from datetime import datetime
 
                             end_dt = datetime.fromisoformat(str(billing_end).replace("Z", "+00:00"))
-                            now = datetime.now(timezone.utc)
+                            now = datetime.now(UTC)
                             days_left = max((end_dt - now).total_seconds() / 86400, 0)
                             row = store._conn.execute(
                                 """
@@ -375,7 +429,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                             recent_daily = recent_total / 7 if recent_total > 0 else 0.0
                             if recent_daily > 0:
                                 projected = float(used) + recent_daily * days_left
-                                plan_f = float(plan or 100_000)
+                                plan_f = float(plan or 0)
                                 over = projected > plan_f
                                 print(
                                     f"  Projected cycle-end usage: {projected:.0f} credits "
@@ -467,7 +521,7 @@ def cmd_warm_portals(args: argparse.Namespace) -> int:
 
 def cmd_db_status(args: argparse.Namespace) -> int:
     with LeadStore() as store:
-        print(f"Database: {store.db_path}")
+        print(f"Database: {_redact_connection_url(store.db_path)}")
         print(f"  Total leads:    {store.count_leads()}")
         print(f"  Enriched:       {store.count_enriched()}")
         runs = store.recent_runs(limit=args.limit)
@@ -478,7 +532,7 @@ def cmd_db_status(args: argparse.Namespace) -> int:
                 if run["market_key"]:
                     label += f" {run['market_key']}/{run['category_key']}"
                 print(
-                    f"  {run['started_at'][:19]}  {label}  "
+                    f"  {_format_cli_timestamp(run['started_at'])}  {label}  "
                     f"discovered={run['discovered_count']}  "
                     f"skipped={run['skipped_known_count']}  "
                     f"enriched={run['enriched_count']}  "
@@ -689,7 +743,7 @@ def cmd_request(args: argparse.Namespace) -> int:
         cost = estimate_request_cost(spec)
         print(
             f"\nCost estimate: ~{cost['total_credits_est']} Firecrawl credits, "
-            f"~${cost['usd_est']:.2f} USD"
+            f"~${cost['usd_est']:.2f} USD equivalent"
         )
 
         if args.dry_run:
@@ -733,7 +787,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--all-categories", action="store_true")
     run.add_argument("--discover-only", action="store_true", help="Skip Firecrawl enrichment")
     run.add_argument("--dry-run", action="store_true", help="Print queries only")
-    run.add_argument("--no-sheets", action="store_true", help="Skip Google Sheets export")
     run.add_argument("--limit", type=int, help="Max leads to discover per category")
     _add_lead_db_flags(run)
     run.set_defaults(func=cmd_run)
@@ -749,7 +802,6 @@ def build_parser() -> argparse.ArgumentParser:
     campaign.add_argument("--limit", type=int, help="Max leads per market/category combo")
     campaign.add_argument("--discover-only", action="store_true")
     campaign.add_argument("--dry-run", action="store_true")
-    campaign.add_argument("--no-sheets", action="store_true")
     _add_lead_db_flags(campaign)
     campaign.set_defaults(func=cmd_run_campaign)
 
@@ -765,7 +817,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     smoke.add_argument("--discover-only", action="store_true")
     smoke.add_argument("--dry-run", action="store_true")
-    smoke.add_argument("--no-sheets", action="store_true")
     _add_lead_db_flags(smoke)
     smoke.set_defaults(func=cmd_smoke_sample)
 
@@ -919,11 +970,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replay only place_ids already enriched in the local DB (smoke-sample set)",
     )
     eval_replay.add_argument(
-        "--sync-sheets",
-        action="store_true",
-        help="Append all replayed leads to Google Sheets once at end (default: skip Sheets)",
-    )
-    eval_replay.add_argument(
         "--no-learn",
         action="store_true",
         help="Do not update enrichment playbooks during eval replay",
@@ -955,8 +1001,6 @@ def cmd_eval_replay(args: argparse.Namespace) -> int:
             from_jsonl=source,
             batch_size=args.batch_size,
             limit=args.limit,
-            skip_sheets=not args.sync_sheets,
-            sync_sheets=args.sync_sheets,
             batch_offset=args.batch_offset,
             batch_limit=args.batch_limit,
             db_only=args.db_only,

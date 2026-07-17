@@ -126,6 +126,7 @@ export type SourceCheck = {
 };
 
 export type JobEvent = {
+  id?: number | string;
   t: "evt";
   ts: string;
   event: string;
@@ -163,9 +164,28 @@ export type ProviderBalance = {
   remaining: number | null;
   used: number | null;
   plan: number | null;
+  planName?: string | null;
+  creditUsd?: number | null;
   billingPeriodEnd: string | null;
   unitLabel: string;
   snapshotAt: string | null;
+};
+
+export type FirecrawlPlan = {
+  key: string;
+  name: string;
+  monthlyCredits: number;
+  monthlyUsd: number;
+  billing: string | null;
+  concurrentBrowsers: number;
+  maxQueuedJobs: number;
+  rateLimitsRpm: {
+    scrape: number;
+    map: number;
+    crawl: number;
+    search: number;
+    agent: number;
+  };
 };
 
 export type CostBudget = {
@@ -177,7 +197,9 @@ export type CostBudget = {
   projectedCycleCredits: number | null;
   projectedOverPlan: boolean;
   percentOfPlanUsed: number | null;
-  planTier: "standard";
+  planTier: string | null;
+  planName: string | null;
+  creditUsd: number | null;
 };
 
 export type CostByRunRow = {
@@ -416,7 +438,7 @@ export type RequestSpec = {
   require_decision_maker: boolean;
   recurring_only: boolean;
   min_lead_score: number;
-  budget: { max_firecrawl_credits: number; max_usd: number };
+  budget: { max_firecrawl_credits: number };
   needs_confirmation: string[];
 };
 
@@ -520,22 +542,20 @@ export function estimateRequestCost(spec: {
   count: number;
   categories: string[];
   market_keys: string[];
-  budget: { max_firecrawl_credits: number; max_usd: number };
-}): {
+}, creditUsd = 0.00083): {
   discoveryCredits: number;
   enrichCredits: number;
   totalCredits: number;
   usd: number;
 } {
   const perLeadCredits = 13;
-  const creditUsd = 0.00099;
   const discoveryCredits = spec.categories.length * spec.market_keys.length * 2;
   const enrichCredits = spec.count * perLeadCredits;
   const total = discoveryCredits + enrichCredits;
   return {
     discoveryCredits,
     enrichCredits,
-    totalCredits: Math.min(total, spec.budget.max_firecrawl_credits),
-    usd: Math.min(total * creditUsd, spec.budget.max_usd),
+    totalCredits: total,
+    usd: total * creditUsd,
   };
 }

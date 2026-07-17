@@ -5,7 +5,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleOff,
+  LoaderCircle,
   MinusCircle,
+  Search,
   SquareTerminal,
   Stethoscope,
   XCircle,
@@ -69,6 +71,15 @@ const STATUS_META: Record<
 const SKIP_LINE =
   /^(?:\$|--- exit|\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}.*INFO httpx)/;
 
+const EXPECTED_CHECKS = [
+  "Places API (New)",
+  "Firecrawl",
+  "Supabase",
+  "AI Gateway",
+  "Lead database",
+  "Browser Use",
+] as const;
+
 function redactSecret(detail: string): string {
   return detail.replace(/(postgresql:\/\/[^:]+:)[^@]+(@)/, "$1***$2");
 }
@@ -77,10 +88,10 @@ function parseDoctorLogs(lines: string[]): HealthCheck[] {
   const checks: HealthCheck[] = [];
 
   for (const raw of lines) {
+    const detailMatch = raw.match(/^\s{2,}(.+)$/);
     const line = raw.trim();
     if (!line || SKIP_LINE.test(line)) continue;
 
-    const detailMatch = line.match(/^ {2}(.+)$/);
     if (detailMatch && checks.length > 0) {
       const detail = redactSecret(detailMatch[1]);
       if (/^WARNING:/i.test(detail)) {
@@ -210,6 +221,67 @@ function CheckRow({ check }: { check: HealthCheck }) {
   );
 }
 
+function PendingCheckRow({ service, active }: { service: string; active: boolean }) {
+  const reduced = useReducedMotion();
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -6 }}
+      transition={{ type: "spring", stiffness: 260, damping: 24 }}
+      className={cn(
+        "relative overflow-hidden rounded-xl border px-3.5 py-3",
+        active
+          ? "border-primary/35 bg-primary/10"
+          : "border-dashed border-border/50 bg-muted/20",
+      )}
+    >
+      {active && !reduced ? (
+        <motion.div
+          className="absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-transparent via-primary/10 to-transparent"
+          animate={{ x: ["-120%", "760%"] }}
+          transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+        />
+      ) : null}
+      <div className="relative flex items-start gap-3">
+        <span
+          className={cn(
+            "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border",
+            active
+              ? "border-primary/40 bg-primary/12 text-primary"
+              : "border-border bg-muted/50 text-muted-foreground",
+          )}
+        >
+          {active ? (
+            <motion.span
+              animate={reduced ? undefined : { rotate: 360 }}
+              transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+            >
+              <LoaderCircle className="size-3.5" strokeWidth={2.25} />
+            </motion.span>
+          ) : (
+            <Search className="size-3.5" strokeWidth={2.25} />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold leading-tight">{service}</p>
+            <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {active ? "Running" : "Pending"}
+            </span>
+          </div>
+          <p className="mt-1 flex items-center gap-1 text-xs leading-snug text-muted-foreground">
+            {active ? "Checking service" : "Waiting in sequence"}
+            {active ? <TypingDots /> : null}
+          </p>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 function SummaryTile({
   label,
   value,
@@ -252,7 +324,7 @@ export function DoctorHealthPanel({
   const [lines, setLines] = useState<string[]>([]);
   const [status, setStatus] = useState("running");
   const [showRaw, setShowRaw] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const wasLiveRef = useRef(false);
 
   useEffect(() => {
@@ -302,18 +374,26 @@ export function DoctorHealthPanel({
   }, [jobId, onDone]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [lines, showRaw]);
+    const scrollArea = scrollAreaRef.current;
+    scrollArea?.scrollTo({
+      top: scrollArea.scrollHeight,
+      behavior: reduced ? "auto" : "smooth",
+    });
+  }, [lines, reduced, showRaw]);
 
   const checks = useMemo(() => parseDoctorLogs(lines), [lines]);
   const running = status === "running";
   const passedChecks = checks.filter((c) => c.status === "ok").length;
   const warnChecks = checks.filter((c) => c.status === "warn").length;
   const failedChecks = checks.filter((c) => c.status === "fail" || c.status === "missing").length;
+  const completedServices = new Set(checks.map((check) => check.service));
+  const pendingChecks = running
+    ? EXPECTED_CHECKS.filter((service) => !completedServices.has(service))
+    : [];
 
   return (
     <div className={cn("rounded-2xl", running && "live-ring p-px")}>
-      <div className="glass-strong glass-sheen flex max-h-[70vh] flex-col overflow-hidden rounded-2xl">
+      <div className="glass-strong glass-sheen flex h-[min(64dvh,660px)] min-h-0 flex-col overflow-hidden rounded-2xl">
         {running && !reduced ? (
           <motion.div
             className="h-0.5 w-full bg-muted"
@@ -397,18 +477,33 @@ export function DoctorHealthPanel({
 
         <div className="min-h-0 flex-1 p-3">
           {showRaw ? (
-            <pre className="max-h-full overflow-auto rounded-xl border border-white/5 bg-[oklch(0.15_0.02_262)] p-3.5 font-mono text-[11px] leading-relaxed text-[oklch(0.84_0.01_250)] shadow-inner">
-              {lines.filter((line) => !line.startsWith("$")).join("\n") || "Waiting for output…"}
-              <div ref={bottomRef} />
-            </pre>
+            <div
+              ref={scrollAreaRef}
+              className="max-h-full overflow-auto rounded-xl border border-white/5 bg-[oklch(0.15_0.02_262)] p-3.5 shadow-inner"
+            >
+              <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[oklch(0.84_0.01_250)]">
+                {lines.filter((line) => !line.startsWith("$")).join("\n") ||
+                  "Waiting for output..."}
+              </pre>
+            </div>
           ) : (
-            <div className="flex max-h-full min-h-0 flex-col overflow-y-auto pr-1">
+            <div
+              ref={scrollAreaRef}
+              className="flex max-h-full min-h-0 flex-col gap-2 overflow-y-auto pr-1"
+            >
               <AnimatePresence initial={false}>
                 {checks.map((check) => (
                   <CheckRow key={check.service} check={check} />
                 ))}
+                {pendingChecks.map((service, index) => (
+                  <PendingCheckRow
+                    key={`pending-${service}`}
+                    service={service}
+                    active={index === 0}
+                  />
+                ))}
               </AnimatePresence>
-              {running ? (
+              {running && pendingChecks.length === 0 ? (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -423,7 +518,6 @@ export function DoctorHealthPanel({
                   No check results captured
                 </p>
               ) : null}
-              <div ref={bottomRef} />
             </div>
           )}
         </div>

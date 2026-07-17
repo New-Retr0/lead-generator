@@ -17,7 +17,6 @@ SECRET_FIELDS = frozenset(
         "supabase_anon_key",
         "supabase_service_role_key",
         "supabase_db_url",
-        "google_service_account_json",
     }
 )
 

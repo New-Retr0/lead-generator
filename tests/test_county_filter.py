@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pallares_leads.config_loader import MarketConfig
-from pallares_leads.discover.county_filter import filter_excluded_counties, lead_matches_excluded_county
+from pallares_leads.discover.county_filter import (
+    filter_excluded_counties,
+    lead_matches_excluded_county,
+)
 from pallares_leads.pipeline.run_campaign import iter_campaign_jobs
 from pallares_leads.schemas import RawLead
 

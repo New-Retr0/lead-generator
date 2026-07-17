@@ -129,8 +129,16 @@ export default function ASCIIAnimation({
   const loadAllFrames = useCallback(async () => {
     if (fullLoadTriggered.current) return;
     fullLoadTriggered.current = true;
-    const source = resolvedSource.current;
-    if (!source) return;
+    let source = resolvedSource.current;
+    if (!source) {
+      source = await resolveFrameSource(frameFolder, quality, frameFiles[0]);
+      resolvedSource.current = source;
+    }
+    if (!source) {
+      fullLoadTriggered.current = false;
+      setIsLoading(false);
+      return;
+    }
     try {
       const loadedFrames = await Promise.all(
         frameFiles.map(async (filename) => {
@@ -143,10 +151,11 @@ export default function ASCIIAnimation({
       currentFrameRef.current = 0;
     } catch (error) {
       console.error("Failed to load ASCII frames:", error);
+      fullLoadTriggered.current = false;
     } finally {
       setIsLoading(false);
     }
-  }, [frameFiles]);
+  }, [frameFiles, frameFolder, quality]);
 
   useEffect(() => {
     fullLoadTriggered.current = false;
@@ -276,7 +285,7 @@ export default function ASCIIAnimation({
         className={`origin-center leading-none ${textSize}`}
         style={{
           transform: `scale(${scale})`,
-          opacity: scaled ? 1 : 0,
+          opacity: scaled || frames.length > 0 ? 1 : 0,
           transition: "opacity 0.5s ease-in",
           ...(gradient
             ? {

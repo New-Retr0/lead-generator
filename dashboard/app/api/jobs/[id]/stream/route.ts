@@ -1,20 +1,30 @@
 import { getJob, loadPersistedJob, subscribeJob } from "@/lib/jobs";
+import type { JobRecord, JobStatus } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const TERMINAL_STATUSES = new Set<JobStatus>([
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
 
 export async function GET(
   _req: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const job = getJob(id) ?? loadPersistedJob(id);
+  const activeJob = getJob(id);
+  const job = activeJob ?? loadPersistedJob(id);
   if (!job) {
     return new Response("Job not found", { status: 404 });
   }
 
   const encoder = new TextEncoder();
   let unsubscribe: (() => void) | undefined;
+  let pollInterval: ReturnType<typeof setInterval> | undefined;
 
   const stream = new ReadableStream({
     start(controller) {
@@ -24,6 +34,11 @@ export async function GET(
         );
       };
 
+      const sendDone = (finished: JobRecord) => {
+        send("done", { status: finished.status, exitCode: finished.exitCode });
+        controller.close();
+      };
+
       for (const line of job.logs) {
         send("log", { line });
       }
@@ -31,15 +46,35 @@ export async function GET(
         send("event", evt);
       }
 
-      if (job.status === "completed" || job.status === "failed" || job.status === "cancelled" || job.status === "interrupted") {
-        send("done", { status: job.status, exitCode: job.exitCode });
-        controller.close();
+      if (TERMINAL_STATUSES.has(job.status)) {
+        sendDone(job);
         return;
       }
 
-      if (job.status === "running" && !getJob(id)) {
-        send("done", { status: "interrupted", exitCode: job.exitCode });
-        controller.close();
+      if (!activeJob) {
+        let sentLogs = job.logs.length;
+        let sentEvents = job.events.length;
+        pollInterval = setInterval(() => {
+          const next = loadPersistedJob(id);
+          if (!next) {
+            send("done", { status: "interrupted", exitCode: null });
+            controller.close();
+            if (pollInterval) clearInterval(pollInterval);
+            return;
+          }
+          for (const line of next.logs.slice(sentLogs)) {
+            send("log", { line });
+          }
+          for (const evt of next.events.slice(sentEvents)) {
+            send("event", evt);
+          }
+          sentLogs = next.logs.length;
+          sentEvents = next.events.length;
+          if (TERMINAL_STATUSES.has(next.status)) {
+            sendDone(next);
+            if (pollInterval) clearInterval(pollInterval);
+          }
+        }, 500);
         return;
       }
 
@@ -56,6 +91,7 @@ export async function GET(
     },
     cancel() {
       unsubscribe?.();
+      if (pollInterval) clearInterval(pollInterval);
     },
   });
 

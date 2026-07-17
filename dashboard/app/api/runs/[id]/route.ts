@@ -34,12 +34,15 @@ export async function GET(
 
     return NextResponse.json({
       ...detail,
-      liveJobId:
-        liveJob && (liveJob.status === "running" || liveJob.status === "pending")
-          ? liveJob.id
-          : null,
+      liveJobId: liveJob?.id ?? null,
+      liveJobStatus: liveJob?.status ?? null,
+      liveJobFinishedAt: liveJob?.finishedAt ?? null,
       liveNames,
       liveDiscovered,
+    }, {
+      headers: {
+        "Cache-Control": "no-store",
+      },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load run";

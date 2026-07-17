@@ -3,8 +3,8 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import { Phone, Search, SlidersHorizontal } from "lucide-react";
-import { SalesStatusBadge, ScoreBadge, VerificationBadge } from "@/components/badges";
+import { Phone, Search } from "lucide-react";
+import { SalesStatusBadge, VerificationBadge } from "@/components/badges";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,7 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import {
   Table,
   TableBody,
@@ -61,9 +60,6 @@ const LeadTableRow = memo(function LeadTableRow({
       <TableCell>
         <Badge variant="outline">{categoryLabel}</Badge>
       </TableCell>
-      <TableCell className="text-center">
-        <ScoreBadge score={lead.lead_score} />
-      </TableCell>
       <TableCell>
         <VerificationBadge level={lead.verification_level} />
       </TableCell>
@@ -98,7 +94,6 @@ export function LeadsClient({
   const [market, setMarket] = useState(ALL);
   const [category, setCategory] = useState(ALL);
   const [status, setStatus] = useState(ALL);
-  const [minScore, setMinScore] = useState(0);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -121,7 +116,6 @@ export function LeadsClient({
     if (market !== ALL) params.set("market", market);
     if (category !== ALL) params.set("category", category);
     if (status !== ALL) params.set("status", status);
-    if (minScore > 0) params.set("minScore", String(minScore));
     params.set("limit", "1000");
 
     const run = async () => {
@@ -139,7 +133,7 @@ export function LeadsClient({
     return () => {
       cancelled = true;
     };
-  }, [market, category, status, minScore]);
+  }, [market, category, status]);
 
   const visible = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
@@ -156,7 +150,7 @@ export function LeadsClient({
 
   return (
     <div className="space-y-6">
-      <PageHeader description="Enriched, callable leads ranked by score. Select rows to push to Google Sheets." />
+      <PageHeader description="Enriched, callable leads. Open a row to review the full record." />
 
       <Card className="glass sticky top-14 z-10">
         <CardContent className="flex flex-wrap items-end gap-4 py-5">
@@ -218,19 +212,6 @@ export function LeadsClient({
             </Select>
           </div>
 
-          <div className="w-44 space-y-1.5">
-            <Label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <SlidersHorizontal className="size-3" />
-              Min score: <span className="font-semibold tabular-nums">{minScore}</span>
-            </Label>
-            <Slider
-              min={0}
-              max={100}
-              step={5}
-              value={[minScore]}
-              onValueChange={([v]) => setMinScore(v)}
-            />
-          </div>
         </CardContent>
       </Card>
 
@@ -242,7 +223,6 @@ export function LeadsClient({
                 <TableHead>Business</TableHead>
                 <TableHead>Market</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead className="text-center">Score</TableHead>
                 <TableHead>Verification</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Phone</TableHead>
@@ -251,13 +231,13 @@ export function LeadsClient({
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={6} className="h-32 text-center text-sm text-muted-foreground">
                     Loading leads…
                   </TableCell>
                 </TableRow>
               ) : visible.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={6} className="h-32 text-center text-sm text-muted-foreground">
                     No leads match these filters.
                   </TableCell>
                 </TableRow>

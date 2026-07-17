@@ -32,9 +32,7 @@ npm run dev
 
 Open **https://pallares.localhost** (Portless) or `npm run dev:direct` on port 3000.
 
-## Sales app
-
-Sales reps use the deployed **sales-app** at https://pallares-sales.vercel.app (magic-link auth, CRM-only writes). This dashboard keeps full pipeline control locally.
+This dashboard is the only in-repo app surface. It keeps full pipeline control and CRM workflows local.
 
 ## API
 

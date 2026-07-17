@@ -1,8 +1,8 @@
 ## Learned User Preferences
 
 - Primary business goal: maximize verified decision-maker callable leads for sales outreach (10% commission on closed deals); quality right-person phones beat raw volume. Owner targets: sidewalks, glass storefronts, parking lots/dumpster pads — strip/outdoor malls, QSR franchisees, gas stations, restaurants with own lots; contacts: facilities manager, maintenance manager, property/land owner.
-- Product is API-first: the sellable surface is the Partner API; new lead-lifecycle features must land there before or with internal UI; `dashboard/` is the local operator console; `sales-app/` is reference code for a future hosted console.
-- Local **dashboard/** (`localhost:3000`) is the solo-founder dev/operator console (not an employee CRM) for pipeline ops (jobs, runs, costs, campaigns, settings) and internal CRM (`/crm`, `/leads`, `/triage`). The Vercel deployment was removed — `sales-app/` remains in-repo for local dev only.
+- Product is API-first: the sellable surface is the Partner API; new lead-lifecycle features must land there before or with internal UI; `dashboard/` is the local operator console.
+- Local **dashboard/** (`localhost:3000`) is the solo-founder dev/operator console for pipeline ops (jobs, runs, costs, campaigns, settings) and internal CRM (`/crm`, `/leads`, `/triage`). It is the only in-repo app surface.
 - Prioritize operational cost transparency: per-provider USD breakdown, duration_ms on pipeline operations, and dashboard trend views so spend sources and rate changes are visible.
 - Single-pass lead generation — no separate enrich pipeline; discovery and enrichment run together per place (`skip_known` default).
 - Vendor leads (`vendor_` category prefix) are distinct from client targets — `sales_leads.is_vendor` via `category_key LIKE 'vendor_%'`; visible in CRM with vendor filter; reps see vendors via full read parity.
@@ -10,7 +10,7 @@
 - Prefer hybrid Firecrawl enrichment with templated searches for predictable outputs and cost control; reuse playbooks, page_cache, and owner_records instead of re-running full Firecrawl/Browser Use.
 - Owner-chain county recorder lookups use free grantor/grantee index only — never purchase deed images.
 - Only git commit and push when explicitly requested.
-- Real credentials live in `.env` and `secrets/` — never commit API keys or service account JSON.
+- Real credentials live in `.env` and `secrets/` — never commit API keys or secret files.
 
 ## Repository Structure
 
@@ -26,9 +26,8 @@
   - `queue_worker.py` — consumes pgmq `pipeline_jobs`, spawns CLI subprocesses with allowlisted env overrides.
 - `config/` — all YAML behavior (see preferences above).
 - `dashboard/` — local Next.js operator console + CRM (no login, direct Postgres via `postgres` npm, bypasses RLS). Routes: `/`, `/crm`, `/leads`, `/triage`, `/runs`, `/runs/[id]`, `/requests`, `/costs`, `/campaigns` (campaign run/estimate), `/data` (data explorer), `/settings` (env + YAML config editor). Spawns CLI jobs with SSE streams; writes CRM/outcomes/touches via `lib/db-write.ts`.
-- `sales-app/` — reference Developer Console (local dev only; Vercel deployment removed). `@supabase/ssr` + anon key, magic-link auth, RLS. Routes: `/`, `/pipeline` (Pipeline Studio), `/jobs`, `/runs`, `/requests`, `/leads`, `/crm`, `/triage`, `/costs`, `/partner-api`, `/workspace`. Realtime on `run_events`, `cost_events`, `worker_status`, `pipeline_jobs`.
-- `supabase/` — canonical schema in `migrations/`; Edge Function `functions/partner-api/` (hashed keys, cursor sync, rate limits, outcome/touch endpoints with `leads:feedback` scope); OpenAPI at `docs/partner-api.openapi.yaml`; admin key CRUD `/api/admin/partner-keys` (`is_admin` + server-only service role).
-- `scripts/` — ops utilities (partner keys, auth users, market generation, cost audit, DB wipe).
+- `supabase/` — canonical schema in `migrations/`; Edge Function `functions/partner-api/` (hashed keys, cursor sync, rate limits, outcome/touch endpoints with `leads:feedback` scope); OpenAPI at `docs/partner-api.openapi.yaml`; partner keys are managed with `scripts/create_partner_api_key.py`.
+- `scripts/` — ops utilities (partner keys, market generation, cost audit, DB wipe).
 - `docs/` — `lead-intelligence.md`, `api-first-architecture.md`, partner API OpenAPI.
 - `data/` — local-only runtime: `local_cache.db`, `raw_archive.db`, `runs/`, `insights/`, `us_cities_30k.csv`. Never canonical; Supabase Postgres is.
 - `tests/` — pytest suite incl. golden regression fixtures; CI bootstraps Postgres.
@@ -60,16 +59,15 @@ Direction over time: more closed outcomes → better labels → learned score ou
 - Key CLI: `run`, `run-campaign`, `smoke-sample`, `request`, `warm-portals`, `harvest-managers`, `insights`, `eval-replay`, `db status|report|prune|profiles|lead|archive-stats|import`, `doctor`, `worker`, `list`, `settings-schema`; `PALLARES_LOG_JSON=1` persists progress to `run_events` (Realtime); local dashboard uses SSE job streams.
 - Parallel enrichment via `enrichment_parallel_workers` (Firecrawl concurrent, AI Gateway serialized spacing); Firecrawl credit caps per run/session.
 - Optional install extras: `.[dev]` for tests, `.[analysis]` (pandas/scikit-learn/scipy) required for `insights`.
-- Env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`; sales-app uses `NEXT_PUBLIC_SUPABASE_*`; optional server-only `SUPABASE_SERVICE_ROLE_KEY` for admin partner-key routes (never in browser); scoring knobs `learned_score_weight`, `learned_score_min_labels`, `min_export_score`.
+- Env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`; scoring knobs `learned_score_weight`, `learned_score_min_labels`, `min_export_score`.
 - ASCII hero animations live in `dashboard/public/animations/{computer,cube,planet,wave}/` with `low/` and `medium/` frame sets only — use `quality="medium"` (`high/` folders do not exist).
-- Pipeline Studio (animated stage canvas + replay scrubber) is porting from `sales-app/components/pipeline/` to dashboard `/runs/[id]` via polling on `/api/runs/[id]/events` and `/costs` (not Supabase Realtime).
+- Pipeline Studio (animated stage canvas + replay scrubber) targets dashboard `/runs/[id]` via polling on `/api/runs/[id]/events` and `/costs` (not Supabase Realtime).
 
 ## Recent System Updates (iterate log)
 
 - **Lead intelligence layer** (newest): `lead_features` snapshots per run, structured `lead_outcomes`/`lead_touches` fed from CRM + Partner API, `insights` CLI with report persistence, optional learned score blending — this is the improve/iterate engine; see Data Flywheel above.
 - **Raw archive**: `data/raw_archive.db` stores compressed raw Places/Firecrawl/AI payloads locally for feature replay and eval — distinct from `page_cache`, never in Supabase (free-tier cap).
 - **Geographic expansion**: markets/campaigns for HI, OR, WA, AZ, NV, NM, CA-minus-LA/OC; county filtering and grid tiling shipped.
-- **Pipeline Studio**: reference in sales-app `/pipeline` (Realtime); full port to dashboard `/runs/[id]` in progress (polling, stage canvas, video-style replay).
+- **Pipeline Studio**: dashboard `/runs/[id]` port in progress (polling, stage canvas, video-style replay).
 - **Dashboard growth**: `/campaigns` (run + cost estimate), `/data` explorer, `/settings` env + YAML config editor (`/api/settings`, `/api/config-files`), run detail page; `/insights` page removed (redirects `/` — insights are CLI + reports now).
 - **Jobs queue**: `pipeline_jobs` + pgmq + `queue_worker.py` — dashboard UI enqueues; worker spawns the same CLI.
-- **SSR conversion**: both Next.js apps server-render with client islands; sales-app auth is magic-link only with client `token_hash` confirm.

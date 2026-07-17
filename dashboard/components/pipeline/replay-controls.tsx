@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import {
   Bar,
@@ -18,6 +18,8 @@ import type { StageStat } from "@/lib/pipeline/rollup";
 import type { PipelineTimelineEntry } from "@/lib/pipeline/stages";
 
 const SPEEDS = [1, 4, 16, 60] as const;
+const REPLAY_STATE_STORAGE_PREFIX = "pipeline-replay-state";
+const DEFAULT_REPLAY_STATE = { virtualMs: null, speed: 4 as (typeof SPEEDS)[number] };
 
 function formatClock(ms: number): string {
   const sec = Math.floor(ms / 1000);
@@ -195,25 +197,157 @@ export function ReplayControls({
   );
 }
 
-export function useReplayState(isLive: boolean) {
+function getReplayStateStorageKey(runId: string) {
+  return `${REPLAY_STATE_STORAGE_PREFIX}:${runId}`;
+}
+
+function safeStorageGet(key: string): string | null {
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    try {
+      const value = storage.getItem(key);
+      if (value != null) {
+        return value;
+      }
+    } catch {
+      // Storage may be blocked in strict browser privacy modes.
+    }
+  }
+  return null;
+}
+
+function safeStorageSet(key: string, value: string) {
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    try {
+      storage.setItem(key, value);
+    } catch {
+      // Keep trying alternate storage if one is unavailable.
+    }
+  }
+}
+
+function safeStorageRemove(key: string) {
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    try {
+      storage.removeItem(key);
+    } catch {
+      // Best effort only.
+    }
+  }
+}
+
+type StoredReplayState = {
+  virtualMs: number | null;
+  speed: (typeof SPEEDS)[number];
+};
+
+function readStoredReplayState(runId: string | null, isLive: boolean): StoredReplayState {
+  if (!runId || isLive || typeof window === "undefined") {
+    return DEFAULT_REPLAY_STATE;
+  }
+
+  const raw = safeStorageGet(getReplayStateStorageKey(runId));
+  if (!raw) {
+    return DEFAULT_REPLAY_STATE;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredReplayState>;
+    const speed =
+      typeof parsed.speed === "number" &&
+      SPEEDS.includes(parsed.speed as never) &&
+      !Number.isNaN(parsed.speed)
+        ? (parsed.speed as (typeof SPEEDS)[number])
+        : DEFAULT_REPLAY_STATE.speed;
+    const virtualMs =
+      parsed.virtualMs == null || typeof parsed.virtualMs === "number"
+        ? parsed.virtualMs
+        : DEFAULT_REPLAY_STATE.virtualMs;
+    return { virtualMs, speed };
+  } catch {
+    safeStorageRemove(getReplayStateStorageKey(runId));
+    return DEFAULT_REPLAY_STATE;
+  }
+}
+
+export function useReplayState(runId: string | null, isLive: boolean) {
   const [playing, setPlaying] = useState(false);
-  const [virtualMs, setVirtualMs] = useState<number | null>(null);
-  const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(4);
+  const initialState = useMemo(() => readStoredReplayState(runId, isLive), [runId, isLive]);
+  const [virtualMs, setVirtualMs] = useState<number | null>(initialState.virtualMs);
+  const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(initialState.speed);
+  const virtualMsRef = useRef<number | null>(initialState.virtualMs);
+  const speedRef = useRef<(typeof SPEEDS)[number]>(initialState.speed);
+
+  const persistNow = useCallback(() => {
+    if (!runId || isLive || typeof window === "undefined") return;
+    safeStorageSet(
+      getReplayStateStorageKey(runId),
+      JSON.stringify({
+        virtualMs: virtualMsRef.current,
+        speed: speedRef.current,
+      } as StoredReplayState),
+    );
+  }, [isLive, runId]);
+
+  const setVirtualMsPersist = useCallback(
+    (value: number | null) => {
+      virtualMsRef.current = value;
+      setVirtualMs(value);
+      persistNow();
+    },
+    [persistNow],
+  );
+
+  const setSpeedPersist = useCallback(
+    (nextSpeed: (typeof SPEEDS)[number]) => {
+      if (!SPEEDS.includes(nextSpeed as never)) return;
+      speedRef.current = nextSpeed;
+      setSpeed(nextSpeed);
+      persistNow();
+    },
+    [persistNow],
+  );
 
   useEffect(() => {
-    if (isLive) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset replay when live
-      setPlaying(false);
-      setVirtualMs(null);
-    }
-  }, [isLive]);
+    if (!runId || isLive || typeof window === "undefined") return;
+    virtualMsRef.current = virtualMs;
+    speedRef.current = speed;
+  }, [isLive, runId, virtualMs, speed]);
+
+  useEffect(() => {
+    if (!runId || isLive || typeof window === "undefined") return;
+
+    const handleBeforeUnload = () => persistNow();
+    const handleBlur = () => persistNow();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        persistNow();
+      }
+    };
+
+    window.addEventListener("pagehide", persistNow, { capture: true });
+    window.addEventListener("unload", persistNow);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("popstate", persistNow);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      persistNow();
+      window.removeEventListener("pagehide", persistNow, { capture: true });
+      window.removeEventListener("unload", persistNow);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("popstate", persistNow);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isLive, runId, persistNow]);
 
   return {
     playing: isLive ? false : playing,
     setPlaying,
     virtualMs: isLive ? null : virtualMs,
-    setVirtualMs,
+    setVirtualMs: setVirtualMsPersist,
     speed,
-    setSpeed,
+    setSpeed: setSpeedPersist,
   };
 }

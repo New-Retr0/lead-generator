@@ -12,7 +12,6 @@ from pallares_leads.config_loader import (
     load_markets,
 )
 from pallares_leads.db.store import LeadStore
-from pallares_leads.pipeline.export_sheets import export_sheets, sheets_configured
 from pallares_leads.pipeline.run_market import run_market_category
 from pallares_leads.schemas import EnrichedLead
 from pallares_leads.settings import Settings
@@ -35,7 +34,6 @@ class CampaignRunResult:
 class CampaignSummary:
     results: list[CampaignRunResult] = field(default_factory=list)
     total_leads: int = 0
-    sheets_added: int = 0
     all_enriched: list[EnrichedLead] = field(default_factory=list)
 
     @property
@@ -120,7 +118,6 @@ def run_campaign(
     limit: int | None = None,
     discover_only: bool = False,
     dry_run: bool = False,
-    skip_sheets: bool = False,
     market_filter: list[str] | None = None,
     category_filter: list[str] | None = None,
     skip_known: bool = True,
@@ -154,8 +151,6 @@ def run_campaign(
         skip_known and not force_refresh,
     )
 
-    defer_sheets = not skip_sheets and sheets_configured(settings) and not dry_run
-
     with LeadStore() as store:
         for market_key, category_key in jobs:
             if category_key not in categories:
@@ -181,8 +176,6 @@ def run_campaign(
                     category=categories[category_key],
                     discover_only=discover_only,
                     dry_run=dry_run,
-                    skip_sheets=skip_sheets,
-                    defer_sheets=defer_sheets,
                     campaign_sink=summary.all_enriched,
                     limit=limit,
                     skip_known=skip_known,
@@ -210,22 +203,5 @@ def run_campaign(
                 summary.results.append(
                     CampaignRunResult(market_key, category_key, 0, error=str(exc))
                 )
-
-    if defer_sheets and summary.all_enriched:
-        seen: set[str] = set()
-        unique: list[EnrichedLead] = []
-        for lead in summary.all_enriched:
-            if lead.place_id not in seen:
-                seen.add(lead.place_id)
-                unique.append(lead)
-        try:
-            summary.sheets_added = export_sheets(unique, settings)
-            logger.info(
-                "Campaign Google Sheets: %d new row(s) from %d enriched lead(s)",
-                summary.sheets_added,
-                len(unique),
-            )
-        except Exception:
-            logger.exception("Campaign Google Sheets export failed")
 
     return summary

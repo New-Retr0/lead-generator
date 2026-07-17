@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
+from helpers import ensure_lead
 
 from pallares_leads.db.store import LeadStore
 from pallares_leads.schemas import Confidence, EnrichedLead, InvestigationStatus, RawLead
-from helpers import ensure_lead
 
 
 def _enriched(place_id: str = "places/x") -> EnrichedLead:

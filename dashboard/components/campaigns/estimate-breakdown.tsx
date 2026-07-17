@@ -3,22 +3,37 @@
 import { useMemo } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { AnimatedNumber } from "@/components/animated";
-import { formatUsd } from "@/lib/utils";
+import type { FirecrawlPlan } from "@/lib/types";
+import { cn, formatCredits, formatUsd, formatUsdPrecise } from "@/lib/utils";
 
 export type EstimateProvider = {
   provider: string;
   share: number;
   estimatedUsd: number;
+  basis?: "current_credit_rate" | "historical_non_firecrawl";
 };
 
 export type EstimateBreakdownData = {
   estimatedCredits: number | null;
   estimatedFirecrawlUsd: number | null;
   estimatedUsd: number | null;
+  creditUsd?: number | null;
+  nextPlan?: FirecrawlPlan | null;
+  pricingBasis?: string;
   avgCreditsPerLead: number | null;
   avgUsdPerLead: number | null;
   sampleSize: number;
   providers?: EstimateProvider[];
+};
+
+export type FirecrawlEstimateBalance = {
+  remaining: number | null;
+  plan: number | null;
+  used?: number | null;
+  planName?: string | null;
+  creditUsd?: number | null;
+  inferredPlan?: FirecrawlPlan | null;
+  live?: boolean;
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -34,9 +49,11 @@ export function providerLabel(provider: string): string {
 
 export function EstimateBreakdown({
   estimate,
+  firecrawlBalance,
   compact = false,
 }: {
   estimate: EstimateBreakdownData | null | undefined;
+  firecrawlBalance?: FirecrawlEstimateBalance | null;
   compact?: boolean;
 }) {
   const reduced = useReducedMotion();
@@ -50,6 +67,19 @@ export function EstimateBreakdown({
   }
 
   const providers = estimate.providers ?? [];
+  const overRemaining =
+    estimate.estimatedCredits != null &&
+    firecrawlBalance?.remaining != null &&
+    estimate.estimatedCredits > firecrawlBalance.remaining;
+  const overMonthlyPlan =
+    estimate.estimatedCredits != null &&
+    firecrawlBalance?.plan != null &&
+    estimate.estimatedCredits > firecrawlBalance.plan;
+  const currentPlanName =
+    firecrawlBalance?.planName ?? firecrawlBalance?.inferredPlan?.name ?? null;
+  const currentPlanCredits =
+    firecrawlBalance?.inferredPlan?.monthlyCredits ?? firecrawlBalance?.plan ?? null;
+  const currentCreditUsd = firecrawlBalance?.creditUsd ?? estimate.creditUsd ?? null;
 
   return (
     <div className="space-y-2">
@@ -61,7 +91,12 @@ export function EstimateBreakdown({
         ) : null}
         {estimate.estimatedFirecrawlUsd != null ? (
           <span className="tabular-nums text-muted-foreground">
-            ~{formatUsd(estimate.estimatedFirecrawlUsd)} Firecrawl
+            ~{formatUsd(estimate.estimatedFirecrawlUsd)} Firecrawl current-rate
+          </span>
+        ) : null}
+        {currentCreditUsd != null ? (
+          <span className="text-[10px] tabular-nums text-muted-foreground">
+            ({formatUsdPrecise(currentCreditUsd)}/credit)
           </span>
         ) : null}
       </div>
@@ -71,7 +106,10 @@ export function EstimateBreakdown({
           {providers.map((row) => (
             <div key={row.provider} className="space-y-1">
               <div className="flex items-center justify-between gap-2 text-[11px]">
-                <span className="text-muted-foreground">{providerLabel(row.provider)}</span>
+                <span className="text-muted-foreground">
+                  {providerLabel(row.provider)}
+                  {row.basis === "current_credit_rate" ? " current" : ""}
+                </span>
                 <span className="font-mono tabular-nums">
                   <AnimatedNumber value={row.estimatedUsd} format={formatUsd} />
                 </span>
@@ -110,6 +148,49 @@ export function EstimateBreakdown({
           {estimate.avgCreditsPerLead != null
             ? ` · ${estimate.avgCreditsPerLead} cr/lead`
             : ""}
+        </p>
+      ) : null}
+
+      {firecrawlBalance ? (
+        <div
+          className={cn(
+            "rounded-lg border px-3 py-2 font-mono text-[10px] leading-relaxed",
+            overRemaining || overMonthlyPlan
+              ? "border-warning/40 bg-warning/10 text-warning"
+              : "border-border/50 bg-muted/25 text-muted-foreground",
+          )}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {currentPlanName ? `${currentPlanName} plan` : "Firecrawl plan"}
+              {currentPlanCredits != null
+                ? ` - ${formatCredits(currentPlanCredits)} credits/mo`
+                : ""}
+            </span>
+            <span>
+              {firecrawlBalance.remaining != null
+                ? `${formatCredits(firecrawlBalance.remaining)} remaining`
+                : "live balance unavailable"}
+            </span>
+          </div>
+          {overRemaining ? (
+            <p className="mt-1">
+              Estimate is above remaining credits. Recharge, wait for renewal, or reduce
+              markets/categories before launch.
+            </p>
+          ) : null}
+          {overMonthlyPlan && estimate.nextPlan ? (
+            <p className="mt-1">
+              For one-cycle coverage, next public plan match is {estimate.nextPlan.name} (
+              {formatCredits(estimate.nextPlan.monthlyCredits)} credits/mo).
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {estimate.pricingBasis ? (
+        <p className="font-mono text-[10px] leading-relaxed text-muted-foreground">
+          {estimate.pricingBasis}
         </p>
       ) : null}
     </div>

@@ -4,7 +4,7 @@
 
 **What we sell:** Partner API keys with scoped access to discovery, enrichment, verification, and the outcome-learning loop.
 
-**What we do not sell:** The local `dashboard/` CRM or the Vercel `sales-app` Developer Console. Those are internal reference clients that exercise the same backend tables and Edge Function routes paying partners use.
+**What we do not sell:** The local `dashboard/` CRM. It is an internal reference client that exercises the same backend tables and Edge Function routes paying partners use.
 
 In the AI-assisted development era, frontends are cheap to build. Durable value — and pricing power — sits in the backend: Places/Overpass discovery, Firecrawl + AI Gateway enrichment, grounding verification, owner-chain research, and the compounding dataset of features + labeled outcomes. Every partner posting structured feedback (`leads:feedback`) improves extraction, scoring, and targeting for all customers.
 
@@ -29,7 +29,7 @@ Concretely:
 | Read touches | `GET /v1/leads/{id}/touches` (`leads:feedback`, key-scoped) | Lead detail timeline |
 | Bulk feedback | `POST /v1/feedback/batch` (`leads:feedback`) | — |
 | Metadata / health | `GET /v1/metadata`, `GET /v1/health` | — |
-| Usage audit | `partner_api_requests` per key | Developer Console `/partner-api` |
+| Usage audit | `partner_api_requests` per key | Scripted/operator review |
 
 ## Versioning
 

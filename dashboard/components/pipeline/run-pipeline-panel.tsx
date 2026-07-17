@@ -36,18 +36,10 @@ export function RunPipelinePanel({
   const reduced = useReducedMotion();
   const isLive = status === "running";
   const stream = usePipelineStream(runId, { enabled: true, realtime: true });
-  const replay = useReplayState(isLive);
+  const replay = useReplayState(runId, isLive);
 
   const hasTelemetry = useMemo(
-    () =>
-      stream.costs.length > 0 ||
-      stream.events.some(
-        (e) =>
-          e.event === "lead_started" ||
-          e.event === "discovery_done" ||
-          e.event === "lead_done" ||
-          e.event === "stage_done",
-      ),
+    () => stream.costs.length > 0 || stream.events.length > 0,
     [stream.costs.length, stream.events],
   );
 
