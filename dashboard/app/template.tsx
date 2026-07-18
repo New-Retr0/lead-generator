@@ -1,17 +1,17 @@
 "use client";
 
-import { motion, useReducedMotion } from "motion/react";
+import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 
-export default function Template({ children }: { children: React.ReactNode }) {
-  const reduced = useReducedMotion();
-  if (reduced) return <>{children}</>;
+/**
+ * Lightweight route enter fade (CSS only).
+ * Avoids pulling Motion onto every navigation critical path.
+ */
+export default function Template({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.15, ease: "easeOut" }}
-    >
+    <div key={pathname} className="animate-in fade-in-0 duration-150">
       {children}
-    </motion.div>
+    </div>
   );
 }

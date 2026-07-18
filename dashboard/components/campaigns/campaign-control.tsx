@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -14,8 +14,10 @@ import {
   X,
 } from "lucide-react";
 import ASCIIAnimation from "@/components/console/ascii-animation";
+import { queueLayout } from "@/components/console/motion";
 import { SectionHeading } from "@/components/console/section-heading";
 import { SectionReveal } from "@/components/console/section-reveal";
+import { CampaignLivePanel } from "@/components/campaign-live-panel";
 import { Stagger, StaggerItem } from "@/components/animated";
 import {
   CampaignConfigDialog,
@@ -35,10 +37,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { apiFetch } from "@/lib/api-client";
 import { cn, formatCredits, formatUsd } from "@/lib/utils";
 import type { JobStatus } from "@/lib/types";
 
 const STATE_CAMPAIGNS = [
+  { key: "central_valley", label: "CV-A", name: "Central Valley Tier A" },
+  {
+    key: "central_valley_franchise",
+    label: "CV-F",
+    name: "Central Valley Franchise",
+  },
   { key: "hawaii", label: "HI", name: "Hawaii" },
   { key: "oregon", label: "OR", name: "Oregon" },
   { key: "washington", label: "WA", name: "Washington" },
@@ -75,7 +84,6 @@ type CreditsData = {
       live: boolean;
     };
   };
-  aiGateway: { balanceUsd: number | null; live: boolean };
 };
 
 type EstimateData = EstimateBreakdownData;
@@ -120,26 +128,11 @@ function parseStoredConfig(value: unknown): CampaignConfigState | null {
   const limit = Number.isFinite(limitValue) ? Math.max(1, limitValue) : DEFAULT_LIMIT;
   const discoverOnly = typeof value.discoverOnly === "boolean" ? value.discoverOnly : false;
 
-  if (value.maxCreditsPerRun === "") {
-    return {
-      selectedMarkets,
-      selectedCategories,
-      limit,
-      discoverOnly,
-      maxCreditsPerRun: "",
-    };
-  }
-
-  const maxCreditsRaw = typeof value.maxCreditsPerRun === "number" ? Math.floor(value.maxCreditsPerRun) : NaN;
-  const maxCreditsPerRun =
-    Number.isFinite(maxCreditsRaw) && maxCreditsRaw > 0 ? maxCreditsRaw : "";
-
   return {
     selectedMarkets,
     selectedCategories,
     limit,
     discoverOnly,
-    maxCreditsPerRun,
   };
 }
 
@@ -214,7 +207,6 @@ function alignConfigWithCampaign(config: CampaignConfigState, campaign: Campaign
     selectedCategories: selectedCategories.length > 0 ? selectedCategories : fallback.selectedCategories,
     limit: Math.max(1, Math.min(config.limit, 500)),
     discoverOnly: config.discoverOnly,
-    maxCreditsPerRun: config.maxCreditsPerRun,
   };
 }
 
@@ -337,7 +329,7 @@ async function hydrateRunningStatus(item: StagedCampaign): Promise<StagedCampaig
   }
 
   try {
-    const res = await fetch(`/api/jobs/${encodeURIComponent(item.jobId)}`, {
+    const res = await apiFetch(`/api/jobs/${encodeURIComponent(item.jobId)}`, {
       cache: "no-store",
     });
     if (!res.ok) {
@@ -371,7 +363,6 @@ function defaultConfigForCampaign(info: CampaignInfo): CampaignConfigState {
     selectedCategories: [...info.categories],
     limit: DEFAULT_LIMIT,
     discoverOnly: false,
-    maxCreditsPerRun: "",
   };
 }
 
@@ -388,17 +379,60 @@ function isConfigRunnable(config: CampaignConfigState | undefined) {
   );
 }
 
+function argValue(args: string[], flag: string): string | null {
+  const idx = args.indexOf(flag);
+  if (idx < 0) return null;
+  const value = args[idx + 1];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Resolve matrix axes for a local job that was not launched from this browser queue. */
+function axesFromJobArgs(
+  args: string[],
+  campaigns: CampaignInfo[],
+): { campaign: string | null; markets: string[]; categories: string[] } {
+  const campaign = argValue(args, "--campaign");
+  const marketRaw = argValue(args, "--market");
+  const categoryRaw = argValue(args, "--category");
+  const info = campaign ? campaigns.find((c) => c.key === campaign) : undefined;
+  const markets = marketRaw
+    ? marketRaw.split(",").map((m) => m.trim()).filter(Boolean)
+    : info
+      ? info.markets.map((m) => m.key)
+      : [];
+  const categories = categoryRaw
+    ? categoryRaw.split(",").map((c) => c.trim()).filter(Boolean)
+    : info
+      ? [...info.categories]
+      : [];
+  return { campaign, markets, categories };
+}
+
 export function CampaignControl() {
+  const reducedMotion = useReducedMotion();
   const [campaigns, setCampaigns] = useState<CampaignInfo[]>([]);
-  const [selected, setSelected] = useState<string>("hawaii");
+  const [selected, setSelected] = useState<string>("central_valley");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [stateConfigs, setStateConfigs] = useState<Record<string, CampaignConfigState>>({});
   const [stateEstimates, setStateEstimates] = useState<Record<string, EstimateData | null>>({});
   const [credits, setCredits] = useState<CreditsData | null>(null);
   const [staged, setStaged] = useState<StagedCampaign[]>(() => loadStagedFromStorage());
   const [launching, setLaunching] = useState(false);
+  const [resumedNotice, setResumedNotice] = useState<string | null>(null);
+  const [externalActiveJobId, setExternalActiveJobId] = useState<string | null>(null);
+  const [externalJobAxes, setExternalJobAxes] = useState<{
+    campaign: string | null;
+    markets: string[];
+    categories: string[];
+  } | null>(null);
   const activeJobRef = useRef<string | null>(null);
   const stagedRef = useRef<StagedCampaign[]>(staged);
+  const campaignsRef = useRef<CampaignInfo[]>(campaigns);
+  const queueAbortRef = useRef(false);
+
+  useEffect(() => {
+    campaignsRef.current = campaigns;
+  }, [campaigns]);
 
   useEffect(() => {
     stagedRef.current = staged;
@@ -509,23 +543,21 @@ export function CampaignControl() {
         return next;
       });
 
-      const estimateEntries = await Promise.allSettled(
-        STATE_CAMPAIGNS.map(async (state) => {
-          const cfg = defaultConfigs[state.key];
-          if (!cfg) return null;
-          return [state.key, await estimateForConfig(state.key, cfg, signal)] as const;
-        }),
-      );
-      if (signal?.aborted) return;
-      setStateEstimates((prev) => {
-        const next = { ...prev };
-        for (const settledEntry of estimateEntries) {
-          if (settledEntry.status !== "fulfilled" || !settledEntry.value) continue;
-          const [stateKey, body] = settledEntry.value;
-          next[stateKey] = body;
+      // Stagger card estimates after first paint — selected campaign has its own effect.
+      const queue = STATE_CAMPAIGNS.filter((state) => defaultConfigs[state.key]);
+      for (const state of queue) {
+        if (signal?.aborted) return;
+        const cfg = defaultConfigs[state.key];
+        if (!cfg) continue;
+        try {
+          const body = await estimateForConfig(state.key, cfg, signal);
+          if (signal?.aborted) return;
+          setStateEstimates((prev) => ({ ...prev, [state.key]: body }));
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") return;
         }
-        return next;
-      });
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("Failed to load campaign metadata", err);
@@ -626,14 +658,6 @@ export function CampaignControl() {
 
   const launchCampaign = useCallback(
     async (campaignKey: string, config: CampaignConfigState) => {
-      const remaining = credits?.firecrawl.remaining;
-      let maxCreditsPerRun: number | undefined;
-      if (config.maxCreditsPerRun !== "" && Number(config.maxCreditsPerRun) > 0) {
-        maxCreditsPerRun = Math.floor(Number(config.maxCreditsPerRun));
-      } else if (remaining != null) {
-        maxCreditsPerRun = Math.max(50, Math.floor(remaining / 8));
-      }
-
       const body: Record<string, unknown> = {
         runType: "run-campaign",
         campaign: campaignKey,
@@ -646,11 +670,8 @@ export function CampaignControl() {
       if (config.selectedCategories.length > 0) {
         body.category = config.selectedCategories.join(",");
       }
-      if (maxCreditsPerRun != null) {
-        body.maxCreditsPerRun = maxCreditsPerRun;
-      }
 
-      const res = await fetch("/api/jobs/run", {
+      const res = await apiFetch("/api/jobs/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -661,21 +682,38 @@ export function CampaignControl() {
       }
       return data.jobId ?? "";
     },
-    [credits],
+    [],
   );
 
   const waitForJob = useCallback((jobId: string) => {
     return new Promise<StagedStatus>((resolve) => {
-      const source = new EventSource(`/api/jobs/${jobId}/stream`);
-      source.addEventListener("done", (event) => {
-        const payload = JSON.parse(event.data) as { status: string };
-        source.close();
-        resolve(payload.status === "completed" ? "done" : "failed");
-      });
-      source.onerror = () => {
-        source.close();
-        resolve("failed");
+      const poll = async () => {
+        if (queueAbortRef.current) {
+          resolve("failed");
+          return;
+        }
+        try {
+          const response = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const payload = (await response.json()) as { job?: { status?: string } };
+          const jobStatus = payload.job?.status;
+          if (jobStatus === "completed") {
+            resolve("done");
+            return;
+          }
+          if (
+            jobStatus === "failed" ||
+            jobStatus === "cancelled" ||
+            jobStatus === "interrupted"
+          ) {
+            resolve("failed");
+            return;
+          }
+        } catch {
+          // A transient poll error must not mark a still-running paid job as failed.
+        }
+        window.setTimeout(() => void poll(), 2_000);
       };
+      void poll();
     });
   }, []);
 
@@ -727,13 +765,14 @@ export function CampaignControl() {
 
   const launchQueue = useCallback(async () => {
     if (launching || activeJobRef.current) return;
+    queueAbortRef.current = false;
     setLaunching(true);
     try {
-      while (true) {
+      while (!queueAbortRef.current) {
         const next = stagedRef.current.find((item) => item.status === "staged");
         if (!next) break;
         const ok = await executeStaged(next);
-        if (!ok) break;
+        if (!ok || queueAbortRef.current) break;
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Launch queue failed");
@@ -742,6 +781,87 @@ export function CampaignControl() {
       setLaunching(false);
     }
   }, [executeStaged, launching]);
+
+  useEffect(() => {
+    queueAbortRef.current = false;
+    return () => {
+      // Stop auto-advancing the launch queue when leaving Launch.
+      queueAbortRef.current = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncActiveJobs = async () => {
+      try {
+        const res = await apiFetch("/api/runs", { cache: "no-store" });
+        const data = (await res.json()) as {
+          jobs?: { id: string; status: string; kind?: string }[];
+        };
+        if (cancelled) return;
+        const live = (data.jobs ?? []).filter(
+          (j) =>
+            (j.status === "running" || j.status === "pending") &&
+            j.kind !== "doctor",
+        );
+        const stagedIds = new Set(
+          stagedRef.current
+            .filter((item) => item.jobId)
+            .map((item) => item.jobId as string),
+        );
+        const external = live.find((j) => !stagedIds.has(j.id));
+        setExternalActiveJobId(external?.id ?? null);
+
+        let resolvedAxes: {
+          campaign: string | null;
+          markets: string[];
+          categories: string[];
+        } | null = null;
+        if (external?.id) {
+          try {
+            const jobRes = await apiFetch(
+              `/api/jobs/${encodeURIComponent(external.id)}`,
+              { cache: "no-store" },
+            );
+            const jobBody = (await jobRes.json()) as {
+              job?: { args?: string[] };
+            };
+            resolvedAxes = axesFromJobArgs(
+              jobBody.job?.args ?? [],
+              campaignsRef.current,
+            );
+          } catch {
+            resolvedAxes = null;
+          }
+        }
+        if (!cancelled) setExternalJobAxes(resolvedAxes);
+
+        const resumed = stagedRef.current.find(
+          (item) => item.status === "running" && item.jobId,
+        );
+        if (resumed?.jobId) {
+          setResumedNotice(
+            `Resumed local execution · ${resumed.campaign.replace(/_/g, " ")}`,
+          );
+        } else if (external) {
+          const label = resolvedAxes?.campaign ?? "active job";
+          setResumedNotice(
+            `Active local execution · ${String(label).replace(/_/g, " ")} (not in this browser queue)`,
+          );
+        } else {
+          setResumedNotice(null);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    void syncActiveJobs();
+    const id = window.setInterval(() => void syncActiveJobs(), 8_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const stageCampaign = useCallback(
     (campaignKey: string, config: CampaignConfigState) => {
@@ -778,49 +898,67 @@ export function CampaignControl() {
   }, [setStagedPersistently]);
 
   const stagedReadyCount = staged.filter((item) => item.status === "staged").length;
+  const activeStaged = staged.find((item) => item.status === "running" && item.jobId);
+  const panelJobId = activeStaged?.jobId ?? externalActiveJobId;
+  const panelCampaign =
+    activeStaged?.campaign ??
+    externalJobAxes?.campaign ??
+    (externalActiveJobId ? "active_job" : selected);
+  const panelMarkets =
+    activeStaged?.config.selectedMarkets ??
+    (externalActiveJobId && externalJobAxes?.markets.length
+      ? externalJobAxes.markets
+      : null) ??
+    selectedConfig?.selectedMarkets ??
+    [];
+  const panelCategories =
+    activeStaged?.config.selectedCategories ??
+    (externalActiveJobId && externalJobAxes?.categories.length
+      ? externalJobAxes.categories
+      : null) ??
+    selectedConfig?.selectedCategories ??
+    [];
   const selectedStateMeta = STATE_CAMPAIGNS.find((s) => s.key === selected);
 
   return (
-    <div className="space-y-8">
-      <section className="relative -mx-4 overflow-hidden md:-mx-8">
-        <ASCIIAnimation
-          frameFolder="planet"
-          frameCount={200}
-          quality="medium"
-          fps={30}
-          className="h-72 w-full md:h-96 [mask-image:radial-gradient(ellipse_70%_90%_at_50%_40%,black_55%,transparent_100%)]"
-          gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
-          lazy
-          ariaLabel="Rotating earth"
-        />
-        <div className="pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-background/90 via-background/40 to-transparent p-6 md:p-10">
-          <SectionHeading index="01" title="Campaign Control" className="mb-2" />
-          <p className="max-w-xl font-mono text-xs tracking-[0.08em] text-muted-foreground">
-            7 states - {marketsSelected} markets selected -{" "}
-            {estimate?.estimatedCredits != null
-              ? `${formatCredits(estimate.estimatedCredits)} cr estimated`
-              : "select a state to estimate"}
-          </p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Badge variant="outline" className="pointer-events-auto font-mono text-[10px]">
+    <div className="space-y-5">
+      <section className="relative min-h-[13rem] overflow-hidden rounded-xl border border-border/50 bg-card md:min-h-[15rem]">
+        <div className="pointer-events-none absolute bottom-0 right-0 flex h-full w-[min(58%,22rem)] items-end justify-center md:w-[min(50%,26rem)]">
+          <ASCIIAnimation
+            frameFolder="planet"
+            frameCount={200}
+            quality="medium"
+            fps={30}
+            className="h-[92%] w-full [mask-image:linear-gradient(to_left,black_65%,transparent_100%)] [&_pre]:-translate-y-[7%]"
+            gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
+            lazy={false}
+            ariaLabel="Rotating earth"
+          />
+        </div>
+        <div className="relative z-10 flex min-h-[13rem] flex-col justify-between gap-4 p-5 md:min-h-[15rem] md:p-6">
+          <div className="max-w-xl space-y-2 pr-4 md:pr-8">
+            <SectionHeading index="01" title="Campaign Control" />
+            <p className="font-mono text-xs tracking-[0.08em] text-muted-foreground">
+              {STATE_CAMPAIGNS.length} presets · {marketsSelected} markets selected ·{" "}
+              {estimate?.estimatedCredits != null
+                ? `${formatCredits(estimate.estimatedCredits)} cr estimated`
+                : "select a state to estimate"}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="outline" className="font-mono text-[10px]">
               Firecrawl{" "}
               {credits?.firecrawl.remaining != null
                 ? formatCredits(credits.firecrawl.remaining)
-                : "-"}
+                : "—"}
             </Badge>
             {credits?.firecrawl.planName ? (
-              <Badge variant="secondary" className="pointer-events-auto font-mono text-[10px]">
+              <Badge variant="secondary" className="font-mono text-[10px]">
                 {credits.firecrawl.planName}
               </Badge>
             ) : null}
-            <Badge variant="outline" className="pointer-events-auto font-mono text-[10px]">
-              Gateway{" "}
-              {credits?.aiGateway.balanceUsd != null
-                ? formatUsd(credits.aiGateway.balanceUsd)
-                : "-"}
-            </Badge>
             {staged.length > 0 ? (
-              <Badge variant="secondary" className="pointer-events-auto font-mono text-[10px]">
+              <Badge variant="secondary" className="font-mono text-[10px]">
                 {stagedReadyCount} staged
               </Badge>
             ) : null}
@@ -829,7 +967,7 @@ export function CampaignControl() {
       </section>
 
       <SectionReveal>
-        <Card className="glass sm:col-span-2">
+        <Card className="panel sm:col-span-2">
           <CardHeader className="pb-3">
             <CardTitle className="font-mono text-[10px] uppercase tracking-[0.15em]">
               Estimated burn - {selectedStateMeta?.label ?? selected}
@@ -857,7 +995,7 @@ export function CampaignControl() {
       </SectionReveal>
 
       <SectionReveal>
-        <SectionHeading index="02" title="State campaigns" className="mb-4" />
+        <SectionHeading index="02" title="Campaign presets" className="mb-4" />
         <Stagger className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {STATE_CAMPAIGNS.map((state) => {
             const info = campaigns.find((c) => c.key === state.key);
@@ -881,7 +1019,7 @@ export function CampaignControl() {
                     }
                   }}
                   className={cn(
-                    "hover-lift glass w-full cursor-pointer rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "hover-lift panel w-full cursor-pointer rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     selected === state.key && "border-primary/50 ring-1 ring-primary/20",
                   )}
                 >
@@ -984,12 +1122,20 @@ export function CampaignControl() {
 
       <SectionReveal>
         <SectionHeading index="03" title="Launch Control" className="mb-4" />
-        <Card className="glass">
+        <Card className="panel">
           <CardContent className="space-y-5 py-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="max-w-2xl font-mono text-xs text-muted-foreground">
-                Stage states here, then run one by itself or launch the connected queue one at a time.
-              </p>
+              <div className="max-w-2xl space-y-1">
+                <p className="font-mono text-xs text-muted-foreground">
+                  Stage states here, then run one by itself or launch the connected queue one at a
+                  time. Launch queue auto-starts the next staged campaign after each finishes.
+                </p>
+                {resumedNotice ? (
+                  <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-primary">
+                    {resumedNotice}
+                  </p>
+                ) : null}
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1020,31 +1166,47 @@ export function CampaignControl() {
                 No states staged. Configure a state card, then save it to Launch Control.
               </div>
             ) : (
-              <div className="flex flex-wrap items-stretch gap-3">
+              <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-stretch">
                 <AnimatePresence initial={false}>
                   {staged.map((item, index) => {
                     const meta = stageMeta(item.campaign);
                     const running = item.status === "running";
+                    const connectorIntoRunning = index > 0 && running;
                     return (
                       <motion.div
                         key={item.campaign}
                         layout
-                        initial={{ opacity: 0, y: 12, scale: 0.96 }}
+                        initial={reducedMotion ? false : { opacity: 0, y: 12, scale: 0.96 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -8, scale: 0.96 }}
-                        transition={{ type: "spring", stiffness: 320, damping: 28 }}
-                        className="flex items-center gap-3"
+                        exit={reducedMotion ? undefined : { opacity: 0, y: -8, scale: 0.96 }}
+                        transition={queueLayout.card}
+                        className="flex flex-col items-center gap-3 sm:flex-row"
                       >
                         {index > 0 ? (
-                          <motion.span
-                            layout
-                            className="hidden h-px w-8 rounded-full bg-primary/50 sm:block"
-                            aria-hidden
-                          />
+                          reducedMotion ? (
+                            <span
+                              className="h-6 w-px shrink-0 rounded-full bg-border sm:h-px sm:w-8"
+                              aria-hidden
+                            />
+                          ) : connectorIntoRunning ? (
+                            <motion.span
+                              key={`connector-${item.campaign}`}
+                              className="h-6 w-px shrink-0 origin-top rounded-full bg-primary sm:h-px sm:w-8 sm:origin-left"
+                              initial={{ scaleY: 0, scaleX: 0, opacity: 0.4 }}
+                              animate={{ scaleY: 1, scaleX: 1, opacity: 1 }}
+                              transition={queueLayout.connectorPulse}
+                              aria-hidden
+                            />
+                          ) : (
+                            <span
+                              className="h-6 w-px shrink-0 rounded-full bg-border/80 sm:h-px sm:w-8"
+                              aria-hidden
+                            />
+                          )
                         ) : null}
                         <div
                           className={cn(
-                            "min-w-56 rounded-xl border bg-card p-3 shadow-sm",
+                            "w-full min-w-56 rounded-xl border bg-card p-3 shadow-sm sm:w-auto",
                             running && "border-primary/60 bg-primary/5",
                             item.status === "failed" && "border-destructive/50",
                             item.status === "done" && "border-success/50",
@@ -1106,12 +1268,22 @@ export function CampaignControl() {
                 </AnimatePresence>
               </div>
             )}
+            {panelJobId ? (
+              <div className="border-t border-border/50 pt-5">
+                <CampaignLivePanel
+                  jobId={panelJobId}
+                  campaign={panelCampaign}
+                  markets={panelMarkets}
+                  categories={panelCategories}
+                />
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </SectionReveal>
 
       <SectionReveal>
-        <Card className="glass border-dashed">
+        <Card className="panel border-dashed">
           <CardHeader>
             <CardTitle className="font-mono text-[10px] uppercase tracking-[0.15em]">
               Multi-state population sequence

@@ -11,7 +11,6 @@ from pallares_leads.enrich.contact_requirements import (
     is_patient_facing_investigation,
     tier2_gap_reason,
 )
-from pallares_leads.enrich.sales_copy import is_generic_copy
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.pipeline.run_market import _investigation_outputs
 from pallares_leads.resolve.contact_hierarchy import pick_best_contact
@@ -50,6 +49,7 @@ def test_medical_patient_line_fails_labeled_bar(config_dir: Path) -> None:
 def test_medical_facilities_passes_labeled_bar(config_dir: Path) -> None:
     rules = get_enrichment_rules("medical_plaza", config_dir)
     result = LeadInvestigationResult(
+        contact_name="Jordan Lee",
         contact_phone="(559) 638-0100",
         contact_role="Facilities Manager",
     )
@@ -57,7 +57,8 @@ def test_medical_facilities_passes_labeled_bar(config_dir: Path) -> None:
     assert met is True
 
 
-def test_property_manager_trusts_google_phone_when_tier1_weak(config_dir: Path) -> None:
+def test_property_manager_google_main_line_does_not_skip_tier2(config_dir: Path) -> None:
+    """Google mainline alone never satisfies the DM bar — keep climbing to Tier 2."""
     raw = RawLead(
         place_id="ChIJpm",
         business_name="Sayland Property Management",
@@ -72,8 +73,8 @@ def test_property_manager_trusts_google_phone_when_tier1_weak(config_dir: Path) 
     settings = Settings(config_dir=config_dir)
     form_only = LeadInvestigationResult(contact_form_url="https://example.com/contact")
     needed, reason = tier2_gap_reason(form_only, raw, settings=settings)
-    assert needed is False
-    assert "Google main line" in reason
+    assert needed is True
+    assert "decision-maker" in reason or "labeled_phone" in reason
 
 
 def test_franchise_hierarchy_prefers_store_manager() -> None:
@@ -100,21 +101,6 @@ def test_multi_tenant_hierarchy_prefers_property_manager() -> None:
     best = pick_best_contact(contacts, property_type="strip_mall")
     assert best is not None
     assert best.contact_type == "property_manager"
-
-
-def test_city_mention_alone_is_generic_copy() -> None:
-    why = "We help Reedley businesses maintain a pristine appearance."
-    points = "• Professional exterior cleaning in Reedley"
-    assert is_generic_copy(why, points, city="Reedley", business_name="Test") is True
-
-
-def test_broker_service_hooks_not_generic() -> None:
-    why = (
-        "Reedley strip mall parking lot and dumpster enclosures "
-        "fit Pallares managed vendor programs."
-    )
-    points = "• Photo-verified QC on every job\n• Recurring lot washing program"
-    assert is_generic_copy(why, points, city="Reedley", business_name="Test") is False
 
 
 def test_new_categories_exist(config_dir: Path) -> None:

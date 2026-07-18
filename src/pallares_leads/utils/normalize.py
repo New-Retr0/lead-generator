@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _US_PHONE = re.compile(r"(?:\+1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}")
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -179,12 +180,19 @@ def extract_emails(text: str) -> list[str]:
     return emails
 
 
+def nfkc(value: str | None) -> str:
+    """Unicode NFKC normalize person/company names before match and storage."""
+    if not value:
+        return ""
+    return unicodedata.normalize("NFKC", value).strip()
+
+
 def slugify(value: str) -> str:
-    value = value.lower().strip()
+    value = nfkc(value).lower()
     value = re.sub(r"[^\w\s-]", "", value)
     return re.sub(r"[-\s]+", "-", value).strip("-")
 
 
 def normalize_entity_name(name: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+    cleaned = re.sub(r"[^a-z0-9]+", " ", nfkc(name).lower()).strip()
     return re.sub(r"\s+", " ", cleaned)

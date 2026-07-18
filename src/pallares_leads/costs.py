@@ -34,15 +34,6 @@ _DEFAULT_PRICING: dict[str, Any] = {
         "nearby_search_usd": 0.032,
         "health_check_usd": 0.0,
     },
-    "ai_gateway": {
-        "default_model": "gpt-4o-mini",
-        "models": {
-            "gpt-4o-mini": {
-                "input_token_usd": 0.00000015,
-                "output_token_usd": 0.0000006,
-            },
-        },
-    },
 }
 
 
@@ -127,6 +118,7 @@ def usd_for(
     completion_tokens: int = 0,
 ) -> float:
     """Estimate USD for a provider operation from config/pricing.yaml."""
+    _ = (unit_type, model, prompt_tokens, completion_tokens)
     if provider == "firecrawl":
         rate = firecrawl_credit_usd(pricing)
         return round(units * rate, 6)
@@ -138,19 +130,5 @@ def usd_for(
         if rate == 0 and operation in ("text_search", "nearby_search"):
             rate = float(places.get(f"{operation}_usd") or 0)
         return round(units * rate, 6)
-
-    if provider == "ai_gateway":
-        gateway = pricing.get("ai_gateway") or {}
-        models = gateway.get("models") or {}
-        model_key = model or gateway.get("default_model") or ""
-        rates = models.get(model_key) or {}
-        input_rate = float(rates.get("input_token_usd") or 0)
-        output_rate = float(rates.get("output_token_usd") or 0)
-        if unit_type == "tokens" and units > 0 and prompt_tokens == 0 and completion_tokens == 0:
-            return round(units * input_rate, 6)
-        return round(
-            prompt_tokens * input_rate + completion_tokens * output_rate,
-            6,
-        )
 
     return 0.0

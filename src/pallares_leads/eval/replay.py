@@ -99,7 +99,7 @@ def _write_summary(
     heuristic_sales_ready = 0
     for report in reports:
         q = report.get("quality") or {}
-        if int(q.get("contact_score") or 0) >= 2 and int(q.get("copy_score") or 0) >= 2:
+        if int(q.get("contact_score") or 0) >= 2:
             heuristic_sales_ready += 1
 
     payload = {
@@ -144,7 +144,7 @@ def write_findings_md(path: Path, summary: dict[str, Any], reports: list[dict[st
             q = report.get("quality") or {}
             lines.append(
                 f"- **{name}** — tier2: {gate}; "
-                f"contact={q.get('contact_score', 0)} copy={q.get('copy_score', 0)}; gaps: {gaps}"
+                f"contact={q.get('contact_score', 0)} exterior={q.get('exterior_score', 0)}; gaps: {gaps}"
             )
         lines.append("")
 

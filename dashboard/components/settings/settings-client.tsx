@@ -1,11 +1,38 @@
 "use client";
 
-import CodeMirror from "@uiw/react-codemirror";
-import { yaml } from "@codemirror/lang-yaml";
-import { Eye, EyeOff, Loader2, RotateCcw, Save } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FileCode2,
+  Loader2,
+  Save,
+  Search,
+  XCircle,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import YAML from "yaml";
 import { toast } from "sonner";
+import {
+  SettingsField,
+  isFieldSet,
+  resolvedType,
+  type FieldValue,
+  type SchemaProperty,
+} from "@/components/settings/settings-field";
+import {
+  CONNECTION_STATUS_FIELDS,
+  FIRECRAWL_SPEND_FIELDS,
+  GROUP_META,
+  TAB_META,
+  YAML_CATEGORIES,
+  groupAnchorId,
+  parseSettingsTab,
+  type SettingsGroupId,
+  type SettingsTab,
+} from "@/components/settings/settings-meta";
+import { SectionHeading } from "@/components/console/section-heading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,63 +42,32 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import ASCIIAnimation from "@/components/console/ascii-animation";
-import { SectionHeading } from "@/components/console/section-heading";
-
-const GROUP_ORDER = [
-  "Credentials",
-  "Supabase",
-  "Discovery",
-  "Firecrawl",
-  "AI Gateway",
-  "Owner Chain",
-  "Caching & Archive",
-  "Scoring",
-  "Paths",
-] as const;
-
-const GROUP_DESCRIPTIONS: Record<(typeof GROUP_ORDER)[number], string> = {
-  Credentials:
-    "API keys the pipeline calls. Missing keys disable that provider.",
-  Supabase:
-    "Where all lead data lives. Changing SUPABASE_DB_URL requires restart.",
-  Discovery:
-    "Google Places search behavior — radius and page size control how many businesses each query finds (each request costs ~$0.04).",
-  Firecrawl:
-    "Scraping/enrichment engine. Credit caps here are your main cost brake: max_credits_per_run stops one run, session_credit_stop stops everything.",
-  "AI Gateway":
-    "LLM contact extraction + sales copy. Rate/retry knobs protect against 429s.",
-  "Owner Chain":
-    "Deep owner lookups (Browser Use / Firecrawl agent) — the most expensive per-lead step; per-run caps limit spend.",
-  "Caching & Archive":
-    "Local SQLite caches that avoid re-paying for pages already fetched.",
-  Scoring: "How leads are ranked and which make it into exports.",
-  Paths: "Computed locations on disk — read-only.",
-};
-
-function groupAnchorId(group: string): string {
-  return `settings-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-}
-
-type SchemaProperty = {
-  type?: string | string[];
-  group?: string;
-  secret?: boolean;
-  readonly?: boolean;
-  help?: string;
-  title?: string;
-  default?: unknown;
-};
-
-type FieldValue =
-  | { value: string | number | boolean; default: unknown; modified: boolean; env_key: string; readonly?: boolean }
-  | { masked: string; is_set: boolean; modified: boolean; env_key: string; readonly?: boolean };
-
 import type { SettingsSchemaPayload } from "@/lib/settings-server";
+import { cn } from "@/lib/utils";
+
+const YamlEditor = dynamic(
+  () => import("@/components/settings/yaml-editor").then((m) => m.YamlEditor),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-[560px] w-full rounded-md" />,
+  },
+);
 
 type ConfigFileSummary = {
   name: string;
@@ -86,33 +82,23 @@ type ConfigFileDetail = ConfigFileSummary & {
   warning: string | null;
 };
 
-function fieldTitle(name: string, prop?: SchemaProperty): string {
-  if (prop?.title) {
-    return prop.title;
-  }
-  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function isSecretField(name: string, prop: SchemaProperty | undefined, payload: SettingsSchemaPayload): boolean {
-  return Boolean(prop?.secret || payload.secret_fields?.includes(name));
-}
-
-function resolvedType(prop: SchemaProperty | undefined): string {
-  const t = prop?.type;
-  if (Array.isArray(t)) {
-    return t.find((x) => x !== "null") ?? "string";
-  }
-  return t ?? "string";
-}
-
-function formatDefault(value: unknown): string {
-  if (value === null || value === undefined || value === "") {
-    return "(empty)";
-  }
-  if (typeof value === "boolean") {
-    return value ? "true" : "false";
-  }
-  return String(value);
+function matchesQuery(
+  name: string,
+  prop: SchemaProperty | undefined,
+  query: string,
+): boolean {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  const hay = [
+    name,
+    prop?.title ?? "",
+    prop?.help ?? "",
+    prop?.group ?? "",
+    name.toUpperCase(),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
 }
 
 export function SettingsClient({
@@ -128,6 +114,11 @@ export function SettingsClient({
   initialConfigName: string | null;
   initialConfigContent: string;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tab = parseSettingsTab(searchParams.get("tab"));
+
   const [payload, setPayload] = useState<SettingsSchemaPayload | null>(initialSettings);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -136,6 +127,8 @@ export function SettingsClient({
   const [cleared, setCleared] = useState<Set<string>>(new Set());
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [restartRequired, setRestartRequired] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
+  const [activeSection, setActiveSection] = useState<string | null>(null);
 
   const [configFiles] = useState<ConfigFileSummary[]>(initialFiles);
   const [selectedFile, setSelectedFile] = useState<string | null>(initialConfigName);
@@ -145,6 +138,17 @@ export function SettingsClient({
   const [fileSaving, setFileSaving] = useState(false);
   const [yamlError, setYamlError] = useState<{ line: number; message: string } | null>(null);
   const [pendingFileSwitch, setPendingFileSwitch] = useState<string | null>(null);
+  const [pathsOpen, setPathsOpen] = useState(false);
+
+  const setTab = useCallback(
+    (next: SettingsTab) => {
+      setActiveSection(null);
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("tab", next);
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -189,45 +193,112 @@ export function SettingsClient({
     }
     const groups = new Map<string, string[]>();
     for (const [name, prop] of Object.entries(payload.schema.properties)) {
-      const group = prop.group ?? "Other";
+      const group = (prop as SchemaProperty).group ?? "Other";
+      if (!matchesQuery(name, prop as SchemaProperty, query)) continue;
       const list = groups.get(group) ?? [];
       list.push(name);
       groups.set(group, list);
     }
-    return GROUP_ORDER.filter((g) => groups.has(g)).map((group) => ({
-      group,
-      fields: (groups.get(group) ?? []).sort(),
-    }));
-  }, [payload]);
+
+    const ordered: { group: SettingsGroupId | string; fields: string[]; meta?: (typeof GROUP_META)[number] }[] = [];
+    for (const meta of GROUP_META) {
+      const fields = groups.get(meta.id);
+      if (!fields?.length) continue;
+      const sorted =
+        meta.id === "Firecrawl"
+          ? [
+              ...FIRECRAWL_SPEND_FIELDS.filter((f) => fields.includes(f)),
+              ...fields.filter((f) => !(FIRECRAWL_SPEND_FIELDS as readonly string[]).includes(f)).sort(),
+            ]
+          : [...fields].sort();
+      ordered.push({ group: meta.id, fields: sorted, meta });
+      groups.delete(meta.id);
+    }
+    for (const [group, fields] of groups) {
+      ordered.push({ group, fields: [...fields].sort() });
+    }
+    return ordered;
+  }, [payload, query]);
+
+  const sectionsForTab = useMemo(() => {
+    if (tab === "yaml") return [];
+    return groupedFields.filter(({ meta }) => {
+      if (meta) return meta.tab === tab;
+      return tab === "runtime";
+    });
+  }, [groupedFields, tab]);
+
+  const defaultSectionId = sectionsForTab[0]
+    ? groupAnchorId(sectionsForTab[0].group)
+    : null;
+  const highlightedSection = activeSection ?? defaultSectionId;
 
   const dirtyFields = useMemo(() => {
-    const dirty = new Set<string>();
-    for (const name of cleared) {
+    const dirty = new Set<string>(cleared);
+    for (const [name, value] of Object.entries(edits)) {
+      const prop = payload?.schema.properties?.[name] as SchemaProperty | undefined;
+      const type = resolvedType(prop);
+      if (type === "boolean") {
+        dirty.add(name);
+        continue;
+      }
+      // Blank text/secret edits mean "keep current" — not unsaved.
+      if (value.trim() === "") continue;
       dirty.add(name);
     }
-    for (const [name, value] of Object.entries(edits)) {
-      if (value.trim() !== "") {
-        dirty.add(name);
-      }
-    }
     return dirty;
-  }, [cleared, edits]);
+  }, [cleared, edits, payload]);
 
   const configDirty = selectedFile !== null && fileContent !== savedContent;
+
+  useEffect(() => {
+    if (tab === "yaml" || sectionsForTab.length === 0) return;
+    const ids = sectionsForTab.map(({ group }) => groupAnchorId(group));
+    const elements = ids
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => Boolean(el));
+    if (elements.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        if (visible[0]?.target.id) {
+          setActiveSection(visible[0].target.id);
+        }
+      },
+      { rootMargin: "-20% 0px -55% 0px", threshold: [0.15, 0.4, 0.7] },
+    );
+    for (const el of elements) observer.observe(el);
+    return () => observer.disconnect();
+  }, [tab, sectionsForTab]);
 
   function setFieldEdit(name: string, value: string) {
     setEdits((prev) => ({ ...prev, [name]: value }));
     setCleared((prev) => {
-      if (!prev.has(name)) {
-        return prev;
-      }
+      if (!prev.has(name)) return prev;
       const next = new Set(prev);
       next.delete(name);
       return next;
     });
   }
 
-  function resetField(name: string) {
+  function revertField(name: string) {
+    setEdits((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+    setCleared((prev) => {
+      if (!prev.has(name)) return prev;
+      const next = new Set(prev);
+      next.delete(name);
+      return next;
+    });
+  }
+
+  function clearOverride(name: string) {
     setEdits((prev) => {
       const next = { ...prev };
       delete next[name];
@@ -236,10 +307,17 @@ export function SettingsClient({
     setCleared((prev) => new Set(prev).add(name));
   }
 
+  function toggleReveal(name: string) {
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
   async function saveSettings() {
-    if (!payload || dirtyFields.size === 0) {
-      return;
-    }
+    if (!payload || dirtyFields.size === 0) return;
     setSaving(true);
     try {
       const updates: Record<string, string | number | boolean | null> = {};
@@ -248,18 +326,37 @@ export function SettingsClient({
           updates[name] = null;
           continue;
         }
-        const prop = payload.schema.properties?.[name];
+        const prop = payload.schema.properties?.[name] as SchemaProperty | undefined;
         const type = resolvedType(prop);
         const raw = edits[name] ?? "";
         if (type === "boolean") {
           updates[name] = raw === "true";
         } else if (type === "integer") {
-          updates[name] = parseInt(raw, 10);
+          const n = parseInt(raw, 10);
+          if (Number.isNaN(n)) {
+            throw new Error(`${name}: enter a whole number`);
+          }
+          updates[name] = n;
         } else if (type === "number") {
-          updates[name] = parseFloat(raw);
+          const n = parseFloat(raw);
+          if (Number.isNaN(n)) {
+            throw new Error(`${name}: enter a number`);
+          }
+          updates[name] = n;
         } else {
+          if (raw.trim() === "") {
+            // blank secret/text edit is not dirty — skip
+            continue;
+          }
           updates[name] = raw;
         }
+      }
+
+      if (Object.keys(updates).length === 0) {
+        toast.message("Nothing to save");
+        setEdits({});
+        setCleared(new Set());
+        return;
       }
 
       const res = await fetch("/api/settings", {
@@ -283,7 +380,7 @@ export function SettingsClient({
       setEdits({});
       setCleared(new Set());
       setRestartRequired(data.restartRequired ?? []);
-      toast.success("Settings saved to .env");
+      toast.success("Saved to .env");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Save failed");
     } finally {
@@ -311,10 +408,20 @@ export function SettingsClient({
   }
 
   async function saveConfigFile() {
-    if (!selectedFile) {
-      return;
-    }
-    if (!validateYamlLocally()) {
+    if (!selectedFile) return;
+    try {
+      YAML.parse(fileContent);
+      setYamlError(null);
+    } catch (err) {
+      if (err instanceof YAML.YAMLParseError) {
+        setYamlError({
+          line: err.linePos?.[0]?.line ?? 1,
+          message: err.message,
+        });
+      } else {
+        setYamlError({ line: 1, message: err instanceof Error ? err.message : "Invalid YAML" });
+      }
+      toast.error("Fix YAML errors before saving");
       return;
     }
     setFileSaving(true);
@@ -352,124 +459,59 @@ export function SettingsClient({
     void loadConfigFile(name);
   }
 
-  function renderField(name: string) {
-    if (!payload) {
-      return null;
+  const connectionStatus = useMemo(() => {
+    if (!payload) return [];
+    return CONNECTION_STATUS_FIELDS.map((item) => {
+      const meta = payload.values[item.name] as FieldValue | undefined;
+      const local = edits[item.name];
+      const set =
+        cleared.has(item.name)
+          ? false
+          : local !== undefined
+            ? local.trim().length > 0
+            : isFieldSet(meta);
+      return { ...item, set };
+    });
+  }, [payload, edits, cleared]);
+
+  const yamlFilesByCategory = useMemo(() => {
+    const known = new Set(YAML_CATEGORIES.flatMap((c) => c.files));
+    const categories = YAML_CATEGORIES.map((cat) => ({
+      ...cat,
+      items: cat.files
+        .map((name) => configFiles.find((f) => f.name === name))
+        .filter((f): f is ConfigFileSummary => Boolean(f)),
+    })).filter((c) => c.items.length > 0);
+
+    const other = configFiles.filter((f) => !known.has(f.name));
+    if (other.length) {
+      categories.push({
+        id: "other",
+        title: "Other",
+        description: "Additional YAML under config/",
+        files: other.map((f) => f.name),
+        items: other,
+      });
     }
-    const prop = payload.schema.properties?.[name];
-    const meta = payload.values[name] as FieldValue | undefined;
-    if (!meta) {
-      return null;
-    }
+    return categories;
+  }, [configFiles]);
 
-    const readonly = Boolean(prop?.readonly || meta.readonly);
-    const secret = isSecretField(name, prop, payload);
-    const type = resolvedType(prop);
-    const modified = meta.modified || cleared.has(name) || edits[name] !== undefined;
-
-    if (readonly) {
-      const display =
-        "value" in meta ? formatDefault(meta.value) : meta.is_set ? meta.masked : "(empty)";
-      return (
-        <div key={name} className="space-y-1 rounded-lg border border-border/40 bg-muted/20 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <Label className="text-sm font-medium">{fieldTitle(name, prop)}</Label>
-            <code className="text-[10px] text-muted-foreground">{meta.env_key}</code>
-          </div>
-          <p className="font-mono text-xs text-muted-foreground break-all">{display}</p>
-          {prop?.help ? <p className="text-xs text-muted-foreground/80">{prop.help}</p> : null}
-        </div>
-      );
-    }
-
-    if (type === "boolean") {
-      const current = cleared.has(name)
-        ? false
-        : edits[name] !== undefined
-          ? edits[name] === "true"
-          : "value" in meta
-            ? Boolean(meta.value)
-            : false;
-      return (
-        <div key={name} className="flex items-center justify-between gap-4 rounded-lg border border-border/40 p-3">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <Label htmlFor={name}>{fieldTitle(name, prop)}</Label>
-              {modified ? <Badge variant="secondary">modified</Badge> : null}
-            </div>
-            <code className="text-[10px] text-muted-foreground">{meta.env_key}</code>
-            {prop?.help ? <p className="text-xs text-muted-foreground/80">{prop.help}</p> : null}
-            <p className="text-xs text-muted-foreground">Default: {formatDefault(prop?.default)}</p>
-          </div>
-          <Switch
-            id={name}
-            checked={current}
-            onCheckedChange={(checked) => setFieldEdit(name, checked ? "true" : "false")}
-          />
-        </div>
-      );
-    }
-
-    const inputType = type === "integer" || type === "number" ? "number" : secret && !revealed.has(name) ? "password" : "text";
-    const placeholder =
-      secret && "masked" in meta
-        ? meta.is_set
-          ? meta.masked
-          : "(not set)"
-        : "value" in meta
-          ? formatDefault(meta.value)
-          : "";
-    const inputValue = edits[name] ?? "";
-
+  function renderField(name: string, emphasize = false) {
+    if (!payload) return null;
     return (
-      <div key={name} className="space-y-2 rounded-lg border border-border/40 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Label htmlFor={name}>{fieldTitle(name, prop)}</Label>
-            {modified ? <Badge variant="secondary">modified</Badge> : null}
-          </div>
-          <div className="flex items-center gap-2">
-            {modified ? (
-              <Button type="button" variant="ghost" size="sm" onClick={() => resetField(name)}>
-                <RotateCcw className="size-3.5" />
-                Reset
-              </Button>
-            ) : null}
-            {secret ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={() =>
-                  setRevealed((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(name)) {
-                      next.delete(name);
-                    } else {
-                      next.add(name);
-                    }
-                    return next;
-                  })
-                }
-              >
-                {revealed.has(name) ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-        <code className="text-[10px] text-muted-foreground">{meta.env_key}</code>
-        {prop?.help ? <p className="text-xs text-muted-foreground/80">{prop.help}</p> : null}
-        <p className="text-xs text-muted-foreground">
-          Default: {formatDefault(prop?.default ?? ("default" in meta ? meta.default : ""))}
-        </p>
-        <Input
-          id={name}
-          type={inputType}
-          value={inputValue}
-          placeholder={placeholder}
-          onChange={(e) => setFieldEdit(name, e.target.value)}
-        />
-      </div>
+      <SettingsField
+        key={name}
+        name={name}
+        payload={payload}
+        edits={edits}
+        cleared={cleared}
+        revealed={revealed}
+        onEdit={setFieldEdit}
+        onRevert={revertField}
+        onClearOverride={clearOverride}
+        onToggleReveal={toggleReveal}
+        emphasize={emphasize}
+      />
     );
   }
 
@@ -499,111 +541,176 @@ export function SettingsClient({
   return (
     <div className="space-y-4">
       {restartRequired.length > 0 ? (
-        <Card className="border-amber-500/40 bg-amber-500/5">
-          <CardContent className="py-3 text-sm">
-            Restart the dashboard dev server to apply: {restartRequired.join(", ")}
-          </CardContent>
-        </Card>
-      ) : null}
-
-      <Tabs defaultValue="pipeline">
-        <TabsList>
-          <TabsTrigger value="pipeline">Pipeline settings</TabsTrigger>
-          <TabsTrigger value="config">Config files</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="pipeline" className="space-y-4 pt-4">
-          <div className="relative overflow-hidden rounded-lg border border-border/40 bg-muted/10 p-4">
-            <div className="absolute right-4 top-1/2 hidden h-16 w-32 -translate-y-1/2 opacity-60 md:block">
-              <ASCIIAnimation
-                frameFolder="computer"
-                quality="low"
-                fps={12}
-                lazy
-                ariaLabel="Computer accent"
-              />
-            </div>
-            <p className="max-w-lg font-mono text-xs text-muted-foreground">
-              Pipeline environment variables and runtime knobs. Changes write to{" "}
-              <code className="text-foreground">.env</code> — restart the dev server when prompted.
+        <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+          <div>
+            <p className="font-medium text-foreground">Restart required</p>
+            <p className="text-muted-foreground">
+              Restart the dashboard dev server to apply:{" "}
+              <code className="text-foreground">{restartRequired.join(", ")}</code>
             </p>
           </div>
-          <div className="grid gap-4 lg:grid-cols-[200px_minmax(0,1fr)]">
-            <nav
-              aria-label="Settings sections"
-              className="sticky top-4 z-10 h-fit rounded-lg border border-border/40 bg-background/95 p-2 backdrop-blur"
-            >
-              <p className="mb-2 px-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                Sections
-              </p>
-              <ul className="space-y-0.5">
-                {groupedFields.map(({ group }, index) => (
-                  <li key={group}>
-                    <a
-                      href={`#${groupAnchorId(group)}`}
-                      className="block rounded-md px-2 py-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                    >
-                      [{String(index + 1).padStart(2, "0")}] {group}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </nav>
+        </div>
+      ) : null}
 
-            <div className="space-y-4">
-              {groupedFields.map(({ group, fields }, index) => (
-                <Card key={group} id={groupAnchorId(group)} className="scroll-mt-4">
-                  <CardHeader className="space-y-3">
-                    <SectionHeading
-                      index={String(index + 1).padStart(2, "0")}
-                      title={group.toUpperCase()}
-                    />
-                    <CardDescription>{GROUP_DESCRIPTIONS[group as (typeof GROUP_ORDER)[number]] ?? ""}</CardDescription>
-                  </CardHeader>
-                  <CardContent className="grid gap-3 md:grid-cols-2">{fields.map(renderField)}</CardContent>
-                </Card>
-              ))}
+      <Tabs
+        value={tab}
+        onValueChange={(value) => setTab(parseSettingsTab(value))}
+        className="gap-4"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <TabsList variant="line" className="h-auto w-full flex-wrap justify-start gap-1 sm:w-auto">
+            {(Object.keys(TAB_META) as SettingsTab[]).map((key) => (
+              <TabsTrigger key={key} value={key} className="px-3 py-2">
+                {TAB_META[key].label}
+                {key !== "yaml" && dirtyFields.size > 0 && (key === "connections" || key === "runtime") ? (
+                  <span className="ml-1.5 size-1.5 rounded-full bg-primary" aria-hidden />
+                ) : null}
+                {key === "yaml" && configDirty ? (
+                  <span className="ml-1.5 size-1.5 rounded-full bg-primary" aria-hidden />
+                ) : null}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {tab !== "yaml" ? (
+            <div className="relative w-full sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter settings…"
+                className="h-9 pl-8"
+              />
             </div>
+          ) : null}
+        </div>
+
+        <p className="text-sm text-muted-foreground">{TAB_META[tab].blurb}</p>
+
+        <TabsContent value="connections" className="space-y-4">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {connectionStatus.map((item) => (
+              <div
+                key={item.name}
+                className="flex items-center gap-3 rounded-lg border border-border/50 bg-card px-3 py-2.5"
+              >
+                {item.set ? (
+                  <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
+                ) : (
+                  <XCircle className="size-4 shrink-0 text-amber-600" />
+                )}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{item.label}</p>
+                  <p className="truncate text-[11px] text-muted-foreground">
+                    {item.set ? `Ready · ${item.hint}` : `Missing · ${item.hint}`}
+                  </p>
+                </div>
+              </div>
+            ))}
           </div>
+          {renderSections(sectionsForTab, highlightedSection, renderField, pathsOpen, setPathsOpen)}
+          {sectionsForTab.length === 0 && query ? (
+            <p className="text-sm text-muted-foreground">No settings match “{query}”.</p>
+          ) : null}
         </TabsContent>
 
-        <TabsContent value="config" className="pt-4">
-          <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+        <TabsContent value="runtime" className="space-y-4">
+          {renderSections(sectionsForTab, highlightedSection, renderField, pathsOpen, setPathsOpen)}
+          {sectionsForTab.length === 0 && query ? (
+            <p className="text-sm text-muted-foreground">No settings match “{query}”.</p>
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="yaml" className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
             <Card className="h-fit">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">YAML files</CardTitle>
+                <CardTitle className="text-sm">Config files</CardTitle>
+                <CardDescription className="text-xs">
+                  Edits write to <code className="text-foreground">config/</code> with a{" "}
+                  <code className="text-foreground">.backups</code> copy.
+                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-1 p-2">
-                {configFiles.map((file) => (
-                  <button
-                    key={file.name}
-                    type="button"
-                    onClick={() => requestFileSwitch(file.name)}
-                    className={`w-full rounded-md px-2 py-2 text-left text-sm transition-colors ${
-                      selectedFile === file.name
-                        ? "bg-primary/10 text-foreground"
-                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                    }`}
-                  >
-                    <div className="font-mono text-xs">{file.name}</div>
-                    <div className="mt-0.5 text-[11px] leading-snug">{file.description}</div>
-                  </button>
+              <CardContent className="space-y-4 p-3">
+                {yamlFilesByCategory.map((cat) => (
+                  <div key={cat.id} className="space-y-1.5">
+                    <div className="px-1">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {cat.title}
+                      </p>
+                      <p className="text-[11px] leading-snug text-muted-foreground/80">
+                        {cat.description}
+                      </p>
+                    </div>
+                    <div className="space-y-0.5">
+                      {cat.items.map((file) => {
+                        const selected = selectedFile === file.name;
+                        const dirty = selected && configDirty;
+                        return (
+                          <button
+                            key={file.name}
+                            type="button"
+                            onClick={() => requestFileSwitch(file.name)}
+                            className={cn(
+                              "w-full rounded-md px-2.5 py-2 text-left transition-colors",
+                              selected
+                                ? "bg-primary/10 text-foreground"
+                                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-xs">{file.name}</span>
+                              {dirty ? (
+                                <Badge variant="secondary" className="text-[10px]">
+                                  unsaved
+                                </Badge>
+                              ) : file.warnManualEdit ? (
+                                <Badge variant="outline" className="text-[10px]">
+                                  auto
+                                </Badge>
+                              ) : null}
+                            </div>
+                            <p className="mt-0.5 text-[11px] leading-snug opacity-80">
+                              {file.description}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 ))}
               </CardContent>
             </Card>
 
             <Card className="min-w-0">
-              <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
-                <div>
-                  <CardTitle className="font-mono text-sm">{selectedFile ?? "Select a file"}</CardTitle>
-                  {selectedFile && configFiles.find((f) => f.name === selectedFile)?.warnManualEdit ? (
-                    <CardDescription className="text-amber-600 dark:text-amber-400">
-                      Normally written by insights --fit-score. Manual edits may be overwritten.
+              <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 space-y-1">
+                  <CardTitle className="flex items-center gap-2 font-mono text-sm">
+                    <FileCode2 className="size-4 text-primary" />
+                    {selectedFile ?? "Select a file"}
+                  </CardTitle>
+                  {selectedFile ? (
+                    <CardDescription>
+                      {configFiles.find((f) => f.name === selectedFile)?.description}
                     </CardDescription>
                   ) : null}
+                  {selectedFile &&
+                  configFiles.find((f) => f.name === selectedFile)?.warnManualEdit ? (
+                    <p className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                      Normally written by <code>insights --fit-score</code>. Manual edits may be
+                      overwritten.
+                    </p>
+                  ) : null}
                 </div>
-                <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={validateYamlLocally}>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!selectedFile || fileLoading}
+                    onClick={validateYamlLocally}
+                  >
                     Validate
                   </Button>
                   <Button
@@ -613,13 +720,13 @@ export function SettingsClient({
                     onClick={() => void saveConfigFile()}
                   >
                     {fileSaving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                    Save
+                    Save YAML
                   </Button>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 {yamlError ? (
-                  <p className="text-sm text-destructive">
+                  <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                     Line {yamlError.line}: {yamlError.message}
                   </p>
                 ) : null}
@@ -628,18 +735,19 @@ export function SettingsClient({
                     <Loader2 className="size-4 animate-spin" />
                     Loading file…
                   </div>
-                ) : (
+                ) : selectedFile ? (
                   <div className="overflow-hidden rounded-md border">
-                    <CodeMirror
+                    <YamlEditor
                       value={fileContent}
-                      height="520px"
-                      extensions={[yaml()]}
+                      height="560px"
                       onChange={(value) => {
                         setFileContent(value);
                         setYamlError(null);
                       }}
                     />
                   </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Pick a YAML file from the list.</p>
                 )}
               </CardContent>
             </Card>
@@ -647,43 +755,212 @@ export function SettingsClient({
         </TabsContent>
       </Tabs>
 
-      {dirtyFields.size > 0 ? (
-        <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border bg-background/95 p-3 shadow-lg backdrop-blur">
-          <p className="text-sm text-muted-foreground">
-            {dirtyFields.size} unsaved setting{dirtyFields.size === 1 ? "" : "s"}
-          </p>
-          <Button onClick={() => void saveSettings()} disabled={saving}>
-            {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-            Save to .env
-          </Button>
+      {dirtyFields.size > 0 && tab !== "yaml" ? (
+        <div className="panel sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 shadow-lg">
+          <div>
+            <p className="text-sm font-medium">
+              {dirtyFields.size} unsaved .env change{dirtyFields.size === 1 ? "" : "s"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Writes to the repo <code>.env</code>. Secrets stay masked after save.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setEdits({});
+                setCleared(new Set());
+              }}
+            >
+              Discard
+            </Button>
+            <Button onClick={() => void saveSettings()} disabled={saving}>
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+              Save to .env
+            </Button>
+          </div>
         </div>
       ) : null}
 
-      {pendingFileSwitch ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <CardTitle>Unsaved YAML changes</CardTitle>
-              <CardDescription>Discard edits and switch files?</CardDescription>
-            </CardHeader>
-            <CardContent className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingFileSwitch(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setPendingFileSwitch(null);
-                  setSelectedFile(pendingFileSwitch);
-                  void loadConfigFile(pendingFileSwitch);
-                }}
-              >
-                Discard & switch
-              </Button>
-            </CardContent>
-          </Card>
+      {configDirty && tab === "yaml" ? (
+        <div className="panel sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 shadow-lg">
+          <div>
+            <p className="text-sm font-medium">Unsaved YAML — {selectedFile}</p>
+            <p className="text-xs text-muted-foreground">Validated on save. Previous copy kept in .backups.</p>
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={() => setFileContent(savedContent)}>
+              Discard
+            </Button>
+            <Button onClick={() => void saveConfigFile()} disabled={fileSaving}>
+              {fileSaving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+              Save YAML
+            </Button>
+          </div>
         </div>
       ) : null}
+
+      <Dialog open={pendingFileSwitch !== null} onOpenChange={(open) => !open && setPendingFileSwitch(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Unsaved YAML changes</DialogTitle>
+            <DialogDescription>
+              Discard edits to {selectedFile} and open {pendingFileSwitch}?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingFileSwitch(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!pendingFileSwitch) return;
+                const next = pendingFileSwitch;
+                setPendingFileSwitch(null);
+                setSelectedFile(next);
+                void loadConfigFile(next);
+              }}
+            >
+              Discard & switch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function renderSections(
+  sections: {
+    group: string;
+    fields: string[];
+    meta?: (typeof GROUP_META)[number];
+  }[],
+  activeSection: string | null,
+  renderField: (name: string, emphasize?: boolean) => ReactNode,
+  pathsOpen: boolean,
+  setPathsOpen: (open: boolean) => void,
+) {
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[200px_minmax(0,1fr)]">
+      <nav
+        aria-label="Settings sections"
+        className="panel sticky top-4 z-10 hidden h-fit rounded-lg p-2 lg:block"
+      >
+        <p className="mb-2 px-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+          On this page
+        </p>
+        <ul className="space-y-0.5">
+          {sections.map(({ group, meta }, index) => {
+            const id = groupAnchorId(group);
+            const label = meta?.short ?? group;
+            return (
+              <li key={group}>
+                <a
+                  href={`#${id}`}
+                  className={cn(
+                    "block rounded-md px-2 py-1.5 font-mono text-[11px] transition-colors",
+                    activeSection === id
+                      ? "bg-primary/10 text-foreground"
+                      : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                  )}
+                >
+                  [{String(index + 1).padStart(2, "0")}] {label}
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+
+      <div className="space-y-4">
+        {sections.map(({ group, fields, meta }, index) => {
+          const id = groupAnchorId(group);
+          const title = (meta?.title ?? group).toUpperCase();
+          const description = meta?.description ?? "";
+          const isPaths = group === "Paths";
+          const spendFields = fields.filter((f) =>
+            (FIRECRAWL_SPEND_FIELDS as readonly string[]).includes(f),
+          );
+          const otherFields = fields.filter(
+            (f) => !(FIRECRAWL_SPEND_FIELDS as readonly string[]).includes(f),
+          );
+
+          const body = (
+            <>
+              {group === "Firecrawl" && spendFields.length > 0 ? (
+                <div className="mb-4 space-y-3 rounded-lg border border-primary/20 bg-primary/[0.04] p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Cost brakes</p>
+                    <p className="text-xs text-muted-foreground">
+                      Set these before long campaigns. <code>0</code> usually means unlimited / off
+                      — check each field help.
+                    </p>
+                  </div>
+                  <div className="grid gap-3">{spendFields.map((f) => renderField(f, true))}</div>
+                </div>
+              ) : null}
+              <div className="grid gap-3">
+                {(group === "Firecrawl" ? otherFields : fields).map((f) => renderField(f))}
+              </div>
+            </>
+          );
+
+          if (isPaths) {
+            return (
+              <Card key={group} id={id} className="scroll-mt-4">
+                <Collapsible open={pathsOpen} onOpenChange={setPathsOpen}>
+                  <CardHeader className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <SectionHeading
+                        index={String(index + 1).padStart(2, "0")}
+                        title={title}
+                      />
+                      <CollapsibleTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          {pathsOpen ? "Hide" : "Show paths"}
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+                    {description ? <CardDescription>{description}</CardDescription> : null}
+                  </CardHeader>
+                  <CollapsibleContent>
+                    <CardContent>{body}</CardContent>
+                  </CollapsibleContent>
+                </Collapsible>
+              </Card>
+            );
+          }
+
+          return (
+            <Card key={group} id={id} className="scroll-mt-4">
+              <CardHeader className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SectionHeading
+                    index={String(index + 1).padStart(2, "0")}
+                    title={title}
+                    className="flex-1"
+                  />
+                  {meta?.costCritical ? (
+                    <Badge variant="outline" className="text-[10px]">
+                      cost control
+                    </Badge>
+                  ) : null}
+                </div>
+                {description ? <CardDescription>{description}</CardDescription> : null}
+              </CardHeader>
+              <CardContent>{body}</CardContent>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

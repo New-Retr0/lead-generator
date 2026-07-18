@@ -1,5 +1,5 @@
-import { CampaignControl } from "@/components/campaigns/campaign-control";
+import { redirect } from "next/navigation";
 
 export default function CampaignsPage() {
-  return <CampaignControl />;
+  redirect("/launch?mode=campaign");
 }

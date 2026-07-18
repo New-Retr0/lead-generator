@@ -37,6 +37,7 @@ PLACEHOLDER_NAMES = frozenset(
         "example",
         "contact name",
         "sample name",
+        "not found",
     }
 )
 
@@ -180,13 +181,15 @@ def ground_investigation(
         if not (name or phone or email):
             continue  # nothing grounded — drop the contact entirely
         quote = quotes.get(name) or quotes.get(phone) or quotes.get(email) or ""
+        # Literal grounding = source-backed verified; multi-source upgrades to corroborated elsewhere.
+        prior = (contact.verification or "").strip()
+        stamped = prior if prior in {"verified", "corroborated"} else "verified"
         updated = contact.model_copy(
             update={
                 "name": name,
                 "phone": phone,
                 "email": email,
-                # Grounded in one source: real value, single-source provenance.
-                "verification": contact.verification or "unverified",
+                "verification": stamped,
                 "source_url": contact.source_url or source_label,
                 "quote": contact.quote or quote,
             }

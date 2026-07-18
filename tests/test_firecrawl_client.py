@@ -3,13 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from pallares_leads.enrich.firecrawl_client import _SHARED_MAP_CACHE, FirecrawlClient
-from pallares_leads.enrich.sales_copy import (
-    SalesCopyResult,
-    generate_sales_copy,
-    is_generic_copy,
-    needs_sales_copy,
-)
-from pallares_leads.schemas import EnrichedLead, RawLead
+from pallares_leads.schemas import RawLead
 from pallares_leads.settings import Settings
 
 
@@ -70,10 +64,10 @@ def test_map_cache_reuses_results() -> None:
     _SHARED_MAP_CACHE.clear()
 
 
-@patch("pallares_leads.enrich.firecrawl_client.gateway_extract_contacts")
+@patch.object(FirecrawlClient, "_scrape_json")
 @patch.object(FirecrawlClient, "_sdk_call_with_retry")
-def test_scrape_lead_uses_homepage_then_gateway(mock_sdk, mock_extract) -> None:
-    settings = Settings(firecrawl_api_key="test-key", ai_gateway_api_key="gw", ai_gateway_model="m")
+def test_scrape_lead_uses_homepage_then_json(mock_sdk, mock_scrape_json) -> None:
+    settings = Settings(firecrawl_api_key="test-key")
     raw = _raw_lead()
 
     homepage = MagicMock()
@@ -82,7 +76,7 @@ def test_scrape_lead_uses_homepage_then_gateway(mock_sdk, mock_extract) -> None:
 
     from pallares_leads.enrich.schema import LeadInvestigationResult
 
-    mock_extract.return_value = LeadInvestigationResult(
+    mock_scrape_json.return_value = LeadInvestigationResult(
         contact_phone="(559) 638-3333",
         exterior_signals="parking lot",
     )
@@ -93,14 +87,15 @@ def test_scrape_lead_uses_homepage_then_gateway(mock_sdk, mock_extract) -> None:
 
     assert result is not None
     assert result.contact_phone == "(559) 638-3333"
-    mock_extract.assert_called_once()
+    mock_scrape_json.assert_called_once()
 
 
 def test_scrape_site_runs_markdown_scrapes_in_parallel() -> None:
     from pallares_leads.enrich import firecrawl_client as fc_mod
 
-    settings = Settings(firecrawl_api_key="test-key", firecrawl_max_concurrency=5)
+    settings = Settings(firecrawl_api_key="test-key")
     fc = FirecrawlClient(settings)
+    fc._plan_max_concurrency = 50
     with fc_mod._MAP_CACHE_LOCK:
         fc_mod._SHARED_MAP_CACHE["https://example.com"] = [
             "https://example.com",
@@ -123,6 +118,134 @@ def test_scrape_site_runs_markdown_scrapes_in_parallel() -> None:
     fc_mod._SHARED_MAP_CACHE.clear()
 
 
+def test_effective_max_concurrency_uses_plan() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    fc = FirecrawlClient(settings)
+    fc._plan_max_concurrency = 50
+    assert fc.effective_max_concurrency() == 50
+
+    fc._resolved_concurrency = None
+    fc._plan_max_concurrency = None
+    assert fc.effective_max_concurrency() == 50
+
+
+def test_effective_parallel_workers_from_plan_concurrency() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    fc = FirecrawlClient(settings)
+
+    fc._resolved_concurrency = 5
+    assert fc.effective_parallel_workers() == 2
+
+    fc._resolved_concurrency = 50
+    assert fc.effective_parallel_workers() == 25
+
+    fc._resolved_concurrency = 100
+    assert fc.effective_parallel_workers() == 50
+
+    fc._resolved_concurrency = 2
+    assert fc.effective_parallel_workers() == 1
+
+
+def test_refresh_plan_limits_resizes_from_live_queue_status() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    fc = FirecrawlClient(settings)
+    fc._plan_max_concurrency = 50
+    fc._resolved_concurrency = 50
+    assert fc.effective_parallel_workers() == 25
+
+    with (
+        patch.object(
+            fc,
+            "get_queue_status",
+            return_value={"maxConcurrency": 100},
+        ) as queue_mock,
+        patch.object(
+            fc,
+            "get_team_credit_usage",
+            return_value={"planCredits": 500_000, "remainingCredits": 400_000},
+        ),
+    ):
+        info = fc.refresh_plan_limits()
+
+    queue_mock.assert_called_once()
+    assert info["max_concurrency"] == 100
+    assert info["place_workers"] == 50
+    assert fc.effective_parallel_workers() == 50
+
+
+def test_rate_limit_throttle_is_temporary() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    fc = FirecrawlClient(settings)
+    fc._plan_max_concurrency = 50
+    fc._resolved_concurrency = None
+    for _ in range(5):
+        fc.note_rate_limit()
+    assert fc.effective_max_concurrency() == 25
+    fc.note_rate_limit_recovered()
+    assert fc.effective_max_concurrency() == 50
+
+
+def test_agent_finished_detects_timeout_poll_payload() -> None:
+    assert FirecrawlClient._agent_finished(type("R", (), {"status": "completed"})()) is True
+    assert FirecrawlClient._agent_finished(type("R", (), {"status": "scraping"})()) is False
+    assert FirecrawlClient._agent_finished({"status": "processing"}) is False
+    assert FirecrawlClient._agent_finished({"data": {"owner_name": "Acme"}}) is True
+
+
+@patch("pallares_leads.enrich.firecrawl_client.Firecrawl")
+def test_sdk_constructed_with_http_timeout(mock_sdk: MagicMock) -> None:
+    """SDK default timeout=None hangs forever on stalled sockets — we must set one."""
+    settings = Settings(firecrawl_api_key="test-key", firecrawl_timeout_ms=30_000)
+    FirecrawlClient(settings)
+    assert mock_sdk.call_args.kwargs["timeout"] == 45.0
+
+
+@patch("pallares_leads.enrich.firecrawl_client.Firecrawl")
+def test_batch_scrape_passes_wait_timeout(mock_sdk_cls: MagicMock) -> None:
+    """batch_scrape wait_timeout=None polls forever — must pass a wall-clock cap."""
+    settings = Settings(
+        firecrawl_api_key="test-key",
+        firecrawl_timeout_ms=30_000,
+        enrichment_lead_timeout_s=600,
+    )
+    sdk = mock_sdk_cls.return_value
+    sdk.batch_scrape.return_value = type("R", (), {"data": []})()
+    fc = FirecrawlClient(settings)
+    fc.batch_scrape_urls(["https://a.example/contact", "https://a.example/about"])
+    assert sdk.batch_scrape.called
+    assert sdk.batch_scrape.call_args.kwargs["wait_timeout"] == 120
+
+
+def test_settings_hang_timeout_defaults() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    assert settings.firecrawl_agent_timeout_s == 180
+    assert settings.enrichment_lead_timeout_s == 600
+
+
+@patch("pallares_leads.enrich.firecrawl_client.Firecrawl")
+def test_incomplete_agent_is_cancelled(mock_sdk_cls: MagicMock) -> None:
+    settings = Settings(firecrawl_api_key="test-key", firecrawl_agent_timeout_s=180)
+    sdk = mock_sdk_cls.return_value
+    sdk.agent.return_value = type("R", (), {"id": "agent-1", "status": "processing", "data": None})()
+    fc = FirecrawlClient(settings)
+    assert fc.run_capped_agent(_raw_lead()) is None
+    sdk.cancel_agent.assert_called_once_with("agent-1")
+
+
+def test_normalize_team_credit_usage_marks_extra_credits() -> None:
+    payload = FirecrawlClient.normalize_team_credit_usage(
+        {
+            "data": {
+                "remainingCredits": 120_000,
+                "planCredits": 100_000,
+                "billingPeriodEnd": "2026-08-01T00:00:00.000Z",
+            }
+        }
+    )
+    assert payload["usedCredits"] == 0
+    assert payload["extraCredits"] == 20_000
+
+
 @patch("pallares_leads.enrich.firecrawl_client.httpx.Client")
 def test_scrape_pdf_snippet_uses_pdf_parser(mock_client_cls: MagicMock) -> None:
     settings = Settings(firecrawl_api_key="test-key")
@@ -139,49 +262,3 @@ def test_scrape_pdf_snippet_uses_pdf_parser(mock_client_cls: MagicMock) -> None:
     assert "631 parking" in snippet
     body = client.post.call_args.kwargs["json"]
     assert body["parsers"] == [{"type": "pdf", "mode": "auto", "maxPages": 15}]
-
-
-@patch("pallares_leads.enrich.ai_gateway_client.httpx.Client")
-def test_generate_sales_copy_calls_gateway(mock_client_cls: MagicMock) -> None:
-    settings = Settings(
-        ai_gateway_api_key="gw-key",
-        ai_gateway_model="google/gemini-2.5-flash",
-        ai_gateway_min_interval_s=0.0,
-    )
-    client = mock_client_cls.return_value.__enter__.return_value
-    response = MagicMock()
-    response.status_code = 200
-    response.json.return_value = {
-        "choices": [
-            {
-                "message": {
-                    "content": (
-                        '{"why_call":"Reedley grocery with heavy lot exposure.",'
-                        '"talking_points":"• Downtown Reedley anchor"}'
-                    )
-                }
-            }
-        ]
-    }
-    client.post.return_value = response
-
-    result = generate_sales_copy({"business_name": "Save Mart", "city": "Reedley"}, settings)
-
-    assert isinstance(result, SalesCopyResult)
-    assert "Reedley grocery" in result.why_call
-    posted = client.post.call_args
-    assert posted.args[0] == "https://ai-gateway.vercel.sh/v1/chat/completions"
-    assert posted.kwargs["json"]["model"] == "google/gemini-2.5-flash"
-
-
-def test_needs_sales_copy_false_when_specific() -> None:
-    lead = EnrichedLead.model_validate(_raw_lead().model_dump())
-    lead.why_this_is_a_good_fit = (
-        "Reedley Save Mart on Manning Ave with visible storefront signage."
-    )
-    lead.sales_talking_points = "• Grocery anchor for Reedley families"
-    assert needs_sales_copy(lead) is False
-    assert (
-        is_generic_copy(lead.why_this_is_a_good_fit, lead.sales_talking_points, city="Reedley")
-        is False
-    )

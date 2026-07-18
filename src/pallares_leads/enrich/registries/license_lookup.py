@@ -11,7 +11,6 @@ from pathlib import Path
 import yaml
 
 from pallares_leads.enrich.search_templates import render_search_template
-from pallares_leads.enrich.verify import ground_name
 from pallares_leads.schemas import LeadFact, RawLead
 
 logger = logging.getLogger(__name__)
@@ -43,6 +42,7 @@ class LicenseLookupConfig:
     serp_site: str = ""
     pm_license_required: bool = True
     adapter: str = "generic"
+    vendor_license: bool = False
 
 
 @dataclass
@@ -84,12 +84,27 @@ def _load_licensing(config_dir: str) -> dict[str, LicenseLookupConfig]:
             serp_site=str(raw.get("serp_site") or ""),
             pm_license_required=bool(raw.get("pm_license_required", True)),
             adapter=str(raw.get("adapter") or "generic"),
+            vendor_license=bool(raw.get("vendor_license", False)),
         )
     return result
 
 
 def lookup_config_for_state(state: str, *, config_dir: Path) -> LicenseLookupConfig | None:
     return _load_licensing(str(config_dir)).get((state or "").upper())
+
+
+def lookup_config_for_lead(
+    raw: RawLead,
+    *,
+    config_dir: Path,
+) -> LicenseLookupConfig | None:
+    """DRE for CRE/PM; CSLB for vendor_* categories."""
+    if (raw.property_type or "").startswith("vendor_"):
+        vendor_key = f"{(raw.state or '').upper()}_CSLB"
+        cfg = _load_licensing(str(config_dir)).get(vendor_key)
+        if cfg:
+            return cfg
+    return lookup_config_for_state(raw.state, config_dir=config_dir)
 
 
 def should_run_license_lookup(
@@ -99,10 +114,14 @@ def should_run_license_lookup(
     has_pm_clue: bool,
     config_dir: Path,
 ) -> tuple[bool, str]:
-    cfg = lookup_config_for_state(raw.state, config_dir=config_dir)
+    cfg = lookup_config_for_lead(raw, config_dir=config_dir)
     if cfg is None:
         return False, f"no license lookup configured for state {raw.state or 'unknown'}"
-    if cfg.adapter == "none" or not cfg.pm_license_required:
+    if cfg.adapter == "none":
+        return False, f"license adapter disabled for {raw.state}"
+    if cfg.vendor_license or (raw.property_type or "").startswith("vendor_"):
+        return True, "vendor CSLB / contractor license"
+    if not cfg.pm_license_required:
         return False, f"PM license not required in {raw.state}"
     if category_key == "property_manager" or raw.property_type == "property_manager":
         return True, "property_manager category"
@@ -118,8 +137,9 @@ def find_license_record_url(
     *,
     config_dir: Path,
 ) -> str | None:
+    template = "cslb_license_lookup" if cfg.adapter == "cslb_ca" else "license_lookup"
     query = render_search_template(
-        "license_lookup",
+        template,
         config_dir=config_dir,
         business_name=raw.business_name,
         city=raw.city,
@@ -140,9 +160,33 @@ def find_license_record_url(
     return None
 
 
+_CSLB_LICENSE = re.compile(
+    r"(?:License(?:\s*Number)?|#)\s*[:#]?\s*(\d{5,8})",
+    re.I,
+)
+_CSLB_BUSINESS = re.compile(
+    r"(?:Business\s*Name|Contractor)[:\s]+([A-Z0-9][^\n]{2,80})",
+    re.I,
+)
+
+
 def parse_license_record(markdown: str, url: str, cfg: LicenseLookupConfig) -> LicenseRecord:
     record = LicenseRecord(url=url, agency=cfg.agency)
     text = markdown or ""
+
+    if cfg.adapter == "cslb_ca":
+        lic = _CSLB_LICENSE.search(text)
+        if lic:
+            record.license_id = lic.group(1).strip()
+        biz = _CSLB_BUSINESS.search(text)
+        if biz:
+            record.licensee_name = biz.group(1).strip()
+            record.quotes["licensee"] = biz.group(0).strip()[:200]
+        status = re.search(r"Status[:\s]+([A-Za-z ]+)", text, re.I)
+        if status:
+            record.status = status.group(1).strip()
+        record.license_type = record.license_type or "Contractor"
+        return record
 
     if cfg.adapter == "dre_ca":
         officer_match = _DRE_OFFICER.search(text)
@@ -180,10 +224,8 @@ def parse_license_record(markdown: str, url: str, cfg: LicenseLookupConfig) -> L
     return record
 
 
-def license_record_to_facts(record: LicenseRecord, *, page_text: str = "") -> list[LeadFact]:
+def license_record_to_facts(record: LicenseRecord) -> list[LeadFact]:
     facts: list[LeadFact] = []
-    officer = record.designated_officer or record.licensee_name
-    officer_verified = bool(officer) and (not page_text or ground_name(officer, page_text))
     if record.license_id or record.status:
         facts.append(
             LeadFact(
@@ -194,16 +236,17 @@ def license_record_to_facts(record: LicenseRecord, *, page_text: str = "") -> li
                     "license_type": record.license_type,
                     "status": record.status,
                     "expiration": record.expiration,
-                    "designated_officer": officer,
+                    "designated_officer": record.designated_officer or record.licensee_name,
                 },
                 source_kind="state_license",
                 source_url=record.url,
                 method="deterministic_parse",
                 quote=record.quotes.get("designated_officer")
                 or record.quotes.get("licensee", ""),
-                verification="verified" if officer_verified or not officer else "unverified",
+                verification="verified",
             )
         )
+    officer = record.designated_officer or record.licensee_name
     if officer:
         facts.append(
             LeadFact(
@@ -218,19 +261,16 @@ def license_record_to_facts(record: LicenseRecord, *, page_text: str = "") -> li
                 method="deterministic_parse",
                 quote=record.quotes.get("designated_officer")
                 or record.quotes.get("licensee", officer),
-                verification="verified" if officer_verified else "unverified",
+                verification="verified",
             )
         )
     return facts
 
 
-def license_contacts(
-    record: LicenseRecord, *, page_text: str = ""
-) -> list[tuple[str, str, str, bool]]:
-    """Return (name, title, quote, grounded) tuples for site_contacts merge."""
+def license_contacts(record: LicenseRecord) -> list[tuple[str, str, str]]:
+    """Return (name, title, quote) tuples for site_contacts merge."""
     officer = record.designated_officer or record.licensee_name
     if not officer:
         return []
     quote = record.quotes.get("designated_officer") or record.quotes.get("licensee", officer)
-    verified = not page_text or ground_name(officer, page_text)
-    return [(officer, "Designated Officer/Broker", quote, verified)]
+    return [(officer, "Designated Officer/Broker", quote)]

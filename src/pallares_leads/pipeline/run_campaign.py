@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 from dataclasses import dataclass, field
 
 from pallares_leads.config_loader import (
@@ -15,6 +16,7 @@ from pallares_leads.db.store import LeadStore
 from pallares_leads.pipeline.run_market import run_market_category
 from pallares_leads.schemas import EnrichedLead
 from pallares_leads.settings import Settings
+from pallares_leads.utils.errors import exception_brief
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +145,7 @@ def run_campaign(
     exclude_counties = campaign.get("exclude_counties")
 
     logger.info(
-        "Campaign %r: %d job(s), limit=%s, enrich=%s, skip_known=%s",
+        "Campaign %r: %d job(s), limit=%s, research=%s, skip_known=%s",
         campaign_key,
         len(jobs),
         limit,
@@ -151,8 +153,19 @@ def run_campaign(
         skip_known and not force_refresh,
     )
 
+    parent_job_id = os.environ.get("PALLARES_JOB_ID")
     with LeadStore() as store:
         for market_key, category_key in jobs:
+            # Close any prior cell left RUNNING before starting the next (finish_run race).
+            closed = store.close_orphaned_job_runs(parent_job_id)
+            if closed:
+                logger.warning(
+                    "Closed %d orphaned running run(s) for job %s before %s / %s",
+                    closed,
+                    parent_job_id,
+                    market_key,
+                    category_key,
+                )
             if category_key not in categories:
                 summary.results.append(
                     CampaignRunResult(
@@ -183,6 +196,7 @@ def run_campaign(
                     refresh_after_days=refresh_after_days,
                     store=store,
                     exclude_counties=exclude_counties,
+                    campaign_key=campaign_key,
                 )
                 lead_count = limit or 0
                 if out_path and not dry_run:
@@ -199,9 +213,17 @@ def run_campaign(
                 )
                 summary.total_leads += lead_count
             except Exception as exc:
-                logger.exception("Failed %s / %s", market_key, category_key)
+                detail = exception_brief(exc)
+                logger.exception("Failed %s / %s — %s", market_key, category_key, detail)
                 summary.results.append(
-                    CampaignRunResult(market_key, category_key, 0, error=str(exc))
+                    CampaignRunResult(market_key, category_key, 0, error=detail)
                 )
+            finally:
+                # Fence the cell before the next market/category — covers failed
+                # finish_run and cancel/repair races that left status=running.
+                store.close_orphaned_job_runs(parent_job_id)
+
+        # Last cell may have left a RUNNING row if finish_run raced; sweep once more.
+        store.close_orphaned_job_runs(parent_job_id)
 
     return summary

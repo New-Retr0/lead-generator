@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -18,10 +19,12 @@ from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.pipeline.dedupe import dedupe_leads
 from pallares_leads.pipeline.export_csv import export_csv
 from pallares_leads.pipeline.run_market import enrich_lead
+from pallares_leads.progress import bind_progress, emit as progress_emit
 from pallares_leads.request.spec import LeadRequestSpec
 from pallares_leads.resolve.lead_score import compute_lead_score, is_decision_maker_contact
 from pallares_leads.schemas import EnrichedLead, RawLead
 from pallares_leads.settings import Settings
+from pallares_leads.utils.errors import failure_fields
 from pallares_leads.utils.geo import within_corridor_buffer
 from pallares_leads.utils.snapshots import append_jsonl
 
@@ -107,8 +110,9 @@ def _lead_matches_spec(
     if score < spec.min_lead_score:
         return False
     if spec.require_decision_maker and not is_decision_maker_contact(lead):
-        if lead.sales_status() != "Ready to call":
-            return False
+        return False
+    if spec.require_decision_maker and lead.sales_status() != "Ready to call":
+        return False
     if spec.recurring_only:
         rules = get_enrichment_rules(lead.property_type, config_dir)
         if not rules.suggest_recurring:
@@ -342,8 +346,20 @@ def fulfill_request(
     if settings.firecrawl_api_key and len(delivered) < spec.count:
         firecrawl = FirecrawlClient(settings, store=store)
 
-    run_id = store.start_run(run_type="request", campaign_key=request_id)
+    run_id = store.start_run(
+        run_type="request",
+        campaign_key=request_id,
+        request_id=request_id,
+    )
     counters = {"newly_enriched": 0}
+    run_started_at = time.perf_counter()
+    bind_progress(store, run_id=run_id)
+    progress_emit(
+        "run_started",
+        run_id=run_id,
+        request_id=request_id,
+        count=spec.count,
+    )
 
     try:
         _fulfill_discovery_loop(
@@ -359,30 +375,74 @@ def fulfill_request(
             delivered=delivered,
             counters=counters,
         )
-    except BaseException:
-        store.finish_run(
-            run_id,
-            discovered_count=0,
-            skipped_known_count=reused,
-            enriched_count=counters["newly_enriched"],
-            status="failed",
-        )
-        store.finish_lead_request(
+    except BaseException as exc:
+        fail = failure_fields(exc)
+        logger.exception(
+            "Lead request failed %s — %s",
             request_id,
-            status="failed",
-            leads_delivered=len(delivered),
-            credits_spent=store.run_credits_total(run_id),
-            output_path=None,
+            fail["stop_detail"],
         )
+        duration_ms = int((time.perf_counter() - run_started_at) * 1000)
+        try:
+            snap = store.run_progress_snapshot(run_id)
+            discovered = max(snap["discovered_count"], len(delivered))
+            enriched = max(snap["enriched_count"], counters["newly_enriched"])
+            progress_emit(
+                "run_failed",
+                run_id=run_id,
+                request_id=request_id,
+                status="failed",
+                reason=fail["stop_detail"],
+                enriched=enriched,
+                discovered=discovered,
+                duration_ms=duration_ms,
+            )
+            store.finish_run(
+                run_id,
+                discovered_count=discovered,
+                skipped_known_count=max(snap["skipped_known_count"], reused),
+                enriched_count=enriched,
+                status="failed",
+                stop_reason=fail["stop_reason"],
+                stop_detail=fail["stop_detail"],
+                error=fail["error"],
+                duration_ms=duration_ms,
+                request_id=request_id,
+            )
+            store.finish_lead_request(
+                request_id,
+                status="failed",
+                leads_delivered=len(delivered),
+                credits_spent=store.run_credits_total(run_id),
+                output_path=None,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist request failure state for %s / run %s",
+                request_id,
+                run_id,
+            )
         raise
     newly_enriched = counters["newly_enriched"]
     credits_spent = store.run_credits_total(run_id)
+    duration_ms = int((time.perf_counter() - run_started_at) * 1000)
+    progress_emit(
+        "run_done",
+        run_id=run_id,
+        status="completed",
+        discovered=newly_enriched,
+        skipped_known=reused,
+        enriched=newly_enriched,
+        duration_ms=duration_ms,
+    )
 
     store.finish_run(
         run_id,
         discovered_count=newly_enriched,
         skipped_known_count=reused,
         enriched_count=newly_enriched,
+        duration_ms=duration_ms,
+        request_id=request_id,
     )
 
     exports_dir = settings.data_dir / "exports"

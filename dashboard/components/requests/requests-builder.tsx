@@ -42,12 +42,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { apiFetch } from "@/lib/api-client";
+import type { RequestCreditBudget } from "@/lib/request-budget";
 import {
   estimateRequestCost,
   type PipelineConfig,
   type RequestSpec,
 } from "@/lib/types";
-import type { RequestCreditBudget } from "@/lib/request-budget";
 
 export function RequestsBuilder({
   config,
@@ -110,7 +111,7 @@ export function RequestsBuilder({
   const submit = async (body: Record<string, unknown>, dryRun: boolean) => {
     setSubmitting(true);
     try {
-      const res = await fetch("/api/jobs/request", {
+      const res = await apiFetch("/api/jobs/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...body, dryRun }),
@@ -157,7 +158,7 @@ export function RequestsBuilder({
         </TabsList>
 
         <TabsContent value="builder">
-          <Card className="glass hover-lift">
+          <Card className="panel hover-lift">
             <CardHeader>
               <CardTitle>Lead request</CardTitle>
               <CardDescription>
@@ -368,7 +369,7 @@ export function RequestsBuilder({
         </TabsContent>
 
         <TabsContent value="nl">
-          <Card className="glass hover-lift">
+          <Card className="panel hover-lift">
             <CardHeader>
               <CardTitle>Natural language request</CardTitle>
               <CardDescription>
@@ -410,7 +411,10 @@ export function RequestsBuilder({
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
         >
-          <Card className="glass glass-sheen border-primary/25 bg-gradient-to-b from-primary/[0.08] to-transparent">
+          <Card
+            className="panel panel-sheen border-primary/25 bg-gradient-to-b from-primary/[0.08] to-transparent"
+            data-testid="request-estimate"
+          >
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm">
                 <Coins className="size-4 text-primary" />

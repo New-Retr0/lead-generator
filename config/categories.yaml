@@ -56,6 +56,9 @@ categories:
       require_property_manager_clue: true
       always_investigate: true
       allow_owner_chain: true
+      registry_lookup:
+        - bbb
+        - state_license
 
   outdoor_mall:
     label: Outdoor Mall / Lifestyle Center
@@ -72,6 +75,9 @@ categories:
       require_property_manager_clue: true
       always_investigate: true
       allow_owner_chain: true
+      registry_lookup:
+        - bbb
+        - state_license
 
   shopping_center:
     label: Shopping Center
@@ -89,6 +95,9 @@ categories:
       require_property_manager_clue: true
       always_investigate: true
       allow_owner_chain: true
+      registry_lookup:
+        - bbb
+        - state_license
 
   coffee_drive_thru:
     label: Coffee Drive-Thru
@@ -133,6 +142,9 @@ categories:
     enrichment:
       min_contact_bar: labeled_phone
       allow_owner_chain: true
+      registry_lookup:
+        - bbb
+        - state_license
 
   pharmacy:
     label: Pharmacy
@@ -169,6 +181,10 @@ categories:
       - light industrial building
     enrichment:
       allow_owner_chain: true
+      min_contact_bar: labeled_phone
+      registry_lookup:
+        - bbb
+        - state_license
 
   big_box:
     label: Big Box Retail
@@ -256,8 +272,11 @@ categories:
     area_min_m2: 8000
     prefer_private_access: true
     enrichment:
-      min_contact_bar: phone
+      min_contact_bar: labeled_phone
       allow_owner_chain: true
+      registry_lookup:
+        - bbb
+        - state_license
 
   hotel:
     label: Hotel / Motel
@@ -272,6 +291,10 @@ categories:
     enrichment:
       suggest_recurring: true
       allow_owner_chain: true
+      min_contact_bar: labeled_phone
+      registry_lookup:
+        - bbb
+        - state_license
 
   thrift_store:
     label: Thrift / Discount Retail
@@ -321,6 +344,13 @@ categories:
     queries:
       - homeowners association office
       - HOA management office
+    enrichment:
+      min_contact_bar: labeled_phone
+      require_property_manager_clue: true
+      allow_owner_chain: true
+      registry_lookup:
+        - bbb
+        - state_license
 
   property_manager:
     label: Commercial Property Manager
@@ -333,6 +363,8 @@ categories:
     enrichment:
       min_contact_bar: labeled_phone
       always_investigate: true
+      allow_owner_chain: true
+      # linkedin_serp demoted — run last in pipeline; never alone for verified
       registry_lookup:
         - bbb
         - state_license

@@ -80,21 +80,6 @@ google_places:
   health_check_usd: 0.0
 
 browser_use:
+  # Historical provider — ledger rows may still exist; live owner chain uses Firecrawl agent.
   # Per-task USD reported by Browser Use Cloud API (total_cost_usd on session)
   passthrough: true
-
-ai_gateway:
-  default_model: google/gemini-2.5-flash
-  models:
-    google/gemini-2.5-flash:
-      input_token_usd: 0.0000003
-      output_token_usd: 0.0000025
-    gpt-4o-mini:
-      input_token_usd: 0.00000015
-      output_token_usd: 0.0000006
-    gpt-4o:
-      input_token_usd: 0.0000025
-      output_token_usd: 0.00001
-    claude-3-5-sonnet:
-      input_token_usd: 0.000003
-      output_token_usd: 0.000015

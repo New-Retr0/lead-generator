@@ -1,7 +1,6 @@
-"""Frozen Browser Use task prompts — byte-stable for Cloud deterministic-rerun cache keys.
+"""Frozen portal task prompts for Firecrawl owner-chain agent.
 
 Only search values use @{{param}} placeholders; portal URLs are template params.
-Do not reword these constants without invalidating cached scripts.
 """
 
 from __future__ import annotations
@@ -34,6 +33,21 @@ LOOPNET_TASK = (
     "Return listing URL, listed-by brokers with name company and phone, and property facts "
     "including building square feet lot square feet and property type."
 )
+
+
+CREXI_TASK = (
+    "Go to https://www.crexi.com/ and search for commercial property listings matching "
+    "@{{search_query}} in @{{city}}, @{{state_name}}. Open the best matching property listing. "
+    "Return listing URL, listed-by brokers with name company and phone, and property facts "
+    "including building square feet lot square feet and property type."
+)
+
+FBN_TASK = (
+    "Go to @{{fbn_url}} and search for the fictitious business name @{{business_name}}. "
+    "Return the registrant / owner name, filing number if shown, and mailing address if shown. "
+    "Use free public index results only."
+)
+
 
 # Backward-compatible alias for tests referencing the CA template name.
 CA_BIZFILE_TASK = SOS_BIZFILE_TASK

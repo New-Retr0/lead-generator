@@ -2,7 +2,7 @@
 
 Repeatable commercial property lead runs for **PALLARES** exterior cleaning brokerage. Each place is **discovered and enriched in one pass** — there is no separate enrichment pipeline or re-enrich CLI.
 
-**Stack (per place, single pass):** Google Places / Overpass → Firecrawl → Browser Use Cloud (owner chain) → AI Gateway (sales copy) → **Supabase Postgres**.
+**Stack (per place, single pass):** Google Places / Overpass → Firecrawl map/scrape/search → grounded contact extraction → public registries / owner chain → **Supabase Postgres**.
 
 Canonical data lives in **Supabase** (`pallares-leads` project). Re-runs skip known leads; `page_cache` / `domain_cache` stay in local `data/local_cache.db` to save DB space.
 
@@ -16,19 +16,14 @@ pip install -e ".[dev]"
 # add analysis extras (pandas/scikit-learn/scipy) if you run `pallares-leads insights`
 pip install -e ".[analysis]"
 copy .env.example .env
-# Fill in .env — SUPABASE_URL, SUPABASE_DB_URL, API keys
+# Fill in .env — see .env.example (Places, Firecrawl, Supabase)
 supabase link   # once
 supabase db push
 ```
 
-Optional owner-chain tier:
+Docs index: **[docs/README.md](docs/README.md)** (Partner OpenAPI, yield proof pack, Places setup).
 
-```powershell
-# .env
-BROWSER_USE_API_KEY=bu_...
-BROWSER_USE_ENABLED=true
-pallares-leads warm-portals --county fresno_ca
-```
+Owner-chain escalations use the Firecrawl agent (`FIRECRAWL_API_KEY` required) for SOS / recorder / parcel portals when `allow_owner_chain: true`.
 
 ### Google Cloud
 
@@ -67,24 +62,23 @@ npm --prefix dashboard install
 npm run dev
 ```
 
-Open **https://pallares.localhost** — overview KPIs, lead table with verification levels, natural-language requests, live run timeline (JSON progress), cost charts, triage at `/triage`.
+Open **https://pallares.localhost** — Command Center, campaigns and lead requests, verified-DM inventory, live run timelines, Pipeline Studio, cost analytics, learning feedback, and configuration.
 
 Uses [Portless](https://portless.sh) for a stable `.localhost` URL instead of `localhost:3000`. First run on Windows: `npm --prefix dashboard exec portless trust` if the browser warns about HTTPS. To skip Portless: `npm run dev:direct` → http://localhost:3000.
 
-Dashboard nav: **Pipeline** (overview, requests, runs) vs **Sales** (CRM, leads, triage) vs **Operations** (costs). Runs are single-pass — each place is discovered and processed together.
+The dashboard is a local developer/operator console, not a CRM. The sellable product surface is the scoped Partner API under `/v1/`. Runs are single-pass — each place is discovered and processed together.
 
 ## Per-place processing tiers
 
 These run automatically inside a single `run` — not as a separate enrichment step:
 
 1. **Profile fast path** (0 cr) — franchise playbooks with trusted Google phone
-2. **Map + scrape+JSON** (~5 cr) — structured contact extraction from website
+2. **Map + scrape + grounded extract** — structured contact extraction from website evidence
 3. **Search gap-fill** (~6 cr) — when contact bar not met
 4. **Leasing/PDF** (~1–5 cr) — multi-tenant properties
-5. **Owner chain** (Browser Use) — SOS bizfile, recorder index, parcel portal, LoopNet when `allow_owner_chain: true`
-6. **AI Gateway** — Why Call + talking points (token-tracked in `cost_events`)
-
-Firecrawl Agent tier was removed (never fired in production; owner chain replaces it).
+5. **Capped Firecrawl Agent** — hard contact gaps before owner-chain escalation
+6. **Owner chain** — Firecrawl agent for SOS, recorder index, parcel, and related public-record evidence when `allow_owner_chain: true`
+7. **Ready gate** — verified named decision-maker + local callable phone
 
 **BBB registry** (~3 cr) runs when no verified person exists yet (`registry_lookup: bbb` in `categories.yaml`).
 
@@ -101,7 +95,7 @@ Firecrawl Agent tier was removed (never fired in production; owner chain replace
 config/              markets, categories, campaign, jurisdictions, licensing, pricing, search_templates, learned_score
 src/pallares_leads/
   discover/          Places (grid tiling), Overpass, county filter, mgmt directory harvest
-  enrich/            Firecrawl, owner chain, Browser Use, sales copy, registries
+  enrich/            Firecrawl, owner chain, registries
   request/           NL planner + deterministic fulfiller
   resolve/           contact hierarchy, verification, lead_score (heuristic + learned blend)
   pipeline/          run orchestration (single-pass discover + enrich), campaigns, dedupe
@@ -109,7 +103,7 @@ src/pallares_leads/
   intelligence/      lead_features snapshots + insights analysis
   eval/              stage-traced eval replay
 supabase/            canonical schema (migrations) + partner-api Edge Function
-dashboard/           local Next.js operator console + CRM
+dashboard/           local Next.js developer/operator/observer console
 data/                local-only runtime (canonical data lives in Supabase)
   local_cache.db     page_cache / domain_cache / extraction_cache
   raw_archive.db     compressed raw API payloads for feature replay + eval

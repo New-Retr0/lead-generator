@@ -1,7 +1,7 @@
 # Pallares Partner Lead API
 
-Use this API to pull Pallares lead-generation data into the Pallares.us
-platform. The API is read-only and uses a dedicated partner key.
+Use this API to pull Pallares lead-generation data and post structured
+outcomes/touches. It uses a dedicated scoped partner key.
 
 Machine-readable spec: [`partner-api.openapi.yaml`](./partner-api.openapi.yaml)
 
@@ -13,16 +13,16 @@ https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1
 
 ## Authentication
 
-Send the partner API key on every request except `/health`:
-
-```http
-Authorization: Bearer ppl_...
-```
-
-Alternate header (same key):
+**Primary:** send the partner API key on every request except `/health`:
 
 ```http
 x-api-key: ppl_...
+```
+
+Compatibility alternative:
+
+```http
+Authorization: Bearer ppl_...
 ```
 
 Store the key as a server-side environment variable. Do not ship it in browser
@@ -52,27 +52,42 @@ Rate-limited responses include a `Retry-After` header (seconds).
 
 ## Eligibility (`partner_leads_v1`)
 
-Only leads that pass Pallares sales-quality gates appear in list/detail responses.
-A lead is excluded when any of the following fail:
+Only leads that pass Pallares verified-DM sales-quality gates appear in
+list/detail responses. A lead is excluded when any of the following fail:
 
 | Rule | Requirement |
 |------|-------------|
 | Enriched | `enrichment_status = 'enriched'` and `enriched_json` present |
 | Confidence | not `Low` |
-| Verification | `verification_level` in `verified`, `partial` |
-| Callable phone | `best_contact_phone` or `main_phone` present |
+| Score | `lead_score >= 25` (the current `min_export_score`) |
+| Verified DM | `verification_level = verified` **and** one grounded, non-placeholder name + decision role + local non-toll-free phone |
+
+Partial verification and Google mainline-only phones are **not** partner-eligible.
+
+`primary_phone` is `best_contact_phone` only when that value is a local callable
+phone. Placeholder sentinels such as `Not found` are returned as `null`. It never
+falls back to Google `main_phone`.
 
 Detail requests for ineligible `place_id` values return `404 not_found`.
+Use `GET /leads/{place_id}/eligibility` for a gate-by-gate debug breakdown.
+
+### `place_id` path encoding
+
+Place ids often look like `places/ChIJ...` (slash included). Clients should
+URL-encode the path segment (`places%2FChIJ...`). The Edge Function also accepts
+the unencoded multi-segment form `/leads/places/ChIJ...`.
 
 ## Endpoints
 
 ```http
 GET /health
 GET /metadata
+GET /usage
 GET /leads?type=client&limit=100
 GET /leads?type=vendor&updated_since=2026-06-01T00:00:00Z
 GET /leads?cursor=<next_cursor>
 GET /leads/{place_id}
+GET /leads/{place_id}/eligibility
 ```
 
 ### Feedback (`leads:feedback` scope)
@@ -87,6 +102,11 @@ POST /leads/{place_id}/touches
 GET  /leads/{place_id}/touches?limit=50
 POST /feedback/batch
 ```
+
+Outcomes are **scoped per partner API key** (`partner_lead_outcomes`). One partner
+cannot overwrite another partner's outcome for the same place. Learning
+aggregation in `lead_labels` still collapses CRM/auto + partner signals into one
+label per place for insights.
 
 Outcome body:
 
@@ -113,8 +133,18 @@ Touch body:
 }
 ```
 
-`GET .../touches` returns only rows posted by the caller's API key.
-`GET .../outcome` returns the authoritative outcome regardless of source.
+`GET .../touches` and `GET .../outcome` return only rows for the caller's API key.
+
+### Idempotency-Key
+
+POST `/leads/{place_id}/outcome`, `/leads/{place_id}/touches`, and
+`/feedback/batch` accept an optional `Idempotency-Key` header. On first success
+the response body is stored per partner key; replays with the same key return
+the stored response without re-applying the write.
+
+```http
+Idempotency-Key: partner-sync-2026-07-17-batch-1
+```
 
 Batch sync (≤100 items):
 
@@ -124,6 +154,19 @@ Batch sync (≤100 items):
   { "place_id": "places/def", "touch_type": "call", "result": "voicemail" }
 ]
 ```
+
+### Usage
+
+```http
+GET /usage
+```
+
+Returns per-key rate-limit and daily row budget consumption (`leads:read`).
+
+### Roadmap (OpenAPI stubs only)
+
+`POST /orders` and `POST /webhooks` are reserved in OpenAPI with
+`x-stability: experimental` and are not implemented in v1.
 
 ## Pull Sync
 
@@ -141,13 +184,18 @@ specific point in time.
 ## Example
 
 ```bash
-curl -H "Authorization: Bearer $PALLARES_LEADS_API_KEY" \
+curl -H "x-api-key: $PALLARES_LEADS_API_KEY" \
   "https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1/leads?type=client&limit=100"
 ```
 
 ```bash
 curl -H "x-api-key: $PALLARES_LEADS_API_KEY" \
   "https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1/metadata"
+```
+
+```bash
+curl -H "x-api-key: $PALLARES_LEADS_API_KEY" \
+  "https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1/usage"
 ```
 
 ```ts
@@ -162,7 +210,7 @@ export async function pullPallaresLeads(cursor?: string) {
 
   const response = await fetch(url, {
     headers: {
-      Authorization: `Bearer ${process.env.PALLARES_LEADS_API_KEY}`,
+      "x-api-key": process.env.PALLARES_LEADS_API_KEY!,
     },
   });
 
@@ -177,10 +225,10 @@ export async function pullPallaresLeads(cursor?: string) {
 
 ## Lead Data
 
-Lead list responses include the fields Ben needs to ingest and display leads:
+Lead list responses include the fields partners need to ingest and display leads:
 lead id, lead type, business name, category, market, address, website, Google
 Maps URL, callable phone, best contact, score, confidence, verification level,
-fit/urgency copy, need signals, talking points, and enrichment timestamps.
+fit/urgency copy and enrichment timestamps.
 
 Lead detail responses include the list fields plus site contacts, evidence
 URLs, grouped fact summaries, score breakdown, coordinates, and relevant notes.
@@ -192,40 +240,8 @@ request. If `limit` is omitted, the API returns up to 100 leads per request.
 The largest allowed batch is 500 leads per request.
 
 The default rate limit is 60 requests per minute, with a 10,000-lead daily sync
-budget per key.
-
-## Lead eligibility (`partner_leads_v1`)
-
-Only leads that pass all of the following appear in `/leads` list or detail responses:
-
-| Rule | Requirement |
-|------|-------------|
-| Enriched | `enrichment_status = enriched` and `enriched_json` present |
-| Confidence | not `Low` |
-| Verification | `verification_level` is `verified` or `partial` |
-| Callable phone | `best_contact_phone` or `main_phone` is non-empty |
-
-Leads that fail any rule are omitted from sync. A `404` on detail usually means the
-lead exists in CRM but is not partner-eligible yet.
-
-## Alternate auth header
-
-In addition to `Authorization: Bearer ppl_...`, clients may send:
-
-```http
-x-api-key: ppl_...
-```
+budget per key. Inspect remaining budget via `GET /usage`.
 
 ## OpenAPI
 
 Machine-readable contract: `docs/partner-api.openapi.yaml`.
-
-## Error shape
-
-Failed requests return JSON:
-
-```json
-{ "error": { "code": "invalid_api_key", "message": "The partner API key is invalid." } }
-```
-
-Rate-limited responses include a `Retry-After` header (seconds).

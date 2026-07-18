@@ -9,7 +9,11 @@ import {
   type PipelineCostEvent,
   type PipelineTimelineEntry,
 } from "@/lib/pipeline/stages";
-import { useRunStream, type RunStreamCost } from "@/lib/pipeline/use-run-stream";
+import {
+  useRunStream,
+  type RunStreamCost,
+  type RunStreamInitial,
+} from "@/lib/pipeline/use-run-stream";
 
 export type PipelineStreamState = {
   events: JobEvent[];
@@ -88,13 +92,18 @@ export function computeStageActivity(
 
 export function usePipelineStream(
   runId: string | null,
-  options?: { enabled?: boolean; realtime?: boolean },
+  options?: {
+    enabled?: boolean;
+    realtime?: boolean;
+    initial?: RunStreamInitial | null;
+  },
 ): PipelineStreamState {
   const enabled = options?.enabled ?? true;
   const realtime = options?.realtime ?? true;
   const stream = useRunStream(runId, {
     enabled: enabled && Boolean(runId),
     pollWhileRunning: realtime,
+    initial: options?.initial,
   });
 
   const costs = useMemo(

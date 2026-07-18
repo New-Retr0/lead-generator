@@ -29,7 +29,7 @@ data/pallares.db
 data/.pipeline.lock
 data/evals/
 data/runs/
-dashboard/node_modules/
+**/node_modules/
 dashboard/.next/
 !.gitkeep
 
@@ -47,5 +47,7 @@ data/jobs/
 
 # Local agent/dev run artifacts
 .codex-run-logs/
+dashboard/playwright-report/
+dashboard/test-results/
 
 .vercel

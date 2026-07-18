@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -14,10 +15,15 @@ import psycopg
 
 from pallares_leads.db.local_cache import LocalCache
 from pallares_leads.db.pg import PgAdapter, connect, parse_json_field
+from pallares_leads.enrich.contact_requirements import has_verified_named_decision_maker
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead
+from pallares_leads.settings import get_settings
 from pallares_leads.utils.normalize import normalize_entity_name
 
 logger = logging.getLogger(__name__)
+
+# Re-enrich unverified / non-DM leads after this many days even when skip_known=True.
+SKIP_KNOWN_QUALITY_TTL_DAYS = 14
 
 SCHEMA_VERSION = 5
 
@@ -63,8 +69,6 @@ class LeadStore:
     """Postgres ledger for processed leads and run history (Supabase)."""
 
     def __init__(self, db_url: str | Path | None = None) -> None:
-        from pallares_leads.settings import get_settings
-
         settings = get_settings()
         if isinstance(db_url, Path):
             raise ValueError(
@@ -105,6 +109,67 @@ class LeadStore:
         ).fetchone()
         return row is not None
 
+    @staticmethod
+    def _parse_enriched_ts(raw: Any) -> datetime | None:
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            return raw if raw.tzinfo else raw.replace(tzinfo=UTC)
+        try:
+            parsed = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+
+    @staticmethod
+    def _verification_level(row: Any) -> str:
+        payload = row["enriched_json"] if "enriched_json" in row.keys() else None
+        if not payload:
+            return ""
+        try:
+            data = parse_json_field(payload) if not isinstance(payload, dict) else payload
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return ""
+        if isinstance(data, dict):
+            return str(data.get("verification_level") or "").lower()
+        return ""
+
+    @staticmethod
+    def _row_is_researched_miss(row: Any) -> bool:
+        """True when enrichment finished without a verified DM (do not re-spend)."""
+        status = str(row["enrichment_status"] or "").lower()
+        if status in {"skipped", "needs_manual"}:
+            return True
+        # Historical triage inventory: fully enriched but still unverified.
+        if status == "enriched" and LeadStore._verification_level(row) == "unverified":
+            return True
+        return False
+
+    @staticmethod
+    def _row_is_quality_complete(row: Any) -> bool:
+        """Skip forever for verified DMs or recorded researched misses."""
+        status = str(row["enrichment_status"] or "").lower()
+        if status in {"", "discovered", "partial", "failed", "needs_research", "enriching"}:
+            return False
+        if LeadStore._row_is_researched_miss(row):
+            return True
+        payload = row["enriched_json"] if "enriched_json" in row.keys() else None
+        if not payload:
+            return False
+        try:
+            data = parse_json_field(payload) if not isinstance(payload, dict) else payload
+            if not isinstance(data, dict):
+                return False
+            enriched = EnrichedLead.model_validate(data)
+            return has_verified_named_decision_maker(enriched)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+    def _researched_miss_reopen_days(self) -> int:
+        return int(get_settings().researched_miss_reopen_days)
+
     def should_skip(
         self,
         place_id: str,
@@ -117,24 +182,39 @@ class LeadStore:
             return False
 
         row = self._conn.execute(
-            "SELECT last_enriched_at FROM leads WHERE place_id = ?",
+            """
+            SELECT last_enriched_at, enrichment_status, enriched_json
+            FROM leads WHERE place_id = ?
+            """,
             (place_id,),
         ).fetchone()
         if row is None or not row["last_enriched_at"]:
             return False
 
-        if refresh_after_days is None:
+        last_enriched = self._parse_enriched_ts(row["last_enriched_at"])
+        if last_enriched is None:
+            return False
+
+        # Researched misses skip until reopen window — then allow re-enrich.
+        if self._row_is_researched_miss(row):
+            reopen_days = self._researched_miss_reopen_days()
+            reopen_cutoff = _utc_now() - timedelta(days=reopen_days)
+            if last_enriched < reopen_cutoff:
+                return False
             return True
 
-        last_raw = row["last_enriched_at"]
-        if isinstance(last_raw, datetime):
-            last_enriched = last_raw if last_raw.tzinfo else last_raw.replace(tzinfo=UTC)
-        else:
-            last_enriched = datetime.fromisoformat(str(last_raw))
-            if last_enriched.tzinfo is None:
-                last_enriched = last_enriched.replace(tzinfo=UTC)
-        cutoff = _utc_now() - timedelta(days=refresh_after_days)
-        return last_enriched >= cutoff
+        quality_ok = self._row_is_quality_complete(row)
+        ttl_days = refresh_after_days
+        if ttl_days is None:
+            if quality_ok:
+                return True
+            ttl_days = SKIP_KNOWN_QUALITY_TTL_DAYS
+
+        cutoff = _utc_now() - timedelta(days=ttl_days)
+        # Re-enrich when outside TTL; never skip forever on incomplete quality.
+        if last_enriched < cutoff:
+            return False
+        return quality_ok
 
     def filter_new_leads(
         self,
@@ -153,31 +233,30 @@ class LeadStore:
         placeholders = ",".join("?" * len(ids))
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT place_id, last_enriched_at FROM leads WHERE place_id IN ({placeholders})",
+                f"""
+                SELECT place_id, last_enriched_at, enrichment_status, enriched_json
+                FROM leads WHERE place_id IN ({placeholders})
+                """,
                 ids,
             ).fetchall()
-        known = {str(row["place_id"]): row["last_enriched_at"] for row in rows}
+        known = {str(row["place_id"]): row for row in rows}
 
         kept: list[RawLead] = []
         skipped = 0
-        cutoff = (
-            _utc_now() - timedelta(days=refresh_after_days)
-            if refresh_after_days is not None
-            else None
-        )
         for lead in leads:
-            last = known.get(lead.place_id)
-            if not last:
+            row = known.get(lead.place_id)
+            if row is None or not row["last_enriched_at"]:
                 kept.append(lead)
                 continue
-            if refresh_after_days is None:
+            if self.should_skip(
+                lead.place_id,
+                skip_known=True,
+                force_refresh=False,
+                refresh_after_days=refresh_after_days,
+            ):
                 skipped += 1
-                continue
-            last_enriched = datetime.fromisoformat(last)
-            if cutoff is not None and last_enriched < cutoff:
-                kept.append(lead)
             else:
-                skipped += 1
+                kept.append(lead)
         return kept, skipped
 
     def touch_discovered(
@@ -227,6 +306,7 @@ class LeadStore:
         run_id: str,
         csv_path: str | None = None,
         profile_key: str | None = None,
+        mgmt_profile_key: str | None = None,
         credits_total: int | None = None,
         lead_score: int | None = None,
         request_id: str | None = None,
@@ -234,6 +314,30 @@ class LeadStore:
         now = _iso(_utc_now())
         enriched_json = lead.model_dump(mode="json")
         score = lead_score if lead_score is not None else lead.lead_score
+        # Stamp last_enriched_at for finished work — including researched misses (SKIPPED)
+        # so skip_known will not re-spend. Discover-only / in-flight stay unstamped.
+        enrichment_completed = lead.investigation_status in {
+            InvestigationStatus.ENRICHED,
+            InvestigationStatus.SKIPPED,
+            InvestigationStatus.NEEDS_MANUAL,
+        }
+        last_enriched_at = now if enrichment_completed else None
+
+        existing = self.get_lead_row(lead.place_id)
+        if existing:
+            existing_cat = str(existing.get("category_key") or "")
+            new_is_vendor = category_key.startswith("vendor_")
+            old_is_vendor = existing_cat.startswith("vendor_")
+            # Vendor overwrite guard: never replace a client target with a vendor row (or reverse).
+            if old_is_vendor != new_is_vendor and existing.get("enriched_json"):
+                logger.info(
+                    "Skipping upsert for %s — vendor/client category mismatch (%s → %s)",
+                    lead.place_id,
+                    existing_cat,
+                    category_key,
+                )
+                return
+
         with self._lock:
             self._conn.execute(
                 """
@@ -241,21 +345,22 @@ class LeadStore:
                     place_id, business_name, market_key, category_key, city,
                     first_seen_at, last_seen_at, last_enriched_at, last_run_id,
                     enrichment_status, confidence, source_tool, csv_path, profile_key,
-                    enriched_json, credits_total, lead_score, request_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    mgmt_profile_key, enriched_json, credits_total, lead_score, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(place_id) DO UPDATE SET
                     business_name = excluded.business_name,
                     market_key = excluded.market_key,
                     category_key = excluded.category_key,
                     city = excluded.city,
                     last_seen_at = excluded.last_seen_at,
-                    last_enriched_at = excluded.last_enriched_at,
+                    last_enriched_at = COALESCE(excluded.last_enriched_at, leads.last_enriched_at),
                     last_run_id = excluded.last_run_id,
                     enrichment_status = excluded.enrichment_status,
                     confidence = excluded.confidence,
                     source_tool = excluded.source_tool,
                     csv_path = COALESCE(excluded.csv_path, leads.csv_path),
                     profile_key = COALESCE(excluded.profile_key, leads.profile_key),
+                    mgmt_profile_key = COALESCE(excluded.mgmt_profile_key, leads.mgmt_profile_key),
                     enriched_json = excluded.enriched_json,
                     credits_total = COALESCE(excluded.credits_total, leads.credits_total),
                     lead_score = COALESCE(excluded.lead_score, leads.lead_score),
@@ -269,13 +374,14 @@ class LeadStore:
                     lead.city,
                     now,
                     now,
-                    now,
+                    last_enriched_at,
                     run_id,
                     lead.investigation_status.value,
                     lead.confidence.value,
                     lead.source_tool,
                     csv_path,
                     profile_key,
+                    mgmt_profile_key,
                     enriched_json,
                     credits_total,
                     score,
@@ -284,6 +390,87 @@ class LeadStore:
             )
             self._conn.commit()
 
+    def release_enrichment_claim(
+        self, place_id: str, *, status: str = "partial"
+    ) -> None:
+        """Clear a stuck ``enriching`` claim so a later run can retry the place."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    UPDATE leads
+                    SET enrichment_status = ?
+                    WHERE place_id = ?
+                      AND lower(COALESCE(enrichment_status, '')) = 'enriching'
+                    """,
+                    (status, place_id),
+                )
+                self._conn.commit()
+            except Exception:
+                try:
+                    self._raw_conn.rollback()
+                except Exception:
+                    pass
+                logger.debug(
+                    "release_enrichment_claim failed for %s", place_id, exc_info=True
+                )
+
+    def claim_place_for_enrichment(self, place_id: str, *, run_id: str) -> bool:
+        """Atomically claim a place for enrichment so parallel workers don't double-spend.
+
+        Single UPDATE is the source of truth (workers use separate LeadStore connections,
+        so a SELECT-then-branch race is not safe). Same-run workers lose when another
+        already set ``enriching``. Missing rows return False — callers must
+        ``touch_discovered`` first.
+
+        Refuses claims once the run is no longer ``running`` so pool workers that
+        outlive ``finish_run`` (``shutdown(wait=False)``) cannot re-stick
+        ``enrichment_status='enriching'``.
+        """
+        now = _iso(_utc_now())
+        # Crash/kill mid-enrich leaves enrichment_status='enriching' forever.
+        # Reclaim claims older than 15 minutes so later runs are not blocked.
+        stale_before = _iso(_utc_now() - timedelta(minutes=15))
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE leads
+                SET enrichment_status = 'enriching', last_run_id = ?, last_seen_at = ?
+                WHERE place_id = ?
+                  AND (
+                    lower(COALESCE(enrichment_status, '')) <> 'enriching'
+                    OR COALESCE(last_seen_at, '1970-01-01') < ?
+                  )
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM runs WHERE run_id = ?)
+                    OR EXISTS (
+                      SELECT 1 FROM runs
+                      WHERE run_id = ? AND status = 'running'
+                    )
+                  )
+                """,
+                (run_id, now, place_id, stale_before, run_id, run_id),
+            )
+            self._conn.commit()
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
+
+    def _release_enriching_claims_for_run(self, run_id: str) -> None:
+        """Clear stuck ``enriching`` rows left when a run dies mid-flight."""
+        try:
+            self._conn.execute(
+                """
+                UPDATE leads
+                SET enrichment_status = 'partial'
+                WHERE last_run_id = ?
+                  AND lower(COALESCE(enrichment_status, '')) = 'enriching'
+                """,
+                (run_id,),
+            )
+        except Exception:
+            logger.debug(
+                "release enriching claims failed for run %s", run_id, exc_info=True
+            )
+
     def start_run(
         self,
         *,
@@ -291,14 +478,21 @@ class LeadStore:
         market_key: str | None = None,
         category_key: str | None = None,
         campaign_key: str | None = None,
+        job_id: str | None = None,
+        request_id: str | None = None,
     ) -> str:
         run_id = str(uuid.uuid4())
+        resolved_job_id = job_id if job_id is not None else os.environ.get("PALLARES_JOB_ID")
+        resolved_request_id = (
+            request_id if request_id is not None else os.environ.get("PALLARES_REQUEST_ID")
+        )
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO runs (
-                    run_id, started_at, run_type, market_key, category_key, campaign_key
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    run_id, started_at, run_type, market_key, category_key, campaign_key,
+                    job_id, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -307,6 +501,8 @@ class LeadStore:
                     market_key,
                     category_key,
                     campaign_key,
+                    resolved_job_id,
+                    resolved_request_id,
                 ),
             )
             self._conn.commit()
@@ -320,34 +516,273 @@ class LeadStore:
         skipped_known_count: int,
         enriched_count: int,
         status: str = "completed",
+        stop_reason: str | None = None,
+        stop_detail: str | None = None,
+        error: str | None = None,
+        duration_ms: int | None = None,
+        verified_dm_count: int | None = None,
+        partner_eligible_count: int | None = None,
+        grounding_rejections: int | None = None,
+        cache_hits: int | None = None,
+        playbook_hits: int | None = None,
+        owner_chain_attempts: int | None = None,
+        owner_chain_hits: int | None = None,
+        owner_chain_reuses: int | None = None,
+        job_id: str | None = None,
+        request_id: str | None = None,
     ) -> None:
-        params = (
+        set_parts = [
+            "finished_at = ?",
+            "discovered_count = ?",
+            "skipped_known_count = ?",
+            "enriched_count = ?",
+            "status = ?",
+        ]
+        params: list[Any] = [
             _iso(_utc_now()),
             discovered_count,
             skipped_known_count,
             enriched_count,
             status,
-            run_id,
+        ]
+        optional: list[tuple[str, Any]] = [
+            ("stop_reason", stop_reason),
+            ("stop_detail", stop_detail),
+            ("error", error),
+            ("duration_ms", duration_ms),
+            ("verified_dm_count", verified_dm_count),
+            ("partner_eligible_count", partner_eligible_count),
+            ("grounding_rejections", grounding_rejections),
+            ("cache_hits", cache_hits),
+            ("playbook_hits", playbook_hits),
+            ("owner_chain_attempts", owner_chain_attempts),
+            ("owner_chain_hits", owner_chain_hits),
+            ("owner_chain_reuses", owner_chain_reuses),
+            ("job_id", job_id),
+            ("request_id", request_id),
+        ]
+        for column, value in optional:
+            if value is not None:
+                set_parts.append(f"{column} = ?")
+                params.append(value)
+        params.append(run_id)
+        # Only transition running → terminal. Cancel/repair/orphan sweeps must win
+        # over a late CLI finish_run (and vice versa must not resurrect terminals).
+        sql = (
+            f"UPDATE runs SET {', '.join(set_parts)} "
+            "WHERE run_id = ? AND status = 'running'"
         )
-        sql = """
-            UPDATE runs SET
-                finished_at = ?,
-                discovered_count = ?,
-                skipped_known_count = ?,
-                enriched_count = ?,
-                status = ?
-            WHERE run_id = ?
-        """
         with self._lock:
             try:
-                self._conn.execute(sql, params)
+                cur = self._conn.execute(sql, tuple(params))
                 self._conn.commit()
             except Exception:
                 # A prior write can leave psycopg in InFailedSqlTransaction; recover
                 # so exception handlers can still mark the run terminal.
                 self._raw_conn.rollback()
-                self._conn.execute(sql, params)
+                cur = self._conn.execute(sql, tuple(params))
                 self._conn.commit()
+            rowcount = int(getattr(cur, "rowcount", 0) or 0)
+            if rowcount == 0:
+                row = self._conn.execute(
+                    "SELECT status FROM runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError(f"finish_run affected 0 rows for run_id={run_id}")
+                logger.debug(
+                    "finish_run skipped for %s — already terminal (%s)",
+                    run_id,
+                    row["status"],
+                )
+                self._release_enriching_claims_for_run(run_id)
+                try:
+                    self._conn.commit()
+                except Exception:
+                    pass
+                return
+            self._release_enriching_claims_for_run(run_id)
+            try:
+                self._conn.commit()
+            except Exception:
+                logger.debug(
+                    "post-finish claim release commit failed for %s",
+                    run_id,
+                    exc_info=True,
+                )
+
+    def close_orphaned_job_runs(
+        self,
+        job_id: str | None,
+        *,
+        stop_reason: str = "orphaned",
+    ) -> int:
+        """Force-terminal any still-running rows for a parent job (campaign cell advance)."""
+        if not job_id:
+            return 0
+        with self._lock:
+            try:
+                open_rows = self._conn.execute(
+                    """
+                    SELECT run_id FROM runs
+                    WHERE job_id = ? AND status = 'running'
+                    """,
+                    (job_id,),
+                ).fetchall()
+                run_ids = [str(r["run_id"]) for r in open_rows]
+                if not run_ids:
+                    return 0
+                now = _iso(_utc_now())
+                for rid in run_ids:
+                    snap = self.run_progress_snapshot(rid)
+                    self._conn.execute(
+                        """
+                        UPDATE runs
+                        SET status = 'failed',
+                            finished_at = COALESCE(finished_at, ?),
+                            stop_reason = COALESCE(NULLIF(stop_reason, ''), ?),
+                            discovered_count = CASE
+                                WHEN COALESCE(discovered_count, 0) = 0
+                                THEN ? ELSE discovered_count END,
+                            skipped_known_count = CASE
+                                WHEN COALESCE(skipped_known_count, 0) = 0
+                                THEN ? ELSE skipped_known_count END,
+                            enriched_count = CASE
+                                WHEN COALESCE(enriched_count, 0) = 0
+                                THEN ? ELSE enriched_count END
+                        WHERE run_id = ?
+                          AND status = 'running'
+                        """,
+                        (
+                            now,
+                            stop_reason,
+                            snap["discovered_count"],
+                            snap["skipped_known_count"],
+                            snap["enriched_count"],
+                            rid,
+                        ),
+                    )
+                    self._release_enriching_claims_for_run(rid)
+                self._conn.commit()
+                return len(run_ids)
+            except Exception:
+                try:
+                    self._raw_conn.rollback()
+                except Exception:
+                    pass
+                logger.debug(
+                    "close_orphaned_job_runs failed for job_id=%s", job_id, exc_info=True
+                )
+                return 0
+
+    def update_run_counters(
+        self,
+        run_id: str,
+        *,
+        discovered_count: int | None = None,
+        skipped_known_count: int | None = None,
+        enriched_count: int | None = None,
+    ) -> None:
+        """Patch live counters on a still-running row (does not finish the run)."""
+        set_parts: list[str] = []
+        params: list[Any] = []
+        if discovered_count is not None:
+            set_parts.append("discovered_count = ?")
+            params.append(discovered_count)
+        if skipped_known_count is not None:
+            set_parts.append("skipped_known_count = ?")
+            params.append(skipped_known_count)
+        if enriched_count is not None:
+            set_parts.append("enriched_count = ?")
+            params.append(enriched_count)
+        if not set_parts:
+            return
+        params.append(run_id)
+        sql = f"UPDATE runs SET {', '.join(set_parts)} WHERE run_id = ? AND status = 'running'"
+        with self._lock:
+            try:
+                self._conn.execute(sql, tuple(params))
+                self._conn.commit()
+            except Exception:
+                try:
+                    self._raw_conn.rollback()
+                    self._conn.execute(sql, tuple(params))
+                    self._conn.commit()
+                except Exception:
+                    logger.debug("update_run_counters failed for %s", run_id, exc_info=True)
+
+    def run_progress_snapshot(self, run_id: str) -> dict[str, int]:
+        """Best-effort counters from telemetry when a run dies mid-flight.
+
+        Used so exception finish_run does not wipe real discovered/enriched totals
+        with zeros.
+        """
+        discovered = 0
+        skipped_known = 0
+        try:
+            disc_row = self._conn.execute(
+                """
+                SELECT meta_json->>'count' AS c
+                FROM run_events
+                WHERE run_id = ?
+                  AND (
+                    meta_json->>'event' = 'discovery_done'
+                    OR stage = 'discovery'
+                  )
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if disc_row and disc_row["c"] not in (None, ""):
+                discovered = int(disc_row["c"])
+        except Exception:
+            logger.debug("run_progress_snapshot discovery lookup failed", exc_info=True)
+
+        try:
+            skip_row = self._conn.execute(
+                """
+                SELECT meta_json->>'skipped_known' AS s
+                FROM run_events
+                WHERE run_id = ?
+                  AND meta_json->>'skipped_known' IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if skip_row and skip_row["s"] not in (None, ""):
+                skipped_known = int(skip_row["s"])
+        except Exception:
+            logger.debug("run_progress_snapshot skipped_known lookup failed", exc_info=True)
+
+        # Only count places that finished in THIS run's event stream.
+        # Do not use leads.last_enriched_at — touch_discovered rewrites last_run_id
+        # and would inflate enriched_count with historical enrichment.
+        enriched = 0
+        try:
+            enr_row = self._conn.execute(
+                """
+                SELECT COUNT(DISTINCT place_id) AS n
+                FROM run_events
+                WHERE run_id = ?
+                  AND place_id IS NOT NULL
+                  AND (
+                    meta_json->>'event' = 'lead_done'
+                    OR stage IN ('lead_done', 'final')
+                  )
+                """,
+                (run_id,),
+            ).fetchone()
+            enriched = int(enr_row["n"]) if enr_row else 0
+        except Exception:
+            logger.debug("run_progress_snapshot lead_done lookup failed", exc_info=True)
+
+        return {
+            "discovered_count": discovered,
+            "skipped_known_count": skipped_known,
+            "enriched_count": enriched,
+        }
 
     def count_leads(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM leads").fetchone()
@@ -621,6 +1056,30 @@ class LeadStore:
                 ),
             )
 
+    @staticmethod
+    def _studio_stage_name(event: str, extra: dict[str, Any] | None) -> str:
+        """Canonical Pipeline Studio stage for the run_events.stage column."""
+        aliases = {
+            "scrape_json": "scrape",
+            "markdown": "scrape",
+            "gateway": "scrape",
+            "firecrawl_agent": "owner_chain",
+            "final": "lead_done",
+            "search": "website_resolve",
+            "search_contact": "tier2_search",
+            "discovery_done": "discovery",
+            "run_started": "discovery",
+            "run_done": "lead_done",
+        }
+        raw_stage = ""
+        if extra and isinstance(extra.get("stage"), str):
+            raw_stage = str(extra["stage"]).strip()
+        if event == "stage_done" and raw_stage:
+            return aliases.get(raw_stage, raw_stage)
+        if raw_stage and event in {"stage_done", "stage_started"}:
+            return aliases.get(raw_stage, raw_stage)
+        return aliases.get(event, event)
+
     def record_progress_event(
         self,
         *,
@@ -634,7 +1093,7 @@ class LeadStore:
         reason: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        """Persist one CLI JSON progress event for Supabase Realtime streaming."""
+        """Persist one CLI JSON progress event for Pipeline Studio + timelines."""
         skip_persist = event in {"heartbeat"}
         if skip_persist:
             return
@@ -651,28 +1110,44 @@ class LeadStore:
         if extra:
             meta.update(extra)
 
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO run_events (
-                    run_id, place_id, stage, ran, reason, credits_est,
-                    duration_ms, meta_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    place_id,
-                    event,
-                    ran,
-                    reason or "",
-                    int(credits or 0),
-                    duration_ms,
-                    meta,
-                    ts,
-                ),
-            )
-            self._conn.commit()
+        stage = self._studio_stage_name(event, extra)
 
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    INSERT INTO run_events (
+                        run_id, place_id, stage, ran, reason, credits_est,
+                        duration_ms, meta_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        place_id,
+                        stage,
+                        ran,
+                        reason or "",
+                        int(credits or 0),
+                        duration_ms,
+                        meta,
+                        ts,
+                    ),
+                )
+                self._conn.commit()
+        except Exception:
+            # Clear aborted transaction so later pipeline writes still succeed.
+            try:
+                self._raw_conn.rollback()
+            except Exception:
+                pass
+            # Never crash enrichment because a progress row failed (FK / transient).
+            logger.warning(
+                "record_progress_event failed run_id=%s event=%s stage=%s",
+                run_id,
+                event,
+                stage,
+                exc_info=True,
+            )
     def commit_events(self) -> None:
         with self._lock:
             self._conn.commit()
@@ -804,23 +1279,40 @@ class LeadStore:
         return float(row["total"] if row else 0.0)
 
     def repair_stuck_runs(self, *, older_than_hours: int = 24) -> int:
-        """Mark long-running runs as failed (dashboard cleanup)."""
+        """Mark long-running runs as failed and clear stuck enriching claims."""
         cutoff = _iso(_utc_now() - timedelta(hours=older_than_hours))
         with self._lock:
-            cur = self._conn.execute(
+            open_rows = self._conn.execute(
                 """
-                UPDATE runs SET status = 'failed', finished_at = ?
+                SELECT run_id FROM runs
                 WHERE status = 'running' AND started_at < ?
                 """,
-                (_iso(_utc_now()), cutoff),
-            )
+                (cutoff,),
+            ).fetchall()
+            run_ids = [str(r["run_id"]) for r in open_rows]
+            if not run_ids:
+                return 0
+            now = _iso(_utc_now())
+            for rid in run_ids:
+                self._conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'failed',
+                        finished_at = COALESCE(finished_at, ?),
+                        stop_reason = COALESCE(NULLIF(stop_reason, ''), 'stale')
+                    WHERE run_id = ?
+                      AND status = 'running'
+                    """,
+                    (now, rid),
+                )
+                self._release_enriching_claims_for_run(rid)
             self._conn.commit()
-            return cur.rowcount
+            return len(run_ids)
 
     def related_leads(self, place_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """Leads sharing owner entity, management domain, or website domain."""
         row = self._conn.execute(
-            "SELECT enriched_json, profile_key FROM leads WHERE place_id = ?",
+            "SELECT enriched_json, profile_key, mgmt_profile_key FROM leads WHERE place_id = ?",
             (place_id,),
         ).fetchone()
         if row is None:
@@ -838,6 +1330,11 @@ class LeadStore:
         website = enriched.get("website") or ""
         domain = registrable_domain(str(website)) if website else ""
         profile_key = row["profile_key"] or enriched.get("profile_key") or ""
+        mgmt_key = (
+            row["mgmt_profile_key"]
+            or enriched.get("mgmt_profile_key")
+            or (profile_key if str(profile_key).startswith("mgmt:") else "")
+        )
 
         owner_row = self._conn.execute(
             "SELECT owner_name_normalized FROM owner_records WHERE place_id = ?",
@@ -874,15 +1371,15 @@ class LeadStore:
                     }
                 )
 
-        if profile_key.startswith("mgmt:") and len(related) < limit:
+        if mgmt_key and len(related) < limit:
             rows = self._conn.execute(
                 """
-                SELECT place_id, business_name, city, profile_key
+                SELECT place_id, business_name, city, mgmt_profile_key, profile_key
                 FROM leads
-                WHERE profile_key = ? AND place_id != ?
+                WHERE (mgmt_profile_key = ? OR profile_key = ?) AND place_id != ?
                 LIMIT ?
                 """,
-                (profile_key, place_id, limit - len(related)),
+                (mgmt_key, mgmt_key, place_id, limit - len(related)),
             ).fetchall()
             for r in rows:
                 pid = str(r["place_id"])
@@ -895,7 +1392,7 @@ class LeadStore:
                         "business_name": r["business_name"],
                         "city": r["city"],
                         "relation": "same_manager",
-                        "detail": profile_key,
+                        "detail": mgmt_key,
                     }
                 )
 

@@ -3,17 +3,32 @@ info:
   title: Pallares Partner Lead API
   version: v1
   description: |
-    Read-only cursor-sync API for Pallares.us lead ingestion.
+    Cursor-sync Partner API for Pallares.us lead ingestion and structured feedback.
 
-    Authentication accepts either `Authorization: Bearer ppl_...` or `x-api-key: ppl_...`.
+    **Primary auth:** `x-api-key: ppl_...`  
+    **Also accepted:** `Authorization: Bearer ppl_...`
 
-    Leads are served from the `partner_leads_v1` view. A lead is eligible only when:
-    - `enrichment_status = enriched`
+    Leads are served exclusively from the `partner_leads_v1` view. A lead is eligible only when:
+    - `enrichment_status = enriched` and `enriched_json` is present
     - `confidence` is not `Low`
-    - `verification_level` is `verified` or `partial`
-    - a callable phone exists (`best_contact_phone` or `main_phone`)
+    - `lead_score >= 25` (current `min_export_score`)
+    - `is_verified_decision_maker(...)` is true — requires `verification_level = verified`
+      plus a grounded, non-placeholder name + decision-maker role + local non-toll-free phone
 
-    Leads missing any of the above are excluded from list/detail responses.
+    Partial verification and Google mainline-only phones are **not** partner-eligible.
+    `primary_phone` is a locally callable `best_contact_phone` only (placeholders
+    such as `Not found` are null; never coalesced from Google `main_phone`).
+    Path `place_id` values may contain slashes (e.g. `places/ChIJ...`); URL-encode them
+    (`places%2FChIJ...`) or pass the unencoded multi-segment path — both are accepted.
+
+    **Idempotency:** POST `/leads/{place_id}/outcome`, `/leads/{place_id}/touches`, and
+    `/feedback/batch` accept an optional `Idempotency-Key` header. Successful responses
+    are stored per partner key and returned on replay.
+
+    ## Roadmap
+
+    `POST /orders` and `POST /webhooks` are OpenAPI stubs only (`x-stability: experimental`).
+    They are not implemented in v1.
 servers:
   - url: https://aufbppdxjybopacabsbk.supabase.co/functions/v1/partner-api/v1
     description: Production Edge Function
@@ -49,6 +64,20 @@ paths:
                 $ref: "#/components/schemas/MetadataResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /usage:
+    get:
+      summary: Per-key usage and remaining budget (requires leads:read)
+      responses:
+        "200":
+          description: Rate and daily row usage for the calling key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /leads:
     get:
       summary: List leads (cursor sync)
@@ -94,11 +123,7 @@ paths:
     get:
       summary: Lead detail
       parameters:
-        - in: path
-          name: place_id
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/PlaceId"
       responses:
         "200":
           description: Eligible lead detail
@@ -112,28 +137,45 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
-  /leads/{place_id}/outcome:
+  /leads/{place_id}/eligibility:
     get:
-      summary: Read structured outcome (requires leads:feedback)
+      summary: Eligibility debug for a place_id (requires leads:read)
+      description: |
+        Explains why a lead is or is not present in `partner_leads_v1`.
+        Does not reintroduce partial/mainline eligibility into list/detail.
       parameters:
-        - in: path
-          name: place_id
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/PlaceId"
       responses:
         "200":
-          description: Current outcome
+          description: Gate breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EligibilityResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /leads/{place_id}/outcome:
+    get:
+      summary: Read this key's structured outcome (requires leads:feedback)
+      description: Returns only the outcome posted by the calling partner API key.
+      parameters:
+        - $ref: "#/components/parameters/PlaceId"
+      responses:
+        "200":
+          description: Current outcome for this key
         "404":
           $ref: "#/components/responses/NotFound"
     post:
-      summary: Upsert structured outcome (requires leads:feedback)
+      summary: Upsert this key's structured outcome (requires leads:feedback)
+      description: |
+        Writes to `partner_lead_outcomes` scoped by `(place_id, partner_key_id)`.
+        Does not overwrite other partners. Learning aggregation still collapses
+        partner + CRM outcomes in `lead_labels`.
       parameters:
-        - in: path
-          name: place_id
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/PlaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -147,11 +189,7 @@ paths:
     get:
       summary: List touches posted by this API key (requires leads:feedback)
       parameters:
-        - in: path
-          name: place_id
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/PlaceId"
         - in: query
           name: limit
           schema:
@@ -163,11 +201,8 @@ paths:
     post:
       summary: Log a touch (requires leads:feedback)
       parameters:
-        - in: path
-          name: place_id
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/PlaceId"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -180,6 +215,8 @@ paths:
   /feedback/batch:
     post:
       summary: Batch outcome/touch sync (requires leads:feedback, max 100)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -192,16 +229,57 @@ paths:
       responses:
         "200":
           description: Batch results
+  /orders:
+    post:
+      summary: Lead request orders (roadmap stub)
+      description: |
+        Not implemented in v1. Reserved for future partner lead-request ordering.
+        See Roadmap section — x-stability: experimental.
+      x-stability: experimental
+      responses:
+        "501":
+          description: Not implemented
+  /webhooks:
+    post:
+      summary: Webhook registration (roadmap stub)
+      description: |
+        Not implemented in v1. Reserved for future new-lead push webhooks.
+        See Roadmap section — x-stability: experimental.
+      x-stability: experimental
+      responses:
+        "501":
+          description: Not implemented
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: ppl_
     apiKeyAuth:
       type: apiKey
       in: header
       name: x-api-key
+      description: Preferred partner authentication header (`ppl_...`)
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: ppl_
+      description: Compatibility alternative to x-api-key
+  parameters:
+    PlaceId:
+      in: path
+      name: place_id
+      required: true
+      schema:
+        type: string
+      description: |
+        Lead place id. May contain slashes (Google Places resource name). Prefer
+        URL-encoding (`encodeURIComponent`) when building clients.
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      schema:
+        type: string
+      description: |
+        Optional. On successful POST outcome/touches/batch, the response is stored
+        per partner key and returned unchanged on replay with the same key.
   schemas:
     ApiError:
       type: object
@@ -252,6 +330,65 @@ components:
             mode:
               type: string
               enum: [forward-only]
+    UsageResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            partner_name:
+              type: string
+            scopes:
+              type: array
+              items:
+                type: string
+            rate_limit_per_minute:
+              type: integer
+            requests_last_minute:
+              type: integer
+            requests_remaining_minute:
+              type: integer
+            daily_row_limit:
+              type: integer
+            rows_today:
+              type: integer
+            rows_remaining_today:
+              type: integer
+        meta:
+          type: object
+    EligibilityResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            place_id:
+              type: string
+            eligible:
+              type: boolean
+            in_partner_leads_v1:
+              type: boolean
+            gates:
+              type: object
+              properties:
+                enriched:
+                  type: boolean
+                confidence_not_low:
+                  type: boolean
+                score_gte_min_export:
+                  type: boolean
+                verified_decision_maker:
+                  type: boolean
+            failures:
+              type: array
+              items:
+                type: string
+            notes:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
     LeadListItem:
       type: object
       properties:
@@ -273,9 +410,14 @@ components:
         primary_phone:
           type: string
           nullable: true
+          description: >
+            Atomic DM phone (`best_contact_phone` only when locally callable).
+            Placeholder sentinels such as `Not found` are null. Never coalesced
+            from Google `main_phone`.
         verification_level:
           type: string
-          enum: [verified, partial]
+          enum: [verified]
+          description: Partner-eligible leads are verified only (partial excluded)
         updated_at:
           type: string
           format: date-time
@@ -427,5 +569,5 @@ components:
           schema:
             $ref: "#/components/schemas/ApiError"
 security:
-  - bearerAuth: []
   - apiKeyAuth: []
+  - bearerAuth: []

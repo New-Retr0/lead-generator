@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listFilterOptions, listLeads } from "@/lib/db";
+import type { InventoryMode } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+function parseInventoryMode(raw: string | null): InventoryMode {
+  if (raw === "partial" || raw === "all_quality") return raw;
+  return "ready";
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -12,10 +18,10 @@ export async function GET(req: NextRequest) {
       status: params.get("status") || undefined,
       crmStatus: params.get("crmStatus") || undefined,
       type: params.get("type") || undefined,
+      inventoryMode: parseInventoryMode(params.get("inventory")),
       minScore: params.has("minScore")
         ? Number(params.get("minScore"))
         : undefined,
-      dudsOnly: params.get("dudsOnly") === "1",
       limit: params.has("limit") ? Number(params.get("limit")) : 500,
     });
     const filters = await listFilterOptions();

@@ -32,7 +32,6 @@ export type CampaignConfigState = {
   selectedCategories: string[];
   limit: number;
   discoverOnly: boolean;
-  maxCreditsPerRun: number | "";
 };
 
 type CampaignConfigDialogProps = {
@@ -166,30 +165,6 @@ export function CampaignConfigDialog({
                 className="font-mono tabular-nums"
               />
             </div>
-            <div className="space-y-2">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Label className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                    Max credits / run
-                  </Label>
-                </TooltipTrigger>
-                <TooltipContent>Per-run credit cap.</TooltipContent>
-              </Tooltip>
-              <Input
-                type="number"
-                min={1}
-                placeholder="auto"
-                value={config.maxCreditsPerRun}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  onChange({
-                    maxCreditsPerRun:
-                      raw === "" ? "" : Math.max(1, Math.floor(Number(raw) || 0)),
-                  });
-                }}
-                className="font-mono tabular-nums"
-              />
-            </div>
             <div className="flex flex-col justify-end gap-2 rounded-lg border border-border/40 px-3 py-2">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -197,7 +172,7 @@ export function CampaignConfigDialog({
                     Discovery only
                   </Label>
                 </TooltipTrigger>
-                <TooltipContent>No enrichment spend.</TooltipContent>
+                <TooltipContent>No research spend (discover only).</TooltipContent>
               </Tooltip>
               <Switch
                 id="discover-only"

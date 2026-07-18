@@ -1,8 +1,11 @@
+import {
+  firecrawlCreditUsdClient,
+  inferFirecrawlPlanClient,
+} from "./firecrawl-pricing";
 import type { CostBudget, CostDayRow, ProviderBalance } from "./types";
-import { inferPublicFirecrawlPlan, publicFirecrawlCreditUsd } from "./firecrawl-plans";
 
-/** Current default from config/pricing.yaml; UI can override using the live inferred plan. */
-export const FIRECRAWL_CREDIT_USD = publicFirecrawlCreditUsd();
+/** Client-safe default from Standard plan ($83 / 100k). Live UI prefers balance.creditUsd. */
+export const FIRECRAWL_CREDIT_USD = firecrawlCreditUsdClient();
 
 /** Labeled assumption only — never used as a silent plan-size default. */
 export const FIRECRAWL_PLAN_CREDITS_ASSUMED = 100_000;
@@ -76,7 +79,7 @@ export function buildCostBudget(
 
   const percentOfPlanUsed =
     usedThisCycle != null && plan > 0 ? (usedThisCycle / plan) * 100 : null;
-  const inferredPlan = inferPublicFirecrawlPlan({ planCredits: plan });
+  const inferredPlan = inferFirecrawlPlanClient({ planCredits: plan });
 
   return {
     planCredits: plan,

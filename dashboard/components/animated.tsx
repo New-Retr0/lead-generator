@@ -56,8 +56,61 @@ function toIntlFormat(format?: FormatProp): Intl.NumberFormatOptions {
   return inferFunctionFormat(format);
 }
 
+/**
+ * Never put `$` inside NumberFlow — its currency/symbol parts render
+ * as a small raised glyph. Sibling prefix inherits size/weight/baseline.
+ */
+function resolveNumberFlowFormat(format?: FormatProp): {
+  format: Intl.NumberFormatOptions;
+  prefix?: string;
+} {
+  const intl = toIntlFormat(format);
+  if (intl.style === "currency") {
+    return {
+      prefix: "$",
+      format: {
+        minimumFractionDigits: intl.minimumFractionDigits ?? 2,
+        maximumFractionDigits: intl.maximumFractionDigits ?? 2,
+        notation: intl.notation,
+        useGrouping: intl.useGrouping,
+      },
+    };
+  }
+  return { format: intl };
+}
+
 function climbTiming(seconds: number): EffectTiming {
   return { duration: Math.round(seconds * 1000), easing: "ease-out" };
+}
+
+function NumberFlowAmount({
+  value,
+  format,
+  className,
+  climbSeconds,
+}: {
+  value: number;
+  format?: FormatProp;
+  className?: string;
+  climbSeconds: number;
+}) {
+  const timing = climbTiming(climbSeconds);
+  const resolved = resolveNumberFlowFormat(format);
+  return (
+    <span className={cn("inline-flex items-baseline font-mono tabular-nums", className)}>
+      {resolved.prefix ? (
+        <span className="shrink-0 select-none text-[1em] leading-none">{resolved.prefix}</span>
+      ) : null}
+      <NumberFlow
+        value={value}
+        format={resolved.format as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
+        transformTiming={timing}
+        spinTiming={timing}
+        className="font-[inherit] text-[1em] leading-none tabular-nums"
+        willChange
+      />
+    </span>
+  );
 }
 
 export function AnimateNumber({
@@ -69,16 +122,8 @@ export function AnimateNumber({
   format?: FormatProp;
   className?: string;
 }) {
-  const timing = climbTiming(0.7);
   return (
-    <NumberFlow
-      value={value}
-      format={toIntlFormat(format) as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
-      transformTiming={timing}
-      spinTiming={timing}
-      className={cn("font-mono tabular-nums", className)}
-      willChange
-    />
+    <NumberFlowAmount value={value} format={format} className={className} climbSeconds={0.7} />
   );
 }
 
@@ -151,10 +196,7 @@ export function LiveDot({
   return (
     <span className={cn("relative inline-flex size-2", className)}>
       <span
-        className={cn(
-          "absolute inline-flex size-full rounded-full",
-          color,
-        )}
+        className={cn("absolute inline-flex size-full rounded-full", color)}
         style={{ animation: "ping-soft 1.6s cubic-bezier(0, 0, 0.2, 1) infinite" }}
       />
       <span className={cn("relative inline-flex size-2 rounded-full", color)} />
@@ -198,15 +240,12 @@ export function Odometer({
   className?: string;
   climbSeconds?: number;
 }) {
-  const timing = climbTiming(climbSeconds);
   return (
-    <NumberFlow
+    <NumberFlowAmount
       value={value}
-      format={toIntlFormat(format) as Intl.NumberFormatOptions & { notation?: "standard" | "compact" }}
-      transformTiming={timing}
-      spinTiming={timing}
-      className={cn("inline-flex font-mono tabular-nums", className)}
-      willChange
+      format={format}
+      className={className}
+      climbSeconds={climbSeconds}
     />
   );
 }

@@ -70,10 +70,6 @@ def compare_to_prior(
             "old": old_result.get("contact_phone") or "",
             "new": new_preview.get("phone") or "",
         }
-        diff["why_call"] = {
-            "old": old_result.get("pitch_angle") or "",
-            "new": new_preview.get("why_call") or "",
-        }
         diff["tier2_gate"] = {
             "old": "",
             "new": new_report.get("tier2_gate_reason", ""),

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import TYPE_CHECKING, Any
 
 from pallares_leads.config_loader import load_categories, load_markets
 from pallares_leads.costs import firecrawl_credit_usd, infer_firecrawl_plan, load_pricing
-from pallares_leads.enrich.ai_gateway_client import gateway_chat_completion, gateway_configured
-from pallares_leads.enrich.sales_copy import parse_json_from_llm
 from pallares_leads.request.spec import BudgetCap, CorridorFilter, LeadRequestSpec
 from pallares_leads.settings import Settings
 
@@ -16,85 +13,6 @@ if TYPE_CHECKING:
     from pallares_leads.db.store import LeadStore
 
 logger = logging.getLogger(__name__)
-
-PROMPT_VERSION = "lead_request_v1"
-
-SYSTEM_PROMPT = """You parse natural-language lead requests for a commercial exterior-cleaning
-lead pipeline in California's Central Valley.
-
-Map user synonyms to configured category keys (examples):
-- strip mall, retail plaza, shops -> strip_mall
-- shopping center -> shopping_center
-- parking lot, parking -> parking_small or parking_large_private
-- hotel, motel -> hotel
-- thrift, goodwill, habitat restore -> thrift_store
-- community center, shelter -> community_facility
-- amusement, entertainment venue -> amusement_facility
-- city, public works, municipal -> public_agency
-
-Map city names to configured market keys (lowercase slug): reedley, dinuba, selma,
-kingsburg, sanger, fresno, visalia.
-
-If a market or category cannot be mapped, add a human-readable note to needs_confirmation.
-
-Return JSON only with these fields:
-- target_kind: "property" or "vendor"
-- count: positive integer
-- categories: list of category key strings
-- market_keys: list of market key strings
-- corridor: null or {road_ref, buffer_m}
-- require_decision_maker: boolean
-- recurring_only: boolean
-- min_lead_score: integer 0-100
-- needs_confirmation: list of strings
-"""
-
-
-def _spec_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {
-            "target_kind": {"type": "string", "enum": ["property", "vendor"]},
-            "count": {"type": "integer", "minimum": 1, "maximum": 500},
-            "categories": {"type": "array", "items": {"type": "string"}},
-            "market_keys": {"type": "array", "items": {"type": "string"}},
-            "corridor": {
-                "anyOf": [
-                    {"type": "null"},
-                    {
-                        "type": "object",
-                        "properties": {
-                            "road_ref": {"type": "string"},
-                            "buffer_m": {"type": "integer"},
-                        },
-                        "required": ["road_ref"],
-                    },
-                ],
-            },
-            "require_decision_maker": {"type": "boolean"},
-            "recurring_only": {"type": "boolean"},
-            "min_lead_score": {"type": "integer", "minimum": 0, "maximum": 100},
-            "needs_confirmation": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": [
-            "count",
-            "categories",
-            "market_keys",
-            "require_decision_maker",
-            "recurring_only",
-            "min_lead_score",
-            "needs_confirmation",
-        ],
-    }
-
-
-def _build_context(settings: Settings) -> dict[str, list[str]]:
-    markets = load_markets(settings.config_dir)
-    categories = load_categories(settings.config_dir)
-    return {
-        "markets": sorted(markets.keys()),
-        "categories": sorted(categories.keys()),
-    }
 
 
 def _default_firecrawl_credit_cap(settings: Settings) -> int:
@@ -120,7 +38,7 @@ def _default_firecrawl_credit_cap(settings: Settings) -> int:
 
 
 def _fallback_spec(prompt: str, settings: Settings) -> LeadRequestSpec:
-    """Heuristic parser when AI Gateway is unavailable."""
+    """Heuristic NL parser (dashboard builder uses structured spec_from_dict)."""
     text = prompt.lower()
     markets = load_markets(settings.config_dir)
     categories = load_categories(settings.config_dir)
@@ -167,7 +85,7 @@ def _fallback_spec(prompt: str, settings: Settings) -> LeadRequestSpec:
         recurring_only=False,
         min_lead_score=40,
         budget=BudgetCap(max_firecrawl_credits=_default_firecrawl_credit_cap(settings)),
-        needs_confirmation=["Parsed without AI Gateway — review spec before running"],
+        needs_confirmation=["Heuristic parse — review spec before running"],
         raw_prompt=prompt,
     )
 
@@ -218,11 +136,7 @@ def spec_from_dict(
     settings: Settings,
     prompt: str = "",
 ) -> LeadRequestSpec:
-    """Build a validated spec from structured input (e.g. the dashboard builder).
-
-    Skips LLM parsing entirely; still validates market/category keys against
-    config and records unknown keys in needs_confirmation.
-    """
+    """Build a validated spec from structured input (e.g. the dashboard builder)."""
     return _dict_to_spec(data, prompt=prompt, settings=settings)
 
 
@@ -233,45 +147,10 @@ def parse_lead_request(
     store: LeadStore | None = None,
     request_id: str | None = None,
 ) -> LeadRequestSpec:
-    """Parse a natural-language lead request into a typed spec."""
-    if not gateway_configured(settings):
-        logger.warning("AI Gateway not configured — using heuristic request parser")
-        return _fallback_spec(prompt, settings)
-
-    context = _build_context(settings)
-    user_content = json.dumps(
-        {
-            "request": prompt,
-            "configured_markets": context["markets"],
-            "configured_categories": context["categories"],
-        },
-        ensure_ascii=False,
-    )
-
-    completion = gateway_chat_completion(
-        settings,
-        system_prompt=SYSTEM_PROMPT,
-        user_content=user_content,
-        store=store,
-        request_id=request_id,
-        operation="planner",
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "lead_request_spec",
-                "schema": _spec_schema(),
-                "strict": False,
-            },
-        },
-        prompt_version=PROMPT_VERSION,
-        temperature=0,
-    )
-    if not completion or not completion.content:
-        return _fallback_spec(prompt, settings)
-    parsed = parse_json_from_llm(completion.content)
-    if not parsed:
-        return _fallback_spec(prompt, settings)
-    return _dict_to_spec(parsed, prompt=prompt, settings=settings)
+    """Parse a natural-language lead request into a typed spec (heuristic)."""
+    del store, request_id  # reserved for future persistence / tracing
+    logger.info("Parsing lead request with heuristic planner")
+    return _fallback_spec(prompt, settings)
 
 
 def estimate_request_cost(spec: LeadRequestSpec) -> dict[str, float | int]:

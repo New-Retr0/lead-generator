@@ -1,4 +1,4 @@
-import { cancelJob, getJob, isValidJobId, loadPersistedJob } from "@/lib/jobs";
+import { cancelJob, getJob, isValidJobId, jobFirstSeq, loadPersistedJob } from "@/lib/jobs";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +15,11 @@ export async function GET(
   if (!job) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
-  return NextResponse.json({ job });
+  const firstSeq = jobFirstSeq(id);
+  return NextResponse.json({
+    job,
+    nextSeq: firstSeq + job.logs.length,
+  });
 }
 
 export async function DELETE(

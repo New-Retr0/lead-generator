@@ -12,8 +12,6 @@ SECRET_FIELDS = frozenset(
     {
         "google_places_api_key",
         "firecrawl_api_key",
-        "ai_gateway_api_key",
-        "browser_use_api_key",
         "supabase_anon_key",
         "supabase_service_role_key",
         "supabase_db_url",

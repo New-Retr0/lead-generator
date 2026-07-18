@@ -1,11 +1,21 @@
 "use client";
 
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import dynamic from "next/dynamic";
-import { useSearchParams } from "next/navigation";
-import { Phone, Search, ShieldAlert } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Phone, Search, ShieldAlert, User } from "lucide-react";
 import {
   SalesStatusBadge,
+  ScoreBadge,
   VerificationBadge,
 } from "@/components/badges";
 import { SectionHeading } from "@/components/console/section-heading";
@@ -20,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -29,7 +40,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { LeadRow, PipelineConfig } from "@/lib/types";
+import { apiFetch } from "@/lib/api-client";
+import type { InventoryMode, LeadRow, PipelineConfig } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const LeadDetailModal = dynamic(
   () => import("@/components/lead-detail-modal").then((m) => m.LeadDetailModal),
@@ -37,44 +50,63 @@ const LeadDetailModal = dynamic(
 );
 
 const ALL = "__all__";
+const TABLE_MIN_ROWS = 8;
 
-function triageReason(lead: LeadRow): string {
-  if (lead.verification_level === "unverified") return "Unverified contact";
-  if (lead.enrichment_status === "needs_manual") return "Needs manual review";
-  if (lead.confidence === "Low") return "Low confidence";
-  return "Needs attention";
-}
-
-function isTriageLead(lead: LeadRow): boolean {
-  return (
-    lead.verification_level === "unverified" ||
-    lead.enrichment_status === "needs_manual" ||
-    lead.confidence === "Low" ||
-    lead.enrichment_status === "unverified"
-  );
-}
+type DataTab = "all" | "vendors";
 
 type DataRowProps = {
   lead: LeadRow;
   categoryLabel: string;
-  tab: string;
   onOpen: (placeId: string) => void;
 };
 
 const DataTableRow = memo(function DataTableRow({
   lead,
   categoryLabel,
-  tab,
   onOpen,
 }: DataRowProps) {
   return (
     <TableRow
-      className="cursor-pointer transition-colors hover:bg-accent/25"
+      className="cursor-pointer transition-colors [content-visibility:auto] [contain-intrinsic-size:48px] hover:bg-accent"
       onClick={() => onOpen(lead.place_id)}
     >
       <TableCell>
         <p className="font-medium">{lead.business_name}</p>
         <p className="text-xs text-muted-foreground">{lead.city ?? "—"}</p>
+      </TableCell>
+      <TableCell>
+        {lead.phone ? (
+          <span className="flex items-center gap-1.5 font-mono text-sm tabular-nums">
+            <Phone className="size-3 text-muted-foreground" />
+            {lead.phone}
+          </span>
+        ) : (
+          <span className="text-sm text-muted-foreground">—</span>
+        )}
+      </TableCell>
+      <TableCell>
+        {lead.best_contact_name ? (
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 truncate text-sm font-medium">
+              <User className="size-3 shrink-0 text-muted-foreground" />
+              <span className="truncate">{lead.best_contact_name}</span>
+            </p>
+            {lead.best_contact_role ? (
+              <p className="truncate text-xs text-muted-foreground">{lead.best_contact_role}</p>
+            ) : null}
+          </div>
+        ) : (
+          <span className="text-sm text-muted-foreground">—</span>
+        )}
+      </TableCell>
+      <TableCell>
+        <VerificationBadge level={lead.verification_level} />
+      </TableCell>
+      <TableCell className="text-center">
+        <ScoreBadge score={lead.lead_score} />
+      </TableCell>
+      <TableCell>
+        <SalesStatusBadge status={lead.status} />
       </TableCell>
       <TableCell>
         <Badge variant={lead.lead_type === "vendor" ? "secondary" : "outline"}>
@@ -87,100 +119,199 @@ const DataTableRow = memo(function DataTableRow({
       <TableCell>
         <Badge variant="outline">{categoryLabel}</Badge>
       </TableCell>
-      <TableCell>
-        <VerificationBadge level={lead.verification_level} />
-      </TableCell>
-      {tab === "triage" ? (
-        <TableCell>
-          <Badge variant="outline">{triageReason(lead)}</Badge>
-        </TableCell>
-      ) : (
-        <TableCell>
-          <SalesStatusBadge status={lead.status} />
-        </TableCell>
-      )}
-      <TableCell>
-        {lead.phone ? (
-          <span className="flex items-center gap-1.5 font-mono text-sm tabular-nums">
-            <Phone className="size-3 text-muted-foreground" />
-            {lead.phone}
-          </span>
-        ) : (
-          <span className="text-sm text-muted-foreground">—</span>
-        )}
-      </TableCell>
     </TableRow>
   );
 });
 
+function TableShellRows({ count }: { count: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <TableRow key={`shell-${i}`} className="hover:bg-transparent">
+          <TableCell colSpan={9} className="h-12 p-0">
+            <span className="sr-only">Reserved row</span>
+          </TableCell>
+        </TableRow>
+      ))}
+    </>
+  );
+}
+
+function parseInventoryMode(raw: string | null): InventoryMode {
+  if (raw === "partial" || raw === "all_quality") return raw;
+  return "ready";
+}
+
+function parseDataTab(raw: string | null): DataTab {
+  return raw === "vendors" ? "vendors" : "all";
+}
+
+function parseMarketKey(raw: string | null, markets: PipelineConfig["markets"]): string {
+  if (!raw || raw === ALL) return ALL;
+  return markets.some((m) => m.key === raw) ? raw : ALL;
+}
+
 export function DataExplorer({
   initialLeads,
   config,
+  initialInventoryMode = "ready",
 }: {
   initialLeads: LeadRow[];
   config: PipelineConfig;
+  initialInventoryMode?: InventoryMode;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const initialTab = searchParams.get("tab") === "triage"
-    ? "triage"
-    : searchParams.get("tab") === "vendors"
-      ? "vendors"
-      : "all";
+  const urlTab = parseDataTab(searchParams.get("tab"));
+  const urlInventory = parseInventoryMode(searchParams.get("inventory"));
+  const urlMarket = parseMarketKey(searchParams.get("market"), config.markets);
+  const urlPlace = searchParams.get("place");
 
+  /** Server-filtered inventory; vendors/search/verification refine client-side. */
   const [leads, setLeads] = useState(initialLeads);
-  const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<"all" | "triage" | "vendors">(initialTab);
-  const [market, setMarket] = useState(ALL);
+  const [refreshing, setRefreshing] = useState(false);
+  const [tab, setTab] = useState<DataTab>(urlTab);
+  const [inventoryMode, setInventoryMode] = useState<InventoryMode>(
+    urlInventory || initialInventoryMode,
+  );
+  const [market, setMarket] = useState(urlMarket);
   const [category, setCategory] = useState(ALL);
   const [status, setStatus] = useState(ALL);
   const [verification, setVerification] = useState(ALL);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(urlPlace);
   const skipFilterFetch = useRef(true);
+  const requestId = useRef(0);
+  /** Tracks whether `leads` was fetched with type=vendor so All never shows a vendor-only cache. */
+  const fetchedScope = useRef<"all" | "vendor">(
+    urlTab === "vendors" ? "vendor" : "all",
+  );
+
+  /** Status/verification are implied by Ready/Partial inventory — keep selects out. */
+  const showQualityFilters = inventoryMode === "all_quality";
 
   const categoryLabelMap = useMemo(
     () => new Map(config.categories.map((c) => [c.key, c.label])),
     [config],
   );
 
+  const replaceParams = useCallback(
+    (mutate: (params: URLSearchParams) => void) => {
+      const params = new URLSearchParams(searchParams.toString());
+      mutate(params);
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
+  const onTabChange = useCallback(
+    (next: string) => {
+      const value: DataTab = next === "vendors" ? "vendors" : "all";
+      startTransition(() => setTab(value));
+      replaceParams((params) => {
+        if (value === "vendors") params.set("tab", "vendors");
+        else params.delete("tab");
+      });
+    },
+    [replaceParams],
+  );
+
+  const onInventoryChange = useCallback(
+    (mode: InventoryMode) => {
+      startTransition(() => {
+        setInventoryMode(mode);
+        // Ready/Partial already encode readiness — clear dead client filters.
+        if (mode !== "all_quality") {
+          setStatus(ALL);
+          setVerification(ALL);
+        }
+      });
+      replaceParams((params) => {
+        if (mode === "ready") params.delete("inventory");
+        else params.set("inventory", mode);
+      });
+    },
+    [replaceParams],
+  );
+
+  const onMarketChange = useCallback(
+    (value: string) => {
+      startTransition(() => setMarket(value));
+      replaceParams((params) => {
+        if (value === ALL) params.delete("market");
+        else params.set("market", value);
+      });
+    },
+    [replaceParams],
+  );
+
+  // Soft-nav / back-forward: keep client filters aligned with the URL.
+  useEffect(() => {
+    startTransition(() => {
+      setTab(urlTab);
+      setInventoryMode(urlInventory);
+      setMarket(urlMarket);
+      setDetailId(urlPlace);
+      if (urlInventory !== "all_quality") {
+        setStatus(ALL);
+        setVerification(ALL);
+      }
+    });
+  }, [urlTab, urlInventory, urlMarket, urlPlace]);
+
+  // Refetch for server-side filters including Vendors (type applied before LIMIT).
   useEffect(() => {
     if (skipFilterFetch.current) {
       skipFilterFetch.current = false;
       return;
     }
+    const id = ++requestId.current;
+    const wantScope: "all" | "vendor" = tab === "vendors" ? "vendor" : "all";
     let cancelled = false;
-    setLoading(true);
+    setRefreshing(true);
+    // Drop cross-scope cache immediately so All never flashes vendor-only rows.
+    if (fetchedScope.current !== wantScope) {
+      startTransition(() => setLeads([]));
+    }
     const params = new URLSearchParams();
-    if (tab === "vendors") params.set("type", "vendor");
-    if (tab === "triage") params.set("dudsOnly", "1");
+    if (wantScope === "vendor") params.set("type", "vendor");
     if (market !== ALL) params.set("market", market);
     if (category !== ALL) params.set("category", category);
-    if (status !== ALL) params.set("status", status);
+    if (showQualityFilters && status !== ALL) params.set("status", status);
+    params.set("inventory", inventoryMode);
     params.set("limit", "1000");
 
-    void fetch(`/api/leads?${params.toString()}`)
+    void apiFetch(`/api/leads?${params.toString()}`)
       .then((r) => r.json())
       .then((data: { leads?: LeadRow[] }) => {
-        if (!cancelled) setLeads(data.leads ?? []);
+        if (!cancelled && id === requestId.current) {
+          fetchedScope.current = wantScope;
+          startTransition(() => setLeads(data.leads ?? []));
+        }
       })
       .catch(() => {
-        if (!cancelled) setLeads([]);
+        if (!cancelled && id === requestId.current) {
+          fetchedScope.current = wantScope;
+          startTransition(() => setLeads([]));
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && id === requestId.current) setRefreshing(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [tab, market, category, status]);
+  }, [tab, market, category, status, inventoryMode, showQualityFilters]);
 
   const visible = useMemo(() => {
     let rows = leads;
-    if (tab === "triage") rows = rows.filter(isTriageLead);
+    // Server already scopes type=vendor; keep client filter as a safety net.
     if (tab === "vendors") rows = rows.filter((l) => l.lead_type === "vendor");
-    if (verification !== ALL) {
+    if (showQualityFilters && verification !== ALL) {
       rows = rows.filter((l) => (l.verification_level ?? "unverified") === verification);
     }
     const q = deferredSearch.trim().toLowerCase();
@@ -189,34 +320,85 @@ export function DataExplorer({
       (l) =>
         l.business_name.toLowerCase().includes(q) ||
         (l.city ?? "").toLowerCase().includes(q) ||
-        (l.phone ?? "").includes(q),
+        (l.phone ?? "").includes(q) ||
+        (l.best_contact_name ?? "").toLowerCase().includes(q),
     );
-  }, [leads, tab, verification, deferredSearch]);
+  }, [leads, tab, verification, deferredSearch, showQualityFilters]);
 
-  const openDetail = useCallback((placeId: string) => setDetailId(placeId), []);
+  const openDetail = useCallback(
+    (placeId: string) => {
+      setDetailId(placeId);
+      replaceParams((params) => {
+        params.set("place", placeId);
+      });
+    },
+    [replaceParams],
+  );
+
+  const closeDetail = useCallback(() => {
+    setDetailId(null);
+    replaceParams((params) => {
+      params.delete("place");
+    });
+  }, [replaceParams]);
+
+  const shellCount = Math.max(0, TABLE_MIN_ROWS - Math.max(visible.length, 1));
 
   return (
     <div className="space-y-6">
       <SectionHeading index="01" title="Lead Data Explorer" />
       <p className="font-mono text-xs tracking-[0.08em] text-muted-foreground">
-        Unified pipeline data — filter by market, category, verification, and status.
+        Default view is Ready DMs. Partial phone and all-quality modes are opt-in. Researched
+        misses stay hidden (skip_known).
       </p>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
-        <TabsList className="font-mono text-[10px] uppercase tracking-[0.12em]">
-          <TabsTrigger value="all">All</TabsTrigger>
-          <TabsTrigger value="triage">Triage</TabsTrigger>
-          <TabsTrigger value="vendors">Vendors</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="flex flex-wrap items-center gap-3">
+        <Tabs value={tab} onValueChange={onTabChange}>
+          <TabsList className="font-mono text-[10px] uppercase tracking-[0.12em]">
+            <TabsTrigger value="all" className="min-w-[4.5rem]">
+              All
+            </TabsTrigger>
+            <TabsTrigger value="vendors" className="min-w-[4.5rem]">
+              Vendors
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <div className="flex flex-wrap gap-1.5">
+          {(
+            [
+              ["ready", "Ready DMs"],
+              ["partial", "Partial phone"],
+              ["all_quality", "All quality"],
+            ] as const
+          ).map(([mode, label]) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onInventoryChange(mode)}
+              className={cn(
+                "rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors",
+                inventoryMode === mode
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground tabular-nums">
+          {visible.length} shown
+          {refreshing ? " · updating…" : ""}
+        </span>
+      </div>
 
-      <Card className="glass sticky top-14 z-10">
+      <Card className="panel sticky top-14 z-10 bg-card">
         <CardContent className="flex flex-wrap items-end gap-4 py-5">
           <div className="relative min-w-52 flex-1">
             <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               className="pl-8 font-mono text-sm"
-              placeholder="Search business, city, phone…"
+              placeholder="Search business, DM, city, phone…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -226,7 +408,7 @@ export function DataExplorer({
             <Label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
               Market
             </Label>
-            <Select value={market} onValueChange={setMarket}>
+            <Select value={market} onValueChange={onMarketChange}>
               <SelectTrigger className="w-36">
                 <SelectValue />
               </SelectTrigger>
@@ -260,68 +442,79 @@ export function DataExplorer({
             </Select>
           </div>
 
-          <div className="space-y-1.5">
-            <Label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              Status
-            </Label>
-            <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All statuses</SelectItem>
-                <SelectItem value="Ready to call">Ready to call</SelectItem>
-                <SelectItem value="Needs research">Needs research</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {showQualityFilters ? (
+            <>
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                  Status
+                </Label>
+                <Select value={status} onValueChange={setStatus}>
+                  <SelectTrigger className="w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>All statuses</SelectItem>
+                    <SelectItem value="Ready to call">Ready to call</SelectItem>
+                    <SelectItem value="Needs research">Needs research</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-          <div className="space-y-1.5">
-            <Label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              Verification
-            </Label>
-            <Select value={verification} onValueChange={setVerification}>
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All levels</SelectItem>
-                <SelectItem value="verified">Verified</SelectItem>
-                <SelectItem value="partial">Partial</SelectItem>
-                <SelectItem value="unverified">Unverified</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
+              <div className="space-y-1.5">
+                <Label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                  Verification
+                </Label>
+                <Select value={verification} onValueChange={setVerification}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>All levels</SelectItem>
+                    <SelectItem value="verified">Verified</SelectItem>
+                    <SelectItem value="partial">Partial</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          ) : null}
         </CardContent>
       </Card>
 
-      <Card className="glass min-w-0 !overflow-visible px-4 py-0">
-        <div className="overflow-x-auto">
+      <Card className="panel min-w-0 !overflow-visible px-4 py-0">
+        <div
+          className={cn(
+            "min-h-[28rem] overflow-x-auto transition-opacity duration-150",
+            refreshing && "opacity-70",
+          )}
+        >
           <Table>
             <TableHeader className="border-b border-border/50 bg-card [&_th]:bg-card [&_th]:font-mono [&_th]:text-[10px] [&_th]:uppercase [&_th]:tracking-[0.12em]">
               <TableRow className="hover:bg-transparent">
-                <TableHead>Business</TableHead>
-                <TableHead>Type</TableHead>
+                <TableHead className="min-w-[10rem]">Business</TableHead>
+                <TableHead className="min-w-[8rem]">Phone</TableHead>
+                <TableHead className="min-w-[10rem]">Decision maker</TableHead>
+                <TableHead>Verification</TableHead>
+                <TableHead className="w-16 text-center">Score</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-20">Type</TableHead>
                 <TableHead>Market</TableHead>
                 <TableHead>Category</TableHead>
-                <TableHead>Verification</TableHead>
-                <TableHead>{tab === "triage" ? "Why" : "Status"}</TableHead>
-                <TableHead>Phone</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center text-sm text-muted-foreground">
-                    Loading leads…
-                  </TableCell>
-                </TableRow>
-              ) : visible.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center">
+              {visible.length === 0 ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={9} className="h-40 text-center">
                     <ShieldAlert className="mx-auto mb-2 size-8 text-muted-foreground/50" />
-                    <p className="text-sm text-muted-foreground">No leads match these filters.</p>
+                    <p className="text-sm text-muted-foreground">
+                      {refreshing ? "Updating inventory…" : "No leads match these filters."}
+                    </p>
+                    {refreshing ? (
+                      <div className="mx-auto mt-4 max-w-sm space-y-2">
+                        <Skeleton className="h-3 w-full" />
+                        <Skeleton className="h-3 w-[80%]" />
+                      </div>
+                    ) : null}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -329,7 +522,6 @@ export function DataExplorer({
                   <DataTableRow
                     key={lead.place_id}
                     lead={lead}
-                    tab={tab}
                     categoryLabel={
                       categoryLabelMap.get(lead.category_key ?? "") ??
                       lead.category_key ??
@@ -339,12 +531,13 @@ export function DataExplorer({
                   />
                 ))
               )}
+              {shellCount > 0 ? <TableShellRows count={shellCount} /> : null}
             </TableBody>
           </Table>
         </div>
       </Card>
 
-      <LeadDetailModal placeId={detailId} onClose={() => setDetailId(null)} />
+      <LeadDetailModal placeId={detailId} onClose={closeDetail} />
     </div>
   );
 }

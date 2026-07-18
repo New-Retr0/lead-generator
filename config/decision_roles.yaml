@@ -1,0 +1,57 @@
+# Canonical decision-maker roles + junk patterns for Python, SQL, and dashboard TS.
+# After edits: `uv run python scripts/sync_decision_roles.py`
+
+decision_roles:
+  - owner
+  - property owner
+  - property_owner
+  - property manager
+  - property_manager
+  - facilities
+  - leasing
+  - portfolio
+  - registered agent
+  - registered_agent
+  - cre broker
+  - cre_broker
+  - broker
+  - principal
+  - director
+  - general manager
+  - maintenance
+  - landlord
+
+# Substrings that count as facilities/ops (override junk).
+facilities_role_patterns:
+  - facilit(y|ies)
+  - property\s*manager
+  - building\s*manager
+  - maintenance
+  - operations
+  - leasing
+  - owner
+  - portfolio
+  - general\s*manager
+  - director
+
+# Roles that are never decision-makers (reception / patient / front desk).
+junk_role_patterns:
+  - patient
+  - appointment
+  - scheduling
+  - nurse
+  - physician
+  - doctor
+  - clinical
+  - urgent\s*care
+  - reception
+  - receptionist
+  - front\s*desk
+  - medical\s*records
+  - billing
+  - customer\s*service
+  - support\s*desk
+  - info\s*desk
+  - concierge
+  - reservations?
+  - booking

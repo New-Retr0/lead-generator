@@ -64,7 +64,7 @@ Raw payloads (Places reviews, Firecrawl markdown, AI prompts) live in local `dat
 | `usd_total` | float | Estimated USD for this run/lead |
 | `enrich_duration_ms` | int | Wall time for enrichment |
 | `duration_ms_*` | int | Per-stage durations when available |
-| `model` | string | AI Gateway model id |
+| `model` | string | Optional model id (legacy; unused after Firecrawl scrape+JSON) |
 | `found_dow` | int | Weekday lead first seen (0=Mon) |
 | `found_hour` | int | Hour lead snapshot taken (UTC) |
 | `days_first_seen_to_enriched` | int | Days since discovery date |

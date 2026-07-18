@@ -12,9 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DB = ROOT / "data" / "pallares.db"
 
 ENV = {
-    "FIRECRAWL_MAX_CREDITS_PER_RUN": "600",
     "OWNER_CHAIN_MAX_PER_RUN": "3",
-    "LOOPNET_MAX_PER_RUN": "2",
 }
 
 STOP_CREDITS = 2800

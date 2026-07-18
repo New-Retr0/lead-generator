@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVisibilityInterval } from "@/hooks/use-visibility-interval";
 import { runEventRowToJobEvent } from "@/lib/run-events";
-import type { JobEvent } from "@/lib/types";
+import type { JobEvent, RunEventRow, RunStudioCostRow } from "@/lib/types";
 
 export type RunStreamCost = {
   id: number;
@@ -24,6 +25,11 @@ export type RunStreamState = {
   usdPerMinute: number;
   connected: boolean;
   loading: boolean;
+};
+
+export type RunStreamInitial = {
+  events?: RunEventRow[];
+  costs?: RunStudioCostRow[];
 };
 
 function eventKey(evt: JobEvent): string {
@@ -59,90 +65,168 @@ function mergeCosts(prev: RunStreamCost[], incoming: RunStreamCost[], seen: Set<
   return next;
 }
 
+function rowsToEvents(rows: RunEventRow[]): JobEvent[] {
+  return rows.map((row) =>
+    runEventRowToJobEvent({
+      id: row.id,
+      run_id: row.run_id,
+      place_id: row.place_id,
+      stage: row.stage,
+      ran: row.ran,
+      reason: row.reason,
+      credits_est: row.credits_est,
+      duration_ms: row.duration_ms,
+      meta_json: row.meta_json,
+      created_at: row.created_at,
+    }),
+  );
+}
+
+function rowsToCosts(rows: RunStudioCostRow[]): RunStreamCost[] {
+  return rows.map((row) => ({
+    id: row.id,
+    usd: row.usd,
+    provider: row.provider,
+    operation: row.operation,
+    model: row.model,
+    units: row.units,
+    unit_type: row.unit_type,
+    place_id: row.place_id,
+    meta_json: row.meta_json,
+    created_at: row.created_at,
+  }));
+}
+
 export function useRunStream(
   runId: string | null,
-  options?: { enabled?: boolean; pollWhileRunning?: boolean },
+  options?: {
+    enabled?: boolean;
+    pollWhileRunning?: boolean;
+    initial?: RunStreamInitial | null;
+  },
 ): RunStreamState {
   const enabled = options?.enabled ?? true;
   const pollWhileRunning = options?.pollWhileRunning ?? true;
-  const [events, setEvents] = useState<JobEvent[]>([]);
-  const [costs, setCosts] = useState<RunStreamCost[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(Boolean(runId && enabled));
+  const initial = options?.initial;
+
+  const initialEvents = useMemo(
+    () => (initial?.events?.length ? rowsToEvents(initial.events) : []),
+    // Seed once per runId — parent remounts panel with key=runId on navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional seed
+    [runId],
+  );
+  const initialCosts = useMemo(
+    () => (initial?.costs?.length ? rowsToCosts(initial.costs) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional seed
+    [runId],
+  );
+
+  const [events, setEvents] = useState<JobEvent[]>(initialEvents);
+  const [costs, setCosts] = useState<RunStreamCost[]>(initialCosts);
+  const [connected, setConnected] = useState(initialEvents.length > 0 || initialCosts.length > 0);
+  const [loading, setLoading] = useState(
+    Boolean(runId && enabled && initialEvents.length === 0 && initialCosts.length === 0),
+  );
   const [runStatus, setRunStatus] = useState<string | null>(null);
-  const seenEventKeys = useRef(new Set<string>());
-  const seenCostIds = useRef(new Set<number>());
+  const [terminalCatchUp, setTerminalCatchUp] = useState(0);
+  const seenEventKeys = useRef(new Set(initialEvents.map(eventKey)));
+  const seenCostIds = useRef(new Set(initialCosts.map((c) => c.id)));
+  const prevRunStatus = useRef<string | null>(null);
   const [windowStartMs, setWindowStartMs] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
 
-  const fetchStream = useMemo(
-    () => async () => {
-      if (!runId) return;
-      const [eventRes, costRes, runRes] = await Promise.all([
-        fetch(`/api/runs/${encodeURIComponent(runId)}/events`, { cache: "no-store" }),
-        fetch(`/api/runs/${encodeURIComponent(runId)}/costs`, { cache: "no-store" }),
-        fetch(`/api/runs/${encodeURIComponent(runId)}`, { cache: "no-store" }),
-      ]);
-      const eventBody = (await eventRes.json()) as { events?: Record<string, unknown>[] };
-      const costBody = (await costRes.json()) as { events?: Record<string, unknown>[] };
-      const runBody = (await runRes.json()) as { run?: { status?: string } };
+  const fetchStream = useCallback(async () => {
+    if (!runId) return;
+    const [eventRes, costRes, runRes] = await Promise.all([
+      fetch(`/api/runs/${encodeURIComponent(runId)}/events`, { cache: "no-store" }),
+      fetch(`/api/runs/${encodeURIComponent(runId)}/costs`, { cache: "no-store" }),
+      fetch(`/api/runs/${encodeURIComponent(runId)}`, { cache: "no-store" }),
+    ]);
+    if (!eventRes.ok || !costRes.ok) {
+      throw new Error("studio_fetch_failed");
+    }
+    const eventBody = (await eventRes.json()) as { events?: Record<string, unknown>[] };
+    const costBody = (await costRes.json()) as { events?: Record<string, unknown>[] };
+    const runBody = (await runRes.json()) as { run?: { status?: string } };
 
-      setRunStatus(runBody.run?.status ?? null);
-
-      const incomingEvents: JobEvent[] = [];
-      for (const row of eventBody.events ?? []) {
-        incomingEvents.push(
-          runEventRowToJobEvent({
-            id: Number(row.id),
-            run_id: String(row.run_id),
-            place_id: row.place_id != null ? String(row.place_id) : null,
-            stage: String(row.stage),
-            ran: Boolean(row.ran),
-            reason: row.reason != null ? String(row.reason) : null,
-            credits_est: row.credits_est != null ? Number(row.credits_est) : null,
-            duration_ms: row.duration_ms != null ? Number(row.duration_ms) : null,
-            meta_json: row.meta_json,
-            created_at: String(row.created_at),
-          }),
-        );
+    if (runRes.ok) {
+      const nextStatus = runBody.run?.status;
+      if (typeof nextStatus === "string") {
+        const prev = prevRunStatus.current;
+        prevRunStatus.current = nextStatus;
+        setRunStatus(nextStatus);
+        // finish_run can land before the final run_done / lead_done rows — keep
+        // polling briefly after the terminal flip so Studio doesn't miss them.
+        if (
+          prev &&
+          (prev === "running" || prev === "pending") &&
+          nextStatus !== "running" &&
+          nextStatus !== "pending"
+        ) {
+          setTerminalCatchUp(3);
+        }
       }
+    }
 
-      const incomingCosts: RunStreamCost[] = (costBody.events ?? []).map((row) => ({
-        id: Number(row.id),
-        usd: Number(row.usd ?? 0),
-        provider: String(row.provider),
-        operation: String(row.operation),
-        model: row.model != null ? String(row.model) : null,
-        units: Number(row.units ?? 0),
-        unit_type: String(row.unit_type ?? row.unitType ?? "units"),
-        place_id: row.place_id != null ? String(row.place_id) : null,
-        meta_json: row.meta_json,
-        created_at: String(row.created_at),
-      }));
+    const incomingEvents: JobEvent[] = [];
+    for (const row of eventBody.events ?? []) {
+      incomingEvents.push(
+        runEventRowToJobEvent({
+          id: Number(row.id),
+          run_id: String(row.run_id ?? runId),
+          place_id: row.place_id != null ? String(row.place_id) : null,
+          stage: String(row.stage ?? ""),
+          ran: Boolean(row.ran),
+          reason: row.reason != null ? String(row.reason) : null,
+          credits_est: row.credits_est != null ? Number(row.credits_est) : null,
+          duration_ms: row.duration_ms != null ? Number(row.duration_ms) : null,
+          meta_json: row.meta_json,
+          created_at: String(row.created_at ?? ""),
+        }),
+      );
+    }
 
-      setEvents((prev) => mergeEvents(prev, incomingEvents, seenEventKeys.current));
-      setCosts((prev) => mergeCosts(prev, incomingCosts, seenCostIds.current));
-      setConnected(true);
-    },
-    [runId],
-  );
+    const incomingCosts: RunStreamCost[] = (costBody.events ?? []).map((row) => ({
+      id: Number(row.id),
+      usd: Number(row.usd ?? 0),
+      provider: String(row.provider),
+      operation: String(row.operation),
+      model: row.model != null ? String(row.model) : null,
+      units: Number(row.units ?? 0),
+      unit_type: String(row.unit_type ?? row.unitType ?? "units"),
+      place_id: row.place_id != null ? String(row.place_id) : null,
+      meta_json: row.meta_json,
+      created_at: String(row.created_at),
+    }));
+
+    setEvents((prev) => mergeEvents(prev, incomingEvents, seenEventKeys.current));
+    setCosts((prev) => mergeCosts(prev, incomingCosts, seenCostIds.current));
+    setConnected(true);
+  }, [runId]);
 
   useEffect(() => {
     if (!runId || !enabled) return;
 
     let cancelled = false;
-    seenEventKeys.current.clear();
-    seenCostIds.current.clear();
+    seenEventKeys.current = new Set(initialEvents.map(eventKey));
+    seenCostIds.current = new Set(initialCosts.map((c) => c.id));
     // eslint-disable-next-line react-hooks/set-state-in-effect -- runId change reset
     setWindowStartMs(Date.now());
-    setLoading(true);
-    setEvents([]);
-    setCosts([]);
-    setConnected(false);
+    // Clear prior run's terminal status so polling resumes immediately on navigate.
+    setRunStatus(null);
+    prevRunStatus.current = null;
+    setTerminalCatchUp(0);
+    setEvents(initialEvents);
+    setCosts(initialCosts);
+    setConnected(initialEvents.length > 0 || initialCosts.length > 0);
+    setLoading(initialEvents.length === 0 && initialCosts.length === 0);
 
     void fetchStream()
       .catch(() => {
-        if (!cancelled) setConnected(false);
+        if (!cancelled) {
+          // Keep seeded telemetry if the poll fails.
+          setConnected((prev) => prev || initialEvents.length > 0 || initialCosts.length > 0);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -151,15 +235,29 @@ export function useRunStream(
     return () => {
       cancelled = true;
     };
-  }, [runId, enabled, fetchStream]);
+  }, [runId, enabled, fetchStream, initialEvents, initialCosts]);
 
-  useEffect(() => {
-    if (!runId || !enabled || !pollWhileRunning || runStatus !== "running") return;
-    const id = window.setInterval(() => {
-      void fetchStream();
-    }, 3000);
-    return () => window.clearInterval(id);
-  }, [runId, enabled, pollWhileRunning, runStatus, fetchStream]);
+  // Poll while status is unknown (first paint) or still running — do not wait
+  // for runStatus to flip from null or Studio freezes on seeded SSR data.
+  // Also drain a short catch-up window after the run goes terminal.
+  const shouldPollStream = Boolean(
+    runId &&
+      enabled &&
+      pollWhileRunning &&
+      (runStatus === null ||
+        runStatus === "running" ||
+        runStatus === "pending" ||
+        terminalCatchUp > 0),
+  );
+  useVisibilityInterval(
+    () => {
+      void fetchStream().finally(() => {
+        setTerminalCatchUp((n) => (n > 0 ? n - 1 : 0));
+      });
+    },
+    3000,
+    shouldPollStream,
+  );
 
   useEffect(() => {
     if (!runId || !enabled || loading || events.length > 0 || costs.length > 0) return;

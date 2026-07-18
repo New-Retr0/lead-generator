@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pallares_leads.config_loader import load_jurisdictions
 from pallares_leads.db.store import LeadStore
-from pallares_leads.enrich.browser_use_client import (
-    BrowserUseClient,
-    LoopNetBroker,
-    LoopNetResult,
-    OfficerRecord,
-    SosEntityResult,
-)
 from pallares_leads.enrich.contact_requirements import get_enrichment_rules
 from pallares_leads.enrich.owner_chain import OwnerChainResult, resolve_owner_chain
 from pallares_leads.enrich.task_templates import CA_BIZFILE_TASK, render_task
@@ -46,21 +39,6 @@ def test_render_task_replaces_placeholders() -> None:
     assert "bizfileonline.sos.ca.gov" in rendered
 
 
-def test_browser_use_client_skips_without_api_key() -> None:
-    settings = Settings(browser_use_enabled=True, browser_use_api_key="")
-    client = BrowserUseClient(settings)
-    assert client.is_available() is False
-    assert "missing" in client.last_skip_reason.lower()
-
-
-def test_browser_use_health_check_missing_key() -> None:
-    settings = Settings(browser_use_enabled=True, browser_use_api_key="")
-    client = BrowserUseClient(settings)
-    ok, msg = client.health_check()
-    assert ok is False
-    assert "missing" in msg.lower()
-
-
 def test_load_jurisdictions_has_ca_counties() -> None:
     settings = Settings()
     registry = load_jurisdictions(settings.config_dir)
@@ -72,12 +50,24 @@ def test_load_jurisdictions_has_ca_counties() -> None:
     assert registry.counties["fresno_ca"].parcel_portal.owner_names_online is False
 
 
-def test_owner_chain_applies_sos_contacts(store: LeadStore) -> None:
+def test_owner_chain_requires_firecrawl_api_key() -> None:
+    settings = Settings(firecrawl_api_key="", config_dir=Settings().config_dir)
+    raw = _raw_lead()
+    enriched = EnrichedLead.model_validate(raw.model_dump())
+    enriched.best_contact_phone = NOT_FOUND
+    rules = get_enrichment_rules("strip_mall", settings.config_dir)
+
+    result = resolve_owner_chain(raw, enriched, rules, settings=settings)
+
+    assert result.ran is False
+    assert "FIRECRAWL_API_KEY" in result.reason
+
+
+def test_owner_chain_applies_firecrawl_agent_contacts(store: LeadStore) -> None:
     from helpers import ensure_lead
 
     settings = Settings(
-        browser_use_enabled=True,
-        browser_use_api_key="test-key",
+        firecrawl_api_key="fc_test",
         config_dir=Settings().config_dir,
     )
     raw = _raw_lead(place_id="ChIJ_sos_unique_test", business_name="Unique SOS Test Plaza LLC")
@@ -86,19 +76,13 @@ def test_owner_chain_applies_sos_contacts(store: LeadStore) -> None:
     enriched.best_contact_phone = NOT_FOUND
     rules = get_enrichment_rules("strip_mall", settings.config_dir)
 
-    mock_browser = MagicMock(spec=BrowserUseClient)
-    mock_browser.is_available.return_value = True
-    mock_browser.total_cost_usd = 0.25
-    mock_browser.last_skip_reason = ""
-    mock_browser.sos_entity_lookup.return_value = SosEntityResult(
-        entity_name="Unique SOS Test Plaza LLC",
-        entity_number="1234567",
-        registered_agent="CT Corporation System",
-        officers=[OfficerRecord(name="Jane Owner", title="Manager")],
-    )
-    mock_browser.recorder_party_search.return_value = None
-    mock_browser.parcel_owner_lookup.return_value = None
-    mock_browser.loopnet_listing_lookup.return_value = None
+    mock_fc = MagicMock()
+    mock_fc.run_owner_chain_agent.return_value = {
+        "entity_name": "Unique SOS Test Plaza LLC",
+        "entity_number": "1234567",
+        "registered_agent": "CT Corporation System",
+        "officers": [{"name": "Jane Owner", "title": "Manager"}],
+    }
 
     result = resolve_owner_chain(
         raw,
@@ -106,7 +90,7 @@ def test_owner_chain_applies_sos_contacts(store: LeadStore) -> None:
         rules,
         settings=settings,
         store=store,
-        browser=mock_browser,
+        firecrawl=mock_fc,
     )
 
     assert result.ran is True
@@ -121,8 +105,7 @@ def test_owner_chain_reuses_entity_record(store: LeadStore) -> None:
     from helpers import ensure_lead
 
     settings = Settings(
-        browser_use_enabled=True,
-        browser_use_api_key="test-key",
+        firecrawl_api_key="fc_test",
         config_dir=Settings().config_dir,
     )
     raw = _raw_lead(place_id="ChIJother")
@@ -140,24 +123,22 @@ def test_owner_chain_reuses_entity_record(store: LeadStore) -> None:
         source="owner_chain:sos",
     )
 
-    mock_browser = MagicMock(spec=BrowserUseClient)
-    mock_browser.is_available.return_value = True
-
+    mock_fc = MagicMock()
     result = resolve_owner_chain(
         raw,
         enriched,
         rules,
         settings=settings,
         store=store,
-        browser=mock_browser,
+        firecrawl=mock_fc,
     )
 
-    mock_browser.sos_entity_lookup.assert_not_called()
+    mock_fc.run_owner_chain_agent.assert_not_called()
     assert result.contact_improved or result.enriched.best_contact_name == "Jane Owner"
 
 
 def test_owner_chain_skips_when_contact_bar_met() -> None:
-    settings = Settings(browser_use_enabled=True, browser_use_api_key="test-key")
+    settings = Settings(firecrawl_api_key="fc_test")
     raw = _raw_lead()
     enriched = EnrichedLead.model_validate(raw.model_dump())
     enriched.best_contact_phone = "(559) 638-1111"
@@ -165,31 +146,28 @@ def test_owner_chain_skips_when_contact_bar_met() -> None:
     enriched.property_manager_or_ownership_clue = "ABC Property Management"
     rules = get_enrichment_rules("strip_mall", settings.config_dir)
 
-    mock_browser = MagicMock(spec=BrowserUseClient)
+    mock_fc = MagicMock()
     result = resolve_owner_chain(
         raw,
         enriched,
         rules,
         settings=settings,
-        browser=mock_browser,
+        firecrawl=mock_fc,
     )
 
     assert result.ran is False
-    mock_browser.sos_entity_lookup.assert_not_called()
+    mock_fc.run_owner_chain_agent.assert_not_called()
 
 
-def test_owner_chain_loopnet_broker_contact(store: LeadStore) -> None:
-    from unittest.mock import patch
-
+def test_owner_chain_agent_broker_contact(store: LeadStore) -> None:
     from helpers import ensure_lead
 
     settings = Settings(
-        browser_use_enabled=True,
-        browser_use_api_key="test-key",
+        firecrawl_api_key="fc_test",
         config_dir=Settings().config_dir,
     )
     raw = _raw_lead(
-        place_id="ChIJ_loopnet_unique",
+        place_id="ChIJ_broker_unique",
         business_name="Downtown Parking Lot",
         property_type="parking",
     )
@@ -198,20 +176,16 @@ def test_owner_chain_loopnet_broker_contact(store: LeadStore) -> None:
     enriched.best_contact_phone = NOT_FOUND
     rules = get_enrichment_rules("parking", settings.config_dir)
 
-    mock_browser = MagicMock(spec=BrowserUseClient)
-    mock_browser.is_available.return_value = True
-    mock_browser.sos_entity_lookup.return_value = None
-    mock_browser.recorder_party_search.return_value = None
-    mock_browser.parcel_owner_lookup.return_value = None
-    mock_browser.loopnet_listing_lookup.return_value = LoopNetResult(
-        listing_url="https://www.loopnet.com/listing/1",
-        listed_by=[LoopNetBroker(name="Sam Broker", company="CBRE", phone="(559) 555-0100")],
-    )
+    mock_fc = MagicMock()
+    mock_fc.run_owner_chain_agent.return_value = {
+        "broker_name": "Sam Broker",
+        "broker_company": "CBRE",
+        "broker_phone": "(559) 555-0100",
+    }
 
-    skip_reuse = OwnerChainResult(enriched=enriched, ran=False, reason="")
     with patch(
         "pallares_leads.enrich.owner_chain._reuse_owner_record",
-        return_value=skip_reuse,
+        return_value=OwnerChainResult(enriched=enriched, ran=False, reason=""),
     ):
         result = resolve_owner_chain(
             raw,
@@ -219,11 +193,10 @@ def test_owner_chain_loopnet_broker_contact(store: LeadStore) -> None:
             rules,
             settings=settings,
             store=store,
-            browser=mock_browser,
-            loopnet_count=0,
+            firecrawl=mock_fc,
         )
 
-    assert result.loopnet_used is True
+    assert result.ran is True
     assert result.enriched.best_contact_phone == "(559) 555-0100"
     assert result.enriched.best_contact_type == "cre broker"
 

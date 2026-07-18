@@ -33,19 +33,65 @@ export function loadProjectEnv(): Record<string, string> {
   return parsed;
 }
 
-/** Dashboard-only vars — must not leak into spawned Python (breaks Settings.project_root). */
-const DASHBOARD_ONLY_ENV = new Set(["PROJECT_ROOT", "PALLARES_DB_PATH"]);
+/** Only forward known pipeline secrets/settings into spawned CLI children. */
+const CLI_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "VIRTUAL_ENV",
+  "PYTHONPATH",
+  "PYTHONIOENCODING",
+  "PYTHONUTF8",
+  "PALLARES_LOG_JSON",
+  "GOOGLE_PLACES_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "GOOGLE_SHEETS_SPREADSHEET_ID",
+  "GOOGLE_SERVICE_ACCOUNT_JSON",
+  "GOOGLE_SHEETS_TAB_NAME",
+  "SUPABASE_URL",
+  "SUPABASE_ANON_KEY",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_DB_URL",
+  "FIRECRAWL_TIMEOUT_MS",
+  "FIRECRAWL_SCRAPE_MAX_AGE_MS",
+  /** Cap Firecrawl /agent credits for hard contact gaps and owner chain. */
+  "FIRECRAWL_AGENT_MAX_CREDITS",
+  "PAGE_CACHE_TTL_DAYS",
+  "DOMAIN_CACHE_TTL_HOURS",
+  "RESEARCHED_MISS_REOPEN_DAYS",
+  "MIN_EXPORT_SCORE",
+  "OWNER_CHAIN_MAX_PER_RUN",
+  "SOURCE_CHECKLIST_MAX_PAGES",
+  "PLACES_SEARCH_RADIUS_M",
+  "MAX_PLACES_PER_QUERY",
+  "LEARNED_SCORE_WEIGHT",
+  "LEARNED_SCORE_MIN_LABELS",
+] as const;
 
-export function cliChildEnv(): NodeJS.ProcessEnv {
-  const nodeEnv: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !DASHBOARD_ONLY_ENV.has(key)) {
-      nodeEnv[key] = value;
+function pickAllowed(source: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of CLI_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (value !== undefined && value !== "") {
+      out[key] = value;
     }
   }
+  return out;
+}
+
+export function cliChildEnv(): NodeJS.ProcessEnv {
+  const fromFile = loadProjectEnv();
+  const fromProcess = pickAllowed(process.env as Record<string, string | undefined>);
   return {
-    ...loadProjectEnv(),
-    ...nodeEnv,
+    ...pickAllowed(fromFile),
+    ...fromProcess,
     PYTHONIOENCODING: process.env.PYTHONIOENCODING ?? "utf-8",
     PYTHONUTF8: process.env.PYTHONUTF8 ?? "1",
     PALLARES_LOG_JSON: process.env.PALLARES_LOG_JSON ?? "1",

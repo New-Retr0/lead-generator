@@ -7,9 +7,10 @@ import { toast } from "sonner";
 import { RunStatusBadge } from "@/components/badges";
 import { SectionHeading } from "@/components/console/section-heading";
 import { TypedText } from "@/components/console/typed-text";
-import { JobLogPanel } from "@/components/job-log-panel";
+import { JobTimeline } from "@/components/job-timeline";
 import { PageHeader } from "@/components/page-header";
 import { RequestsBuilder } from "@/components/requests/requests-builder";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -42,15 +43,20 @@ export function RequestsPageClient({
       <SectionHeading index="01" title="Lead Requests" />
       <PageHeader description="Build focused lead batches and watch live request progress in the job log." />
       <TypedText text="DISCOVER + ENRICH - single pass per place" />
+      <Badge variant="outline" className="font-mono text-[10px]">
+        Execution · local
+      </Badge>
 
-      <JobLogPanel
-        jobId={jobId}
-        onDone={(status) => {
-          router.refresh();
-          if (status === "completed") toast.success("Job finished");
-          else if (status === "failed") toast.error("Job failed - check the log");
-        }}
-      />
+      {jobId ? (
+        <JobTimeline
+          jobId={jobId}
+          onDone={(status) => {
+            router.refresh();
+            if (status === "completed") toast.success("Job finished");
+            else if (status === "failed") toast.error("Job failed - check the log");
+          }}
+        />
+      ) : null}
 
       <RequestsBuilder
         config={config}
@@ -58,7 +64,7 @@ export function RequestsPageClient({
         onJobStarted={setJobId}
       />
 
-      <Card className="glass min-w-0">
+      <Card className="panel min-w-0">
         <CardHeader>
           <CardTitle>Request history</CardTitle>
           <CardDescription>

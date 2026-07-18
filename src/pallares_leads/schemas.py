@@ -66,6 +66,8 @@ class SiteContact(BaseModel):
     """Someone reachable at the property — from website / Firecrawl."""
 
     label: str = ""
+    # Legacy/alternate JSON key — Partner SQL + dashboard use coalesce(label, role).
+    role: str = ""
     name: str = ""
     phone: str = ""
     email: str = ""
@@ -90,7 +92,7 @@ class LeadFact(BaseModel):
     # county_recorder | loopnet | search
     source_kind: str = ""
     source_url: str = ""
-    method: str = ""  # api | deterministic_parse | llm_extract | browser_use
+    method: str = ""  # api | deterministic_parse | llm_extract | firecrawl_agent
     quote: str = ""
     verification: str = "unverified"  # verified | corroborated | unverified
     observed_at: str = ""
@@ -118,8 +120,6 @@ class EnrichedLead(RawLead):
     property_manager_or_ownership_clue: str = NOT_FOUND
     management_source_url: str = NOT_FOUND
     exterior_cleaning_need_signals: str = ""
-    why_this_is_a_good_fit: str = ""
-    sales_talking_points: str = ""
     site_contacts: list[SiteContact] = Field(default_factory=list)
     evidence_urls: list[str] = Field(default_factory=list)
     facts: list[LeadFact] = Field(default_factory=list)
@@ -133,14 +133,17 @@ class EnrichedLead(RawLead):
     why_now: str = ""
 
     def sales_status(self) -> str:
-        has_outreach = bool(self._callable_contacts())
-        verified_enough = self.verification_level in ("verified", "partial")
-        if has_outreach and verified_enough:
-            if self.investigation_status == InvestigationStatus.ENRICHED:
-                return "Ready to call"
-            if self.main_phone:
-                return "Ready to call"
-        return "Needs research"
+        """Ready to call = verified named decision-maker with a local dialable phone."""
+        # Lazy import avoids the schemas ↔ contact_requirements cycle at import time.
+        from pallares_leads.enrich.contact_requirements import (
+            has_verified_named_decision_maker,
+        )
+
+        return (
+            "Ready to call"
+            if has_verified_named_decision_maker(self)
+            else "Needs research"
+        )
 
     def _callable_contacts(self) -> list[SiteContact]:
         found: list[SiteContact] = []
@@ -171,9 +174,6 @@ class SalesExportRow(BaseModel):
     address: str
     phone: str
     contacts: str
-    why_call: str
-    talking_points: str
-    exterior_notes: str
     website: str
     maps: str
     notes: str
@@ -186,13 +186,6 @@ class SalesExportRow(BaseModel):
         from pallares_leads.resolve.lead_score import compute_lead_score
 
         score = lead.lead_score if lead.lead_score is not None else compute_lead_score(lead)
-        why_parts: list[str] = []
-        if lead.why_now.strip():
-            why_parts.append(lead.why_now.strip())
-        good_fit = lead.why_this_is_a_good_fit.strip()
-        if good_fit and good_fit not in why_parts:
-            why_parts.append(good_fit)
-        why_call = " ".join(why_parts) if why_parts else lead.why_this_is_a_good_fit
 
         return cls(
             confidence=lead.confidence.value,
@@ -205,9 +198,6 @@ class SalesExportRow(BaseModel):
             address=lead.formatted_address,
             phone=primary_phone(lead),
             contacts=format_contacts_block(lead),
-            why_call=why_call,
-            talking_points=lead.sales_talking_points,
-            exterior_notes=lead.exterior_cleaning_need_signals,
             website=website_link_url(lead),
             maps=lead.google_maps_url or "",
             notes=lead.notes,
@@ -228,9 +218,6 @@ class SalesExportRow(BaseModel):
             "address",
             "phone",
             "contacts",
-            "why_call",
-            "talking_points",
-            "exterior_notes",
             "website",
             "maps",
             "notes",

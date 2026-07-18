@@ -1,23 +1,18 @@
 "use client";
 
 import { useMemo } from "react";
-import { useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
 import ASCIIAnimation from "@/components/console/ascii-animation";
+import { enter } from "@/components/console/motion";
+import { PipelinePlayer } from "@/components/pipeline/pipeline-player";
+import { useReplayState } from "@/components/pipeline/replay-controls";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
   computeStageActivity,
-  sliceTimeline,
   usePipelineStream,
 } from "@/lib/pipeline/use-pipeline-stream";
-import { PipelineCanvas } from "@/components/pipeline/pipeline-canvas";
-import { ReplayControls, useReplayState } from "@/components/pipeline/replay-controls";
+import type { RunStreamInitial } from "@/lib/pipeline/use-run-stream";
+import type { RunTimeline } from "@/lib/types";
 
 const ASCII_DEFAULT_COLOR =
   "color-mix(in oklab, var(--foreground) 80%, var(--primary) 20%)";
@@ -27,25 +22,30 @@ export function RunPipelinePanel({
   status,
   startedAt,
   finishedAt,
+  initialStudio = null,
+  runTimeline = null,
+  liveNames,
 }: {
   runId: string;
   status: string;
   startedAt: string;
   finishedAt: string | null;
+  initialStudio?: RunStreamInitial | null;
+  runTimeline?: RunTimeline | null;
+  liveNames?: Record<string, string>;
 }) {
-  const reduced = useReducedMotion();
-  const isLive = status === "running";
-  const stream = usePipelineStream(runId, { enabled: true, realtime: true });
+  // Match useRunStream poll window — pending cells must stay in live Studio mode.
+  const isLive = status === "running" || status === "pending";
+  const stream = usePipelineStream(runId, {
+    enabled: true,
+    realtime: true,
+    initial: initialStudio,
+  });
   const replay = useReplayState(runId, isLive);
 
   const hasTelemetry = useMemo(
     () => stream.costs.length > 0 || stream.events.length > 0,
     [stream.costs.length, stream.events],
-  );
-
-  const slicedTimeline = useMemo(
-    () => sliceTimeline(stream.timeline, replay.virtualMs),
-    [stream.timeline, replay.virtualMs],
   );
 
   const activeStages = useMemo(
@@ -54,78 +54,63 @@ export function RunPipelinePanel({
   );
 
   if (stream.loading) {
-    return <Skeleton className="h-96 w-full rounded-lg" />;
+    return <Skeleton className="min-h-[28rem] w-full rounded-2xl" />;
   }
 
-  if (!hasTelemetry && stream.events.length === 0) {
+  if (!hasTelemetry) {
     return (
-      <div className="relative overflow-hidden rounded-lg border border-dashed border-border/60 bg-muted/10 p-8 text-center">
-        <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-40">
+      <motion.div
+        className="relative overflow-hidden rounded-2xl border border-dashed border-border/60 bg-muted/10 p-6 text-center"
+        {...enter.fade}
+      >
+        <div className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-30">
           <ASCIIAnimation
             frameFolder="computer"
             frameCount={78}
             quality="medium"
             fps={12}
-            className="h-24 w-40"
+            className="h-20 w-36"
             color={ASCII_DEFAULT_COLOR}
             gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
             lazy
             ariaLabel="Computer animation"
           />
         </div>
-        <p className="relative text-sm font-medium">No replay telemetry for this run</p>
-        <p className="relative mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-          New runs record stage progress automatically — open a recent run to see the
-          animated pipeline canvas and video-style replay.
+        <p className="relative text-sm font-medium">
+          {stream.connected
+            ? "No stage or cost ledger for this run"
+            : "Waiting for Pipeline Studio connection…"}
         </p>
-      </div>
+        <p className="relative mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+          {stream.connected
+            ? "New market, campaign, and request runs always emit Studio telemetry."
+            : "Dashboard needs SUPABASE_DB_URL to load Studio telemetry from Postgres."}
+        </p>
+      </motion.div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <Card className="glass overflow-hidden">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Pipeline canvas</CardTitle>
-          <CardDescription>
-            {isLive
-              ? "Live enrichment DAG — polling every 3s while run is active."
-              : "Scrub replay below to re-watch tool calls traverse the pipeline."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <PipelineCanvas
-            stageStats={stream.stageStats}
-            stageRollup={stream.stageRollup}
-            timeline={slicedTimeline}
-            replayUpToMs={replay.virtualMs}
-            activeStages={activeStages}
-            reducedMotion={reduced ?? false}
-          />
-        </CardContent>
-      </Card>
-
-      {!isLive ? (
-        <Card className="glass">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Replay</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ReplayControls
-              timeline={stream.timeline}
-              runStartedAt={startedAt}
-              runEndedAt={finishedAt}
-              playing={replay.playing}
-              onPlayingChange={replay.setPlaying}
-              virtualMs={replay.virtualMs}
-              onVirtualMsChange={replay.setVirtualMs}
-              speed={replay.speed}
-              onSpeedChange={replay.setSpeed}
-              stageStats={stream.stageStats}
-            />
-          </CardContent>
-        </Card>
-      ) : null}
+    <div className="min-w-0 w-full max-w-full">
+      <PipelinePlayer
+        timeline={stream.timeline}
+        costs={stream.costs}
+        events={stream.events}
+        stageStats={stream.stageStats}
+        stageRollup={stream.stageRollup}
+        activeStages={activeStages}
+        isLive={isLive}
+        playing={replay.playing}
+        onPlayingChange={replay.setPlaying}
+        virtualMs={replay.virtualMs}
+        onVirtualMsChange={replay.setVirtualMs}
+        speed={replay.speed}
+        onSpeedChange={replay.setSpeed}
+        runStartedAt={startedAt}
+        runEndedAt={finishedAt}
+        runTimeline={runTimeline}
+        liveNames={liveNames}
+      />
     </div>
   );
 }

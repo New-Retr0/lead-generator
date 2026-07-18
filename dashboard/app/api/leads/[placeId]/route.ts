@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   insertLeadTouch,
-  isCrmStatus,
+  isFeedbackStatus,
   updateSalesFeedback,
   upsertLeadOutcome,
 } from "@/lib/db-write";
@@ -47,7 +47,7 @@ export async function PATCH(
     };
     const fields: Parameters<typeof updateSalesFeedback>[1] = {};
     if (body.status !== undefined) {
-      if (!isCrmStatus(body.status)) {
+      if (!isFeedbackStatus(body.status)) {
         return NextResponse.json(
           { error: `Invalid status: ${String(body.status)}` },
           { status: 400 },
@@ -75,6 +75,9 @@ export async function PATCH(
     return NextResponse.json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update lead";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const status = /^(Invalid|quality_rating|deal_value_usd|duration_seconds)/.test(message)
+      ? 400
+      : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

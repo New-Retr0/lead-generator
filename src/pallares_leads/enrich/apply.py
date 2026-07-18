@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import logging
 
-from pallares_leads.enrich.contact_requirements import is_callable_phone
+from pallares_leads.enrich.contact_requirements import (
+    is_callable_phone,
+    is_decision_maker_role,
+    is_local_callable_phone,
+)
 from pallares_leads.enrich.domain_verify import pick_verified_website_url, verify_website_url
 from pallares_leads.enrich.schema import LeadInvestigationResult
+from pallares_leads.enrich.verify import is_placeholder_name
 from pallares_leads.schemas import (
     NOT_FOUND,
     EnrichedLead,
@@ -122,10 +127,6 @@ def apply_investigation(
 
     if result.exterior_signals:
         enriched.exterior_cleaning_need_signals = result.exterior_signals
-    if result.pitch_angle:
-        enriched.why_this_is_a_good_fit = result.pitch_angle
-    if result.sales_talking_points:
-        enriched.sales_talking_points = result.sales_talking_points
     if result.source_urls:
         merged_evidence = list(dict.fromkeys([*enriched.evidence_urls, *result.source_urls]))
         enriched.evidence_urls = merged_evidence
@@ -185,8 +186,18 @@ def _role_priority_rank(label: str, name: str) -> int:
     return len(_ROLE_PRIORITY)
 
 
-def _rank_best_contact(contact: SiteContact) -> tuple[int, int, int, int]:
-    """Lower is better: verified first, then role priority, then named+labeled."""
+def _is_atomic_dm_contact(contact: SiteContact) -> bool:
+    return bool(
+        contact.name.strip()
+        and not is_placeholder_name(contact.name)
+        and is_decision_maker_role(contact.label)
+        and is_local_callable_phone(contact.phone)
+    )
+
+
+def _rank_best_contact(contact: SiteContact) -> tuple[int, int, int, int, int]:
+    """Lower is better: atomic DM first, then verification, role, named+labeled."""
+    atomic_rank = 0 if _is_atomic_dm_contact(contact) else 1
     verification_rank = {
         "verified": 0,
         "corroborated": 1,
@@ -195,7 +206,13 @@ def _rank_best_contact(contact: SiteContact) -> tuple[int, int, int, int]:
     role_rank = _role_priority_rank(contact.label, contact.name)
     has_name = 0 if contact.name.strip() else 1
     has_label = 0 if contact.label.strip() else 1
-    return (verification_rank, role_rank, has_name + has_label, 0 if contact.phone else 1)
+    return (
+        atomic_rank,
+        verification_rank,
+        role_rank,
+        has_name + has_label,
+        0 if contact.phone else 1,
+    )
 
 
 def _contact_has_derive_phone(contact: SiteContact) -> bool:
@@ -240,12 +257,22 @@ def _apply_best_from_contact(enriched: EnrichedLead, best: SiteContact) -> Enric
 
 
 def derive_best_contact_fields(enriched: EnrichedLead) -> EnrichedLead:
-    """Derive best_contact_* atomically from one site contact — no cross-source blending."""
+    """Derive best_contact_* atomically from one site contact — no cross-source blending.
+
+    Atomic named DMs always win so Ready leads stamp best_contact_phone for Partner
+    primary_phone (never empty while a DM site_contact has the phone).
+    """
     trusted_contacts = [
         c
         for c in enriched.site_contacts
         if c.verification in _TRUSTED_VERIFICATIONS or not c.verification
     ]
+    atomic_dms = [c for c in trusted_contacts if _is_atomic_dm_contact(c)]
+    if atomic_dms:
+        return _apply_best_from_contact(
+            enriched, min(atomic_dms, key=_rank_best_contact)
+        )
+
     callable_contacts = [
         c
         for c in trusted_contacts

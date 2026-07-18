@@ -48,9 +48,7 @@ def test_lead_eval_trace_finalize() -> None:
     trace.tier2_gate_reason = "Tier 1 satisfied contact requirements"
 
     enriched = EnrichedLead.model_validate(raw.model_dump())
-    enriched.why_this_is_a_good_fit = "Reedley strip mall on Main St."
-    enriched.sales_talking_points = "• Local retail traffic"
-    enriched.source_tool = "google_places+firecrawl_scrape_json+ai_gateway_copy"
+    enriched.source_tool = "google_places+firecrawl_scrape_json"
 
     report = trace.finalize(enriched, config_dir=settings.config_dir)
     assert report.place_id == "ChIJtest"

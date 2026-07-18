@@ -1,6 +1,6 @@
-import type { LeadDetail, LeadFact } from "./types";
+import type { LeadDetail, LeadFact, SiteContact } from "./types";
 
-export type VerificationLevel = "verified" | "corroborated" | "unverified";
+export type VerificationLevel = "verified" | "corroborated" | "unverified" | "rejected";
 
 export type ContactSource = {
   source_kind: string;
@@ -68,7 +68,23 @@ const VERIFICATION_RANK: Record<VerificationLevel, number> = {
   verified: 3,
   corroborated: 2,
   unverified: 1,
+  rejected: 0,
 };
+
+const PLACEHOLDER_NAMES = new Set([
+  "",
+  "not found",
+  "not specified",
+  "not listed",
+  "n/a",
+  "na",
+  "none",
+  "unknown",
+  "john doe",
+  "jane doe",
+  "jane smith",
+  "john smith",
+]);
 
 export function normalizePhoneKey(raw: string): string {
   const digits = raw.replace(/\D/g, "");
@@ -102,7 +118,12 @@ export function cleanQuote(raw: string | null | undefined, maxLen = 220): string
 }
 
 export function normalizeVerification(value: string | null | undefined): VerificationLevel {
-  if (value === "verified" || value === "corroborated" || value === "unverified") {
+  if (
+    value === "verified" ||
+    value === "corroborated" ||
+    value === "unverified" ||
+    value === "rejected"
+  ) {
     return value;
   }
   return "unverified";
@@ -143,6 +164,11 @@ function personKey(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function isNamedPerson(name: string | null | undefined): boolean {
+  const normalized = personKey(name ?? "");
+  return Boolean(normalized) && !PLACEHOLDER_NAMES.has(normalized);
+}
+
 function socialPlatformKey(platform: string, url: string): string {
   const normalized = platform.trim().toLowerCase();
   if (normalized) return normalized;
@@ -161,7 +187,144 @@ function socialPlatformKey(platform: string, url: string): string {
 
 function isPrimaryPhoneLabel(label: string): boolean {
   const lower = label.toLowerCase();
-  return lower.includes("main") || lower.includes("google places");
+  // Decision-maker phone is primary for ops — not Google Places mainline.
+  return lower.includes("best contact");
+}
+
+function isMainlinePhoneLabel(label: string): boolean {
+  const lower = label.toLowerCase();
+  return (
+    lower.includes("listed phone") ||
+    lower.includes("main line") ||
+    lower.includes("google places")
+  );
+}
+
+/** Map lead.verification_level onto contact-fact verification (no hard-coded Verified). */
+function verificationFromLeadLevel(
+  level: string | null | undefined,
+): VerificationLevel {
+  if (level === "verified") return "verified";
+  if (level === "corroborated") return "corroborated";
+  return "unverified";
+}
+
+function sourceKindFromUrl(url: string | null | undefined, fallback = "website"): string {
+  const lower = (url ?? "").toLowerCase();
+  if (lower.includes("bbb.org")) return "bbb";
+  if (lower.includes("google.com/maps") || lower.includes("maps.google")) return "google_places";
+  return fallback;
+}
+
+function upsertPhone(
+  phoneMap: Map<string, PhoneGroup>,
+  phone: string,
+  label: string,
+  source: ContactSource,
+  verification: string,
+): void {
+  const key = normalizePhoneKey(phone);
+  if (!key || key.length < 10) return;
+  const existing = phoneMap.get(key);
+  if (existing) {
+    if (!existing.labels.includes(label)) existing.labels.push(label);
+    addSource(existing.sources, source);
+    existing.verification = bestVerification([existing.verification, verification]);
+    if (isPrimaryPhoneLabel(label)) existing.isPrimary = true;
+    return;
+  }
+  phoneMap.set(key, {
+    key,
+    value: phone.trim(),
+    display: formatPhone(phone),
+    labels: [label],
+    verification: normalizeVerification(verification),
+    isPrimary: isPrimaryPhoneLabel(label),
+    sources: [source],
+  });
+}
+
+function upsertEmail(
+  emailMap: Map<string, EmailGroup>,
+  email: string,
+  label: string,
+  source: ContactSource,
+  verification: string,
+): void {
+  const key = email.trim().toLowerCase();
+  if (!key || !key.includes("@") || key.includes("[")) return;
+  const existing = emailMap.get(key);
+  if (existing) {
+    if (!existing.labels.includes(label)) existing.labels.push(label);
+    addSource(existing.sources, source);
+    existing.verification = bestVerification([existing.verification, verification]);
+    return;
+  }
+  emailMap.set(key, {
+    key,
+    value: key,
+    labels: [label],
+    verification: normalizeVerification(verification),
+    sources: [source],
+  });
+}
+
+function upsertPerson(
+  personMap: Map<string, PersonGroup>,
+  name: string,
+  title: string,
+  company: string,
+  source: ContactSource,
+  verification: string,
+): void {
+  if (!isNamedPerson(name)) return;
+  const key = personKey(name);
+  const existing = personMap.get(key);
+  if (existing) {
+    if (title && !existing.title) existing.title = title;
+    if (company && !existing.company) existing.company = company;
+    addSource(existing.sources, source);
+    existing.verification = bestVerification([existing.verification, verification]);
+    return;
+  }
+  personMap.set(key, {
+    key,
+    name: name.trim(),
+    title,
+    company,
+    verification: normalizeVerification(verification),
+    sources: [source],
+  });
+}
+
+function seedFromSiteContact(
+  contact: SiteContact,
+  phoneMap: Map<string, PhoneGroup>,
+  emailMap: Map<string, EmailGroup>,
+  personMap: Map<string, PersonGroup>,
+): void {
+  const label = (contact.role ?? "").trim() || "Contact";
+  const verification = contact.verification ?? "unverified";
+  const source: ContactSource = {
+    source_kind: sourceKindFromUrl(contact.source_url),
+    source_url: contact.source_url ?? "",
+    method: "api",
+    label,
+    quote: cleanQuote(contact.quote),
+  };
+
+  if (contact.name) {
+    upsertPerson(personMap, contact.name, label, "", source, verification);
+  }
+  if (contact.phone) {
+    const phoneLabel = contact.name?.trim()
+      ? `${contact.name.trim()}${label && label !== "Contact" ? ` · ${label}` : ""}`
+      : label;
+    upsertPhone(phoneMap, contact.phone, phoneLabel, { ...source, label: phoneLabel }, verification);
+  }
+  if (contact.email_or_form) {
+    upsertEmail(emailMap, contact.email_or_form, label, source, verification);
+  }
 }
 
 export function groupLeadContacts(lead: LeadDetail): GroupedLeadContacts {
@@ -171,118 +334,48 @@ export function groupLeadContacts(lead: LeadDetail): GroupedLeadContacts {
   const socialMap = new Map<string, SocialGroup>();
   let registry: RegistryInfo | null = null;
 
-  const seedPhone = (phone: string | null, label: string, sourceUrl: string | null) => {
-    if (!phone?.trim()) return;
-    const key = normalizePhoneKey(phone);
-    if (!key) return;
-    const existing = phoneMap.get(key);
-    const source: ContactSource = {
-      source_kind: "lead",
-      source_url: sourceUrl ?? "",
-      method: "api",
-      label,
-      quote: "",
-    };
-    if (existing) {
-      if (!existing.labels.includes(label)) existing.labels.push(label);
-      addSource(existing.sources, source);
-      if (isPrimaryPhoneLabel(label)) existing.isPrimary = true;
-      existing.verification = bestVerification([
-        existing.verification,
-        "verified",
-      ]);
-      return;
-    }
-    phoneMap.set(key, {
-      key,
-      value: phone.trim(),
-      display: formatPhone(phone),
-      labels: [label],
-      verification: "verified",
-      isPrimary: isPrimaryPhoneLabel(label),
-      sources: [source],
-    });
-  };
-
   for (const fact of lead.facts) {
+    // Rejected extractions stay in Explain · evidence, not operator contact lists.
+    if (normalizeVerification(fact.verification) === "rejected") {
+      continue;
+    }
+
     switch (fact.fact_kind) {
       case "phone": {
         const phone = fact.value.phone ?? "";
         const label = fact.value.label ?? "Phone";
-        const key = normalizePhoneKey(phone);
-        if (!key) break;
-        const source = factSource(fact, label);
-        const existing = phoneMap.get(key);
-        if (existing) {
-          if (!existing.labels.includes(label)) existing.labels.push(label);
-          addSource(existing.sources, source);
-          existing.verification = bestVerification([
-            existing.verification,
-            fact.verification,
-          ]);
-          if (isPrimaryPhoneLabel(label)) existing.isPrimary = true;
-        } else {
-          phoneMap.set(key, {
-            key,
-            value: phone,
-            display: formatPhone(phone),
-            labels: [label],
-            verification: normalizeVerification(fact.verification),
-            isPrimary: isPrimaryPhoneLabel(label),
-            sources: [source],
-          });
-        }
+        upsertPhone(phoneMap, phone, label, factSource(fact, label), fact.verification);
         break;
       }
       case "email": {
-        const email = (fact.value.email ?? "").trim().toLowerCase();
+        const email = fact.value.email ?? "";
         const label = fact.value.label ?? "Email";
-        if (!email) break;
-        const source = factSource(fact, label);
-        const existing = emailMap.get(email);
-        if (existing) {
-          if (!existing.labels.includes(label)) existing.labels.push(label);
-          addSource(existing.sources, source);
-          existing.verification = bestVerification([
-            existing.verification,
-            fact.verification,
-          ]);
-        } else {
-          emailMap.set(email, {
-            key: email,
-            value: email,
-            labels: [label],
-            verification: normalizeVerification(fact.verification),
-            sources: [source],
-          });
-        }
+        upsertEmail(emailMap, email, label, factSource(fact, label), fact.verification);
         break;
       }
       case "person": {
         const name = (fact.value.name ?? "").trim();
-        if (!name) break;
-        const key = personKey(name);
-        const title = fact.value.title ?? "";
+        const title = fact.value.title ?? fact.value.role ?? fact.value.label ?? "";
         const company = fact.value.company ?? "";
-        const source = factSource(fact, title || "Contact");
-        const existing = personMap.get(key);
-        if (existing) {
-          if (title && !existing.title) existing.title = title;
-          if (company && !existing.company) existing.company = company;
-          addSource(existing.sources, source);
-          existing.verification = bestVerification([
-            existing.verification,
+        upsertPerson(personMap, name, title, company, factSource(fact, title || "Contact"), fact.verification);
+        if (fact.value.phone) {
+          const phoneLabel = name ? `${name}${title ? ` · ${title}` : ""}` : title || "Phone";
+          upsertPhone(
+            phoneMap,
+            fact.value.phone,
+            phoneLabel,
+            factSource(fact, phoneLabel),
             fact.verification,
-          ]);
-        } else {
-          personMap.set(key, {
-            key,
-            name,
-            title,
-            company,
-            verification: normalizeVerification(fact.verification),
-            sources: [source],
-          });
+          );
+        }
+        if (fact.value.email) {
+          upsertEmail(
+            emailMap,
+            fact.value.email,
+            title || name || "Email",
+            factSource(fact, title || name || "Email"),
+            fact.verification,
+          );
         }
         break;
       }
@@ -348,9 +441,76 @@ export function groupLeadContacts(lead: LeadDetail): GroupedLeadContacts {
     }
   }
 
-  if (phoneMap.size === 0) {
-    seedPhone(lead.phone, "Main line", lead.google_maps_url ?? lead.website);
-    seedPhone(lead.best_contact_phone, "Best contact", lead.website);
+  for (const contact of lead.site_contacts ?? []) {
+    seedFromSiteContact(contact, phoneMap, emailMap, personMap);
+  }
+
+  const leadVerification = verificationFromLeadLevel(lead.verification_level);
+
+  if (isNamedPerson(lead.best_contact_name)) {
+    upsertPerson(
+      personMap,
+      lead.best_contact_name!,
+      lead.best_contact_role ?? "",
+      "",
+      {
+        source_kind: "lead",
+        source_url: lead.website ?? "",
+        method: "api",
+        label: lead.best_contact_role || "Best contact",
+        quote: "",
+      },
+      leadVerification,
+    );
+  }
+
+  if (lead.best_contact_phone) {
+    upsertPhone(
+      phoneMap,
+      lead.best_contact_phone,
+      "Best contact",
+      {
+        source_kind: "lead",
+        source_url: lead.website ?? "",
+        method: "api",
+        label: "Best contact",
+        quote: "",
+      },
+      leadVerification,
+    );
+  }
+  const bestKey = lead.best_contact_phone
+    ? normalizePhoneKey(lead.best_contact_phone)
+    : "";
+  if (lead.phone && normalizePhoneKey(lead.phone) !== bestKey) {
+    upsertPhone(
+      phoneMap,
+      lead.phone,
+      "Listed phone",
+      {
+        source_kind: "lead",
+        source_url: lead.google_maps_url ?? lead.website ?? "",
+        method: "api",
+        label: "Listed phone",
+        quote: "",
+      },
+      "unverified",
+    );
+  }
+  if (lead.best_contact_email_or_form) {
+    upsertEmail(
+      emailMap,
+      lead.best_contact_email_or_form,
+      "Best contact",
+      {
+        source_kind: "lead",
+        source_url: lead.website ?? "",
+        method: "api",
+        label: "Best contact",
+        quote: "",
+      },
+      leadVerification,
+    );
   }
 
   const bbbPeople = [...personMap.values()].filter((p) =>
@@ -360,13 +520,22 @@ export function groupLeadContacts(lead: LeadDetail): GroupedLeadContacts {
     registry.principals = bbbPeople;
   }
 
-  const phones = [...phoneMap.values()].sort((a, b) => {
-    if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
-    return a.display.localeCompare(b.display);
-  });
+  const phones = [...phoneMap.values()]
+    .filter((p) => p.verification !== "rejected")
+    .sort((a, b) => {
+      if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+      const aMain = a.labels.some(isMainlinePhoneLabel);
+      const bMain = b.labels.some(isMainlinePhoneLabel);
+      if (aMain !== bMain) return aMain ? 1 : -1;
+      return a.display.localeCompare(b.display);
+    });
 
-  const emails = [...emailMap.values()].sort((a, b) => a.value.localeCompare(b.value));
-  const people = [...personMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const emails = [...emailMap.values()]
+    .filter((e) => e.verification !== "rejected")
+    .sort((a, b) => a.value.localeCompare(b.value));
+  const people = [...personMap.values()]
+    .filter((p) => p.verification !== "rejected")
+    .sort((a, b) => a.name.localeCompare(b.name));
   const socials = [...socialMap.values()].sort((a, b) =>
     a.platform.localeCompare(b.platform),
   );

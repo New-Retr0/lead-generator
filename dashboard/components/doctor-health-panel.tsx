@@ -18,9 +18,10 @@ import {
   LiveDot,
   Stagger,
   StaggerItem,
-  TypingDots,
 } from "@/components/animated";
+import { doctorReveal, liveState, progress, spring } from "@/components/console/motion";
 import { Button } from "@/components/ui/button";
+import { useJobStream } from "@/hooks/use-job-stream";
 import { cn } from "@/lib/utils";
 
 type CheckStatus = "ok" | "warn" | "fail" | "info" | "missing" | "disabled";
@@ -75,39 +76,98 @@ const EXPECTED_CHECKS = [
   "Places API (New)",
   "Firecrawl",
   "Supabase",
-  "AI Gateway",
   "Lead database",
-  "Browser Use",
 ] as const;
+
+/** Indented Firecrawl balance/plan lines printed after Lead DB in `doctor`. */
+const FIRECRAWL_DETAIL =
+  /^(?:Firecrawl\b|Billing (?:cycle|period)|Projected cycle|WARNING:.*(?:Firecrawl|credits))/i;
 
 function redactSecret(detail: string): string {
   return detail.replace(/(postgresql:\/\/[^:]+:)[^@]+(@)/, "$1***$2");
 }
 
+function findCheck(checks: HealthCheck[], service: string): HealthCheck | undefined {
+  return checks.find((check) => check.service === service);
+}
+
+function attachDetail(checks: HealthCheck[], detail: string): void {
+  if (checks.length === 0) return;
+
+  let parent = checks[checks.length - 1];
+  if (FIRECRAWL_DETAIL.test(detail)) {
+    const firecrawl = findCheck(checks, "Firecrawl");
+    if (firecrawl) parent = firecrawl;
+  } else if (
+    parent.service === "Lead database" &&
+    /^(?:Firecrawl\b|Billing |Projected cycle)/i.test(detail)
+  ) {
+    const firecrawl = findCheck(checks, "Firecrawl");
+    if (firecrawl) parent = firecrawl;
+  }
+
+  if (/^WARNING:/i.test(detail) && parent.status === "ok") {
+    parent.status = "warn";
+  }
+  parent.details.push(detail);
+}
+
+function parseDoctorJson(lines: string[]): HealthCheck[] | null {
+  const joined = lines.join("\n");
+  const start = joined.indexOf("{");
+  const end = joined.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(joined.slice(start, end + 1)) as {
+      checks?: Array<{
+        service?: string;
+        status?: CheckStatus;
+        message?: string;
+        details?: string[];
+      }>;
+    };
+    if (!Array.isArray(parsed.checks) || parsed.checks.length === 0) return null;
+    return parsed.checks
+      .filter((c) => typeof c.service === "string")
+      .map((c) => ({
+        service: c.service as string,
+        status: (c.status ?? "info") as CheckStatus,
+        message: String(c.message ?? ""),
+        details: Array.isArray(c.details) ? c.details.map(String) : [],
+      }));
+  } catch {
+    return null;
+  }
+}
+
 function parseDoctorLogs(lines: string[]): HealthCheck[] {
+  const fromJson = parseDoctorJson(lines);
+  if (fromJson) return fromJson;
+
   const checks: HealthCheck[] = [];
 
   for (const raw of lines) {
+    // Blank lines break detail attachment so later indented blocks don't stick
+    // to the previous service (e.g. Firecrawl snapshots after Lead DB).
+    if (!raw.trim()) continue;
+
     const detailMatch = raw.match(/^\s{2,}(.+)$/);
     const line = raw.trim();
-    if (!line || SKIP_LINE.test(line)) continue;
+    if (SKIP_LINE.test(line)) continue;
 
-    if (detailMatch && checks.length > 0) {
-      const detail = redactSecret(detailMatch[1]);
-      if (/^WARNING:/i.test(detail)) {
-        const parent = checks[checks.length - 1];
-        if (parent.status === "ok") parent.status = "warn";
-      }
-      checks[checks.length - 1].details.push(detail);
+    if (detailMatch) {
+      attachDetail(checks, redactSecret(detailMatch[1]));
       continue;
     }
 
-    const leadDb = line.match(/^Lead DB:\s*(.+?) — (\d+) lead\(s\), (\d+) enriched/);
+    const leadDb = line.match(
+      /^Lead DB:\s*(.+?) — (\d+) lead\(s\), (\d+) (?:researched|enriched)/,
+    );
     if (leadDb) {
       checks.push({
         service: "Lead database",
         status: "ok",
-        message: `${leadDb[2]} leads, ${leadDb[3]} enriched`,
+        message: `${leadDb[2]} leads, ${leadDb[3]} researched`,
         details: [redactSecret(leadDb[1])],
       });
       continue;
@@ -170,42 +230,63 @@ function parseDoctorLogs(lines: string[]): HealthCheck[] {
   return checks;
 }
 
+function checkLayoutId(service: string): string {
+  return `doctor-check-${service}`;
+}
+
 function CheckRow({ check }: { check: HealthCheck }) {
   const meta = STATUS_META[check.status];
   const Icon = meta.icon;
+  const reduced = useReducedMotion();
 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, x: -12 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -8 }}
-      transition={{ type: "spring", stiffness: 260, damping: 24 }}
+      layoutId={checkLayoutId(check.service)}
+      initial={reduced ? false : doctorReveal.row.initial}
+      animate={doctorReveal.row.animate}
+      exit={reduced ? undefined : doctorReveal.row.exit}
+      transition={reduced ? { duration: 0 } : doctorReveal.row.transition}
       className="flex items-start gap-3 rounded-xl border border-border/50 bg-background/40 px-3.5 py-3"
     >
-      <span
+      <motion.span
+        initial={reduced ? false : doctorReveal.statusPop.initial}
+        animate={doctorReveal.statusPop.animate}
+        transition={reduced ? { duration: 0 } : doctorReveal.statusPop.transition}
         className={cn(
           "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border",
           meta.chip,
         )}
       >
         <Icon className="size-3.5" strokeWidth={2.25} />
-      </span>
+      </motion.span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-sm font-semibold leading-tight">{check.service}</p>
-          <span
+          <motion.span
+            initial={reduced ? false : doctorReveal.statusPop.initial}
+            animate={doctorReveal.statusPop.animate}
+            transition={
+              reduced
+                ? { duration: 0 }
+                : { ...doctorReveal.statusPop.transition, delay: 0.05 }
+            }
             className={cn(
               "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
               meta.chip,
             )}
           >
             {meta.label}
-          </span>
+          </motion.span>
         </div>
         <p className="mt-1 text-xs leading-snug text-muted-foreground">{check.message}</p>
         {check.details.length > 0 ? (
-          <ul className="mt-2 space-y-1">
+          <motion.ul
+            initial={reduced ? false : { opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1], delay: 0.12 }}
+            className="mt-2 space-y-1 overflow-hidden"
+          >
             {check.details.map((detail) => (
               <li
                 key={detail}
@@ -214,7 +295,7 @@ function CheckRow({ check }: { check: HealthCheck }) {
                 {detail}
               </li>
             ))}
-          </ul>
+          </motion.ul>
         ) : null}
       </div>
     </motion.div>
@@ -227,25 +308,19 @@ function PendingCheckRow({ service, active }: { service: string; active: boolean
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 8 }}
+      layoutId={checkLayoutId(service)}
+      initial={reduced ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
-      transition={{ type: "spring", stiffness: 260, damping: 24 }}
+      exit={reduced ? undefined : { opacity: 0, y: -4 }}
+      transition={spring.soft}
       className={cn(
-        "relative overflow-hidden rounded-xl border px-3.5 py-3",
+        "rounded-xl border px-3.5 py-3",
         active
           ? "border-primary/35 bg-primary/10"
           : "border-dashed border-border/50 bg-muted/20",
       )}
     >
-      {active && !reduced ? (
-        <motion.div
-          className="absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-transparent via-primary/10 to-transparent"
-          animate={{ x: ["-120%", "760%"] }}
-          transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-        />
-      ) : null}
-      <div className="relative flex items-start gap-3">
+      <div className="flex items-start gap-3">
         <span
           className={cn(
             "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border",
@@ -256,8 +331,8 @@ function PendingCheckRow({ service, active }: { service: string; active: boolean
         >
           {active ? (
             <motion.span
-              animate={reduced ? undefined : { rotate: 360 }}
-              transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+              animate={reduced ? undefined : { rotate: liveState.spinner.rotate }}
+              transition={liveState.spinner.transition}
             >
               <LoaderCircle className="size-3.5" strokeWidth={2.25} />
             </motion.span>
@@ -272,10 +347,18 @@ function PendingCheckRow({ service, active }: { service: string; active: boolean
               {active ? "Running" : "Pending"}
             </span>
           </div>
-          <p className="mt-1 flex items-center gap-1 text-xs leading-snug text-muted-foreground">
-            {active ? "Checking service" : "Waiting in sequence"}
-            {active ? <TypingDots /> : null}
+          <p className="mt-1 text-xs leading-snug text-muted-foreground">
+            {active ? "Checking service…" : "Waiting in sequence"}
           </p>
+          {active && !reduced ? (
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-primary/15">
+              <motion.div
+                className="h-full w-1/2 rounded-full bg-primary/70"
+                animate={{ x: ["-60%", "160%"] }}
+                transition={{ duration: 1.25, ease: "linear", repeat: Infinity }}
+              />
+            </div>
+          ) : null}
         </div>
       </div>
     </motion.div>
@@ -293,7 +376,7 @@ function SummaryTile({
 }) {
   return (
     <StaggerItem>
-      <div className="glass rounded-xl px-3 py-2">
+      <div className="panel rounded-xl px-3 py-2">
         <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
           {label}
         </p>
@@ -321,57 +404,38 @@ export function DoctorHealthPanel({
   onDone?: (status: string) => void;
 }) {
   const reduced = useReducedMotion();
-  const [lines, setLines] = useState<string[]>([]);
-  const [status, setStatus] = useState("running");
+  const { lines, status, phase, retry } = useJobStream({ jobId, onDone });
   const [showRaw, setShowRaw] = useState(false);
+  const [revealedCount, setRevealedCount] = useState(0);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const wasLiveRef = useRef(false);
 
+  const checks = useMemo(() => parseDoctorLogs(lines), [lines]);
+  const streamRunning = status === "running" || status === "pending";
+
+  // Pace reveals (~520ms each) so a fast JSON dump doesn't flash every row at once.
+  // Remount via key={jobId} resets revealedCount for a new health check.
   useEffect(() => {
-    let cancelled = false;
-    wasLiveRef.current = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- jobId change reset
-    setLines([]);
-    setStatus("running");
+    if (reduced) return;
+    if (checks.length <= revealedCount) return;
+    const timer = window.setTimeout(() => {
+      setRevealedCount((n) => Math.min(n + 1, checks.length));
+    }, doctorReveal.stepMs);
+    return () => window.clearTimeout(timer);
+  }, [checks.length, revealedCount, reduced]);
 
-    void fetch(`/api/jobs/${jobId}`)
-      .then((r) => r.json())
-      .then((body: { job?: { status: string; logs?: string[] } }) => {
-        if (cancelled) return;
-        const initial = body.job?.status ?? "running";
-        setStatus(initial);
-        if (body.job?.logs?.length) setLines(body.job.logs);
-        wasLiveRef.current = initial === "running";
-      })
-      .catch(() => {
-        if (!cancelled) wasLiveRef.current = true;
-      });
-
-    const source = new EventSource(`/api/jobs/${jobId}/stream`);
-
-    source.addEventListener("log", (event) => {
-      const data = JSON.parse(event.data) as { line: string };
-      setLines((prev) => [...prev, data.line]);
-    });
-
-    source.addEventListener("done", (event) => {
-      const data = JSON.parse(event.data) as { status: string };
-      setStatus(data.status);
-      if (wasLiveRef.current) onDone?.(data.status);
-      source.close();
-    });
-
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) return;
-      setStatus("error");
-      source.close();
-    };
-
-    return () => {
-      cancelled = true;
-      source.close();
-    };
-  }, [jobId, onDone]);
+  const visibleCount = reduced ? checks.length : revealedCount;
+  const visibleChecks = checks.slice(0, visibleCount);
+  const revealing = !reduced && visibleCount < checks.length;
+  const working = streamRunning || revealing;
+  const passedChecks = visibleChecks.filter((c) => c.status === "ok").length;
+  const warnChecks = visibleChecks.filter((c) => c.status === "warn").length;
+  const failedChecks = visibleChecks.filter(
+    (c) => c.status === "fail" || c.status === "missing",
+  ).length;
+  const visibleServices = new Set(visibleChecks.map((check) => check.service));
+  const pendingChecks = working
+    ? EXPECTED_CHECKS.filter((service) => !visibleServices.has(service))
+    : [];
 
   useEffect(() => {
     const scrollArea = scrollAreaRef.current;
@@ -379,148 +443,167 @@ export function DoctorHealthPanel({
       top: scrollArea.scrollHeight,
       behavior: reduced ? "auto" : "smooth",
     });
-  }, [lines, reduced, showRaw]);
+  }, [visibleChecks.length, pendingChecks.length, reduced, showRaw]);
 
-  const checks = useMemo(() => parseDoctorLogs(lines), [lines]);
-  const running = status === "running";
-  const passedChecks = checks.filter((c) => c.status === "ok").length;
-  const warnChecks = checks.filter((c) => c.status === "warn").length;
-  const failedChecks = checks.filter((c) => c.status === "fail" || c.status === "missing").length;
-  const completedServices = new Set(checks.map((check) => check.service));
-  const pendingChecks = running
-    ? EXPECTED_CHECKS.filter((service) => !completedServices.has(service))
-    : [];
+  const headline = working
+    ? revealing && !streamRunning
+      ? "Settling results…"
+      : "Verifying integrations…"
+    : status === "completed"
+      ? failedChecks > 0
+        ? `${failedChecks} issue${failedChecks === 1 ? "" : "s"} found`
+        : warnChecks > 0
+          ? `Passed with ${warnChecks} warning${warnChecks === 1 ? "" : "s"}`
+          : "All checks passed"
+      : status;
 
   return (
-    <div className={cn("rounded-2xl", running && "live-ring p-px")}>
-      <div className="glass-strong glass-sheen flex h-[min(64dvh,660px)] min-h-0 flex-col overflow-hidden rounded-2xl">
-        {running && !reduced ? (
+    <div className="panel-strong panel-sheen flex h-[min(64dvh,660px)] min-h-0 flex-col overflow-hidden rounded-2xl">
+      {working && !reduced ? (
+        <div className={progress.trackClass}>
           <motion.div
-            className="h-0.5 w-full bg-muted"
-            initial={false}
-          >
-            <motion.div
-              className="h-full w-1/3 bg-primary"
-              animate={{ x: ["-100%", "400%"] }}
-              transition={{ duration: 1.4, repeat: Infinity, ease: "linear" }}
-            />
-          </motion.div>
-        ) : null}
+            className={progress.fillClass}
+            animate={{ x: ["-100%", "400%"] }}
+            transition={progress.bar}
+          />
+        </div>
+      ) : null}
 
-        <div className="relative shrink-0 border-b border-border/50 px-5 pb-4 pt-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <AnimatePresence mode="wait">
-                <motion.span
-                  key={running ? "running" : status}
-                  initial={{ scale: 0.8, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.8, opacity: 0 }}
-                  className={cn(
-                    "flex size-9 items-center justify-center rounded-xl text-white shadow-lg",
-                    running
-                      ? "bg-gradient-to-br from-primary to-[oklch(0.6_0.16_300)]"
-                      : status === "completed" && failedChecks === 0
-                        ? "bg-gradient-to-br from-success to-[oklch(0.62_0.13_183)]"
-                        : "bg-gradient-to-br from-destructive to-[oklch(0.55_0.2_15)]",
-                  )}
-                >
+      <div className="relative shrink-0 border-b border-border/50 px-5 pb-4 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <AnimatePresence mode="wait">
+              <motion.span
+                key={working ? "running" : status}
+                initial={{ scale: 0.85, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.85, opacity: 0 }}
+                transition={spring.snappy}
+                className={cn(
+                  "flex size-9 items-center justify-center rounded-xl text-white shadow-lg",
+                  working
+                    ? "bg-gradient-to-br from-primary to-primary/80"
+                    : status === "completed" && failedChecks === 0
+                      ? "bg-gradient-to-br from-success to-success/80"
+                      : "bg-gradient-to-br from-destructive to-destructive/80",
+                )}
+              >
+                {working && !reduced ? (
+                  <motion.span
+                    animate={{ rotate: liveState.spinner.rotate }}
+                    transition={liveState.spinner.transition}
+                    className="flex"
+                  >
+                    <LoaderCircle className="size-4.5" strokeWidth={2.25} />
+                  </motion.span>
+                ) : (
                   <Stethoscope className="size-4.5" strokeWidth={2.25} />
-                </motion.span>
+                )}
+              </motion.span>
+            </AnimatePresence>
+            <div>
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                Health check
+                {working ? <LiveDot tone="primary" /> : null}
+              </p>
+              <AnimatePresence mode="wait">
+                <motion.p
+                  key={headline}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.22 }}
+                  className="text-xs capitalize text-muted-foreground"
+                >
+                  {headline}
+                </motion.p>
               </AnimatePresence>
-              <div>
-                <p className="flex items-center gap-2 text-sm font-semibold">
-                  Health check
-                  {running ? <LiveDot tone="primary" /> : null}
-                </p>
-                <p className="text-xs capitalize text-muted-foreground">
-                  {running
-                    ? "Verifying integrations…"
-                    : status === "completed"
-                      ? failedChecks > 0
-                        ? `${failedChecks} issue${failedChecks === 1 ? "" : "s"} found`
-                        : warnChecks > 0
-                          ? `Passed with ${warnChecks} warning${warnChecks === 1 ? "" : "s"}`
-                          : "All checks passed"
-                      : status}
-                </p>
-              </div>
             </div>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant={showRaw ? "secondary" : "ghost"}
+            className="h-7 px-2.5 text-xs"
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            <SquareTerminal className="size-3.5" />
+            Raw
+          </Button>
+          {phase === "polling" || phase === "reconnecting" ? (
             <Button
               type="button"
               size="sm"
-              variant={showRaw ? "secondary" : "ghost"}
+              variant="outline"
               className="h-7 px-2.5 text-xs"
-              onClick={() => setShowRaw((v) => !v)}
+              onClick={retry}
             >
-              <SquareTerminal className="size-3.5" />
-              Raw
+              Retry stream
             </Button>
-          </div>
-
-          {checks.length > 0 || running ? (
-            <Stagger className="mt-4 grid grid-cols-3 gap-2">
-              <SummaryTile label="Passed" value={passedChecks} tone="success" />
-              <SummaryTile
-                label="Warnings"
-                value={warnChecks}
-                tone={warnChecks > 0 ? "warning" : "muted"}
-              />
-              <SummaryTile
-                label="Issues"
-                value={failedChecks}
-                tone={failedChecks > 0 ? "destructive" : "muted"}
-              />
-            </Stagger>
           ) : null}
         </div>
 
-        <div className="min-h-0 flex-1 p-3">
-          {showRaw ? (
-            <div
-              ref={scrollAreaRef}
-              className="max-h-full overflow-auto rounded-xl border border-white/5 bg-[oklch(0.15_0.02_262)] p-3.5 shadow-inner"
-            >
-              <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[oklch(0.84_0.01_250)]">
-                {lines.filter((line) => !line.startsWith("$")).join("\n") ||
-                  "Waiting for output..."}
-              </pre>
-            </div>
-          ) : (
-            <div
-              ref={scrollAreaRef}
-              className="flex max-h-full min-h-0 flex-col gap-2 overflow-y-auto pr-1"
-            >
-              <AnimatePresence initial={false}>
-                {checks.map((check) => (
-                  <CheckRow key={check.service} check={check} />
-                ))}
-                {pendingChecks.map((service, index) => (
-                  <PendingCheckRow
-                    key={`pending-${service}`}
-                    service={service}
-                    active={index === 0}
-                  />
-                ))}
-              </AnimatePresence>
-              {running && pendingChecks.length === 0 ? (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="mt-2 flex items-center gap-2 rounded-xl border border-dashed border-border/50 px-3 py-3 text-xs text-muted-foreground"
-                >
-                  <span className="size-2 animate-pulse rounded-full bg-muted-foreground/40" />
-                  Checking next service…
-                  <TypingDots />
-                </motion.div>
-              ) : checks.length === 0 ? (
-                <p className="py-4 text-center text-xs text-muted-foreground">
-                  No check results captured
-                </p>
-              ) : null}
-            </div>
-          )}
-        </div>
+        {visibleChecks.length > 0 || working ? (
+          <Stagger className="mt-4 grid grid-cols-3 gap-2">
+            <SummaryTile label="Passed" value={passedChecks} tone="success" />
+            <SummaryTile
+              label="Warnings"
+              value={warnChecks}
+              tone={warnChecks > 0 ? "warning" : "muted"}
+            />
+            <SummaryTile
+              label="Issues"
+              value={failedChecks}
+              tone={failedChecks > 0 ? "destructive" : "muted"}
+            />
+          </Stagger>
+        ) : null}
+      </div>
+
+      <div className="min-h-0 flex-1 p-3">
+        {showRaw ? (
+          <div
+            ref={scrollAreaRef}
+            className="max-h-full overflow-auto rounded-xl border border-white/5 bg-[#0b0b0b] p-3.5 shadow-inner"
+          >
+            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#ece9e1]">
+              {lines.filter((line) => !line.startsWith("$")).join("\n") ||
+                "Waiting for output..."}
+            </pre>
+          </div>
+        ) : (
+          <div
+            ref={scrollAreaRef}
+            className="flex max-h-full min-h-0 flex-col gap-2 overflow-y-auto pr-1"
+          >
+            <AnimatePresence initial={false} mode="popLayout">
+              {visibleChecks.map((check) => (
+                <CheckRow key={check.service} check={check} />
+              ))}
+              {pendingChecks.map((service, index) => (
+                <PendingCheckRow
+                  key={`pending-${service}`}
+                  service={service}
+                  active={index === 0}
+                />
+              ))}
+            </AnimatePresence>
+            {working && pendingChecks.length === 0 && revealing ? (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="mt-2 flex items-center gap-2 rounded-xl border border-dashed border-border/50 px-3 py-3 text-xs text-muted-foreground"
+              >
+                <LoaderCircle className="size-3.5 animate-spin" />
+                Revealing remaining checks…
+              </motion.div>
+            ) : !working && checks.length === 0 ? (
+              <p className="py-4 text-center text-xs text-muted-foreground">
+                No check results captured
+              </p>
+            ) : null}
+          </div>
+        )}
       </div>
     </div>
   );

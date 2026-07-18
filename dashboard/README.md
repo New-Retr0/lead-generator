@@ -32,7 +32,7 @@ npm run dev
 
 Open **https://pallares.localhost** (Portless) or `npm run dev:direct` on port 3000.
 
-This dashboard is the only in-repo app surface. It keeps full pipeline control and CRM workflows local.
+This dashboard is the only in-repo app surface. It is a developer/operator/observer console for launching runs, monitoring providers and costs, inspecting evidence, and recording learning feedback. It is not a CRM; paying integrations use the Partner API.
 
 ## API
 

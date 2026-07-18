@@ -40,7 +40,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   firecrawl: "Firecrawl",
   google_places: "Google Places",
   browser_use: "Browser Use",
-  ai_gateway: "AI Gateway",
 };
 
 export function providerLabel(provider: string): string {

@@ -21,15 +21,7 @@ from pallares_leads.settings import get_settings
 QUEUE_NAME = "pipeline_jobs"
 
 ALLOWED_ENV_OVERRIDES = frozenset({
-    "ENRICHMENT_PARALLEL_WORKERS",
-    "FIRECRAWL_MAX_CONCURRENCY",
-    "FIRECRAWL_MAX_CREDITS_PER_RUN",
-    "FIRECRAWL_SESSION_CREDIT_STOP",
-    "BROWSER_USE_ENABLED",
-    "OWNER_CHAIN_BACKEND",
-    "AI_GATEWAY_ENABLED",
-    "AI_OWNER_DISAMBIGUATION",
-    "AI_NEED_SIGNAL_FALLBACK",
+    "FIRECRAWL_AGENT_MAX_CREDITS",
 })
 
 
@@ -209,6 +201,37 @@ class PipelineQueueWorker:
             values,
         )
 
+    def close_job_child_runs(
+        self,
+        conn: psycopg.Connection,
+        job_id: str,
+        *,
+        stop_reason: str,
+    ) -> None:
+        """Force-terminal RUNNING children and clear stuck enriching claims."""
+        conn.execute(
+            """
+            update public.leads
+            set enrichment_status = 'partial'
+            where lower(coalesce(enrichment_status, '')) = 'enriching'
+              and last_run_id in (
+                select run_id from public.runs
+                where job_id = %s and status = 'running'
+              )
+            """,
+            (str(job_id),),
+        )
+        conn.execute(
+            """
+            update public.runs
+            set status = 'failed',
+                finished_at = coalesce(finished_at, now()),
+                stop_reason = coalesce(nullif(stop_reason, ''), %s)
+            where job_id = %s and status = 'running'
+            """,
+            (stop_reason, str(job_id)),
+        )
+
     def job_row(self, conn: psycopg.Connection, job_id: str) -> dict[str, Any] | None:
         return conn.execute(
             """
@@ -268,6 +291,9 @@ class PipelineQueueWorker:
         env = os.environ.copy()
         env.setdefault("PALLARES_LOG_JSON", "1")
         apply_env_overrides(env, payload)
+        # After overrides so a future allowlist cannot strip the parent job id.
+        # run_campaign.close_orphaned_job_runs / runs.job_id attach to this job.
+        env["PALLARES_JOB_ID"] = str(job_id)
         proc = subprocess.Popen(
             command,
             cwd=self.project_root,
@@ -299,6 +325,8 @@ class PipelineQueueWorker:
         code = proc.wait()
 
         if code == 0:
+            # Sweep any child cells still marked running (lost finish_run).
+            self.close_job_child_runs(conn, job_id, stop_reason="orphaned")
             self.update_job(
                 conn,
                 job_id,
@@ -310,11 +338,22 @@ class PipelineQueueWorker:
             self.archive(conn, msg.msg_id)
             return
 
+        # Close every still-running cell for this job — not just the first linked run.
+        self.close_job_child_runs(conn, job_id, stop_reason="worker_failed")
         if linked_run_id:
             conn.execute(
                 """
+                update public.leads
+                set enrichment_status = 'partial'
+                where lower(coalesce(enrichment_status, '')) = 'enriching'
+                  and last_run_id = %s
+                """,
+                (linked_run_id,),
+            )
+            conn.execute(
+                """
                 update public.runs
-                set status = 'failed', finished_at = now()
+                set status = 'failed', finished_at = coalesce(finished_at, now())
                 where run_id = %s and status = 'running'
                 """,
                 (linked_run_id,),

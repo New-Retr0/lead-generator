@@ -1,16 +1,24 @@
 import { cache } from "react";
 import { buildCostBudget } from "./cost-budget";
 import { inferFirecrawlPlan } from "./config";
+import {
+  isVerifiedDecisionMaker,
+  leadReadinessStatus,
+  primaryCallablePhone,
+} from "./lead-readiness";
+import { isLeadFinishedStage } from "./pipeline/stages";
 import { dbAvailable, getSql } from "./pg";
 import type {
   CostSeries,
   CrmStatus,
+  InventoryMode,
   LeadCostBilling,
   LeadCostByProvider,
   LeadCostEvent,
   LeadCosts,
   InsightReport,
   LeadDetail,
+  LeadFact,
   LeadOutcome,
   LeadRow,
   LeadTouch,
@@ -49,11 +57,46 @@ function emptyOverview(): OverviewStats {
     enrichedLeads: 0,
     readyToCall: 0,
     readyToCallRate: 0,
+    partialInventory: 0,
+    verifiedThisMonth: 0,
     creditsThisMonth: 0,
+    creditsPerVerifiedDm: null,
+    creditsPerVerifiedDmCaveat: null,
+    usdThisMonth: 0,
+    usdPerVerifiedDm: null,
+    minutesPerVerifiedDm: null,
     browserUseUsdThisMonth: 0,
-    aiGatewayUsdThisMonth: 0,
+    yield: { discovered: 0, enriched: 0, verifiedDm: 0 },
     usdByProvider: [],
     balances: [],
+  };
+}
+
+function mapRunRow(row: Record<string, unknown>): RunRow {
+  return {
+    run_id: String(row.run_id),
+    started_at: toIso(row.started_at),
+    finished_at: toIsoOrNull(row.finished_at),
+    run_type: String(row.run_type),
+    market_key: (row.market_key as string | null) ?? null,
+    category_key: (row.category_key as string | null) ?? null,
+    campaign_key: row.campaign_key != null ? String(row.campaign_key) : null,
+    job_id: row.job_id != null ? String(row.job_id) : null,
+    discovered_count: Number(row.discovered_count ?? 0),
+    skipped_known_count: Number(row.skipped_known_count ?? 0),
+    enriched_count: Number(row.enriched_count ?? 0),
+    status: String(row.status),
+    stop_reason: row.stop_reason != null ? String(row.stop_reason) : null,
+    stop_detail: row.stop_detail != null ? String(row.stop_detail) : null,
+    error: row.error != null ? String(row.error) : null,
+    verified_dm_count:
+      row.verified_dm_count != null && row.verified_dm_count !== ""
+        ? Number(row.verified_dm_count)
+        : null,
+    duration_ms:
+      row.duration_ms != null && row.duration_ms !== ""
+        ? Number(row.duration_ms)
+        : null,
   };
 }
 
@@ -121,17 +164,21 @@ function parseFirecrawlSnapshotBalance(
     }
   }
 
+  const inferred = inferFirecrawlPlan({ planCredits: plan });
+  const payloadName =
+    payload && typeof (payload.planName ?? payload.plan_name) === "string"
+      ? String(payload.planName ?? payload.plan_name)
+      : null;
+
   return {
     remaining: remaining ?? snapRemaining,
     used: used ?? snapUsed,
     plan,
-    planName: inferFirecrawlPlan({ planCredits: plan })?.name ?? null,
-    creditUsd: (() => {
-      const inferred = inferFirecrawlPlan({ planCredits: plan });
-      return inferred && inferred.monthlyUsd > 0 && inferred.monthlyCredits > 0
+    planName: payloadName ?? inferred?.name ?? null,
+    creditUsd:
+      inferred && inferred.monthlyUsd > 0 && inferred.monthlyCredits > 0
         ? inferred.monthlyUsd / inferred.monthlyCredits
-        : null;
-    })(),
+        : null,
     billingPeriodEnd,
   };
 }
@@ -181,7 +228,15 @@ type EnrichedJson = {
   investigation_status?: string;
   verification_level?: string;
   main_phone?: string | null;
-  site_contacts?: { phone?: string; email?: string }[];
+  site_contacts?: {
+    label?: string | null;
+    role?: string | null;
+    name?: string | null;
+    phone?: string | null;
+    email?: string | null;
+  }[];
+  best_contact_name?: string;
+  best_contact_role?: string;
   best_contact_phone?: string;
   best_contact_email_or_form?: string;
   facts?: unknown[];
@@ -202,40 +257,21 @@ function parseEnrichedJson(raw: unknown): EnrichedJson {
   return {};
 }
 
-function isReadyToCall(data: EnrichedJson): boolean {
-  const hasOutreach = (data.site_contacts ?? []).some(
-    (c) =>
-      (c.phone && c.phone.trim() !== "" && c.phone !== "Not found") ||
-      (c.email && c.email.includes("@")),
-  );
-  const bestPhone =
-    data.best_contact_phone && data.best_contact_phone !== "Not found"
-      ? data.best_contact_phone
-      : "";
-  const bestEmail =
-    data.best_contact_email_or_form &&
-    data.best_contact_email_or_form !== "Not found" &&
-    data.best_contact_email_or_form.includes("@")
-      ? data.best_contact_email_or_form
-      : "";
-  const callable = hasOutreach || Boolean(bestPhone) || Boolean(bestEmail);
-  if (data.investigation_status === "enriched" && callable) return true;
-  if (data.main_phone && callable) return true;
-  return false;
-}
-
 function salesStatus(data: EnrichedJson): string {
-  return isReadyToCall(data) ? "Ready to call" : "Needs research";
+  return leadReadinessStatus(data);
 }
 
 function primaryPhone(data: EnrichedJson): string | null {
-  if (data.main_phone && data.main_phone !== "Not found") return data.main_phone;
-  for (const c of data.site_contacts ?? []) {
-    if (c.phone && c.phone !== "Not found") return c.phone;
-  }
+  // Prefer the callable DM phone so Ready rows never surface Google mainline first.
+  const dmPhone = primaryCallablePhone(data);
+  if (dmPhone) return dmPhone;
   if (data.best_contact_phone && data.best_contact_phone !== "Not found") {
     return data.best_contact_phone;
   }
+  for (const c of data.site_contacts ?? []) {
+    if (c.phone && c.phone !== "Not found") return c.phone;
+  }
+  if (data.main_phone && data.main_phone !== "Not found") return data.main_phone;
   return null;
 }
 
@@ -250,13 +286,29 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
     await sql`SELECT COUNT(*)::int AS n FROM leads WHERE enriched_json IS NOT NULL`;
   const enrichedLeads = enrichedRow[0]?.n as number;
 
-  let readyToCall = 0;
-  const enrichedRows =
-    await sql`SELECT enriched_json FROM leads WHERE enriched_json IS NOT NULL`;
-  for (const row of enrichedRows) {
-    const data = parseEnrichedJson(row.enriched_json);
-    if (isReadyToCall(data)) readyToCall += 1;
-  }
+  const readyRow = await sql`
+    SELECT COUNT(*)::int AS n
+    FROM leads
+    WHERE lower(COALESCE(enrichment_status, '')) NOT IN (
+        'skipped', 'needs_manual', 'enriching'
+      )
+      AND public.is_verified_decision_maker(
+        enriched_json,
+        enriched_json ->> 'verification_level'
+      )
+  `;
+  const readyToCall = Number(readyRow[0]?.n ?? 0);
+
+  const partialRow = await sql`
+    SELECT COUNT(*)::int AS n
+    FROM leads
+    WHERE enriched_json IS NOT NULL
+      AND lower(COALESCE(enrichment_status, '')) NOT IN (
+        'skipped', 'needs_manual', 'enriching'
+      )
+      AND COALESCE(enriched_json->>'verification_level', 'unverified') = 'partial'
+  `;
+  const partialInventory = Number(partialRow[0]?.n ?? 0);
 
   const monthStart = new Date();
   monthStart.setDate(1);
@@ -270,19 +322,52 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
   `;
   const creditsThisMonth = Number(creditsRow[0]?.credits ?? 0);
 
+  const attributedCreditsRow = await sql`
+    SELECT COALESCE(SUM(ce.units), 0)::float AS credits
+    FROM cost_events ce
+    JOIN leads l ON l.place_id = ce.place_id
+    WHERE ce.provider = 'firecrawl'
+      AND ce.created_at >= ${monthIso}
+      AND ce.place_id IS NOT NULL
+      AND public.is_verified_decision_maker(
+        l.enriched_json,
+        l.enriched_json ->> 'verification_level'
+      )
+  `;
+  const attributedCredits = Number(attributedCreditsRow[0]?.credits ?? 0);
+
+  const efficiencyRows = await sql`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE public.is_verified_decision_maker(
+          l.enriched_json,
+          l.enriched_json ->> 'verification_level'
+        )
+      )::int AS verified_count,
+      COALESCE((
+        SELECT SUM(re.duration_ms)
+        FROM run_events re
+        JOIN leads duration_lead ON duration_lead.place_id = re.place_id
+        WHERE re.stage = 'lead_done'
+          AND re.created_at >= ${monthIso}
+          AND re.duration_ms IS NOT NULL
+          AND public.is_verified_decision_maker(
+            duration_lead.enriched_json,
+            duration_lead.enriched_json ->> 'verification_level'
+          )
+      ), 0)::float AS verified_duration_ms
+    FROM leads l
+    WHERE l.last_enriched_at >= ${monthIso}
+  `;
+  const verifiedThisMonth = Number(efficiencyRows[0]?.verified_count ?? 0);
+  const verifiedDurationMs = Number(efficiencyRows[0]?.verified_duration_ms ?? 0);
+
   const browserUseRow = await sql`
     SELECT COALESCE(SUM(usd), 0)::float AS usd
     FROM cost_events
     WHERE provider = 'browser_use' AND created_at >= ${monthIso}
   `;
   const browserUseUsdThisMonth = Number(browserUseRow[0]?.usd ?? 0);
-
-  const aiGatewayRow = await sql`
-    SELECT COALESCE(SUM(usd), 0)::float AS usd
-    FROM cost_events
-    WHERE provider = 'ai_gateway' AND created_at >= ${monthIso}
-  `;
-  const aiGatewayUsdThisMonth = Number(aiGatewayRow[0]?.usd ?? 0);
 
   const providerRows = await sql`
     SELECT provider,
@@ -315,15 +400,37 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
     }
   }
   const usdByProvider = [...merged.values()].sort((a, b) => b.usd - a.usd);
+  const usdThisMonth = usdByProvider.reduce((sum, row) => sum + row.usd, 0);
+
+  const useAttributed = attributedCredits > 0;
+  const creditsForDmMetric = useAttributed ? attributedCredits : creditsThisMonth;
+  const creditsPerVerifiedDmCaveat = useAttributed
+    ? null
+    : verifiedThisMonth > 0
+      ? "Month-wide Firecrawl credits ÷ verified DMs (place_id attribution unavailable for most events)"
+      : null;
 
   return {
     totalLeads,
     enrichedLeads,
     readyToCall,
     readyToCallRate: enrichedLeads > 0 ? readyToCall / enrichedLeads : 0,
+    partialInventory,
+    verifiedThisMonth,
     creditsThisMonth,
+    creditsPerVerifiedDm:
+      verifiedThisMonth > 0 ? creditsForDmMetric / verifiedThisMonth : null,
+    creditsPerVerifiedDmCaveat,
+    usdThisMonth,
+    usdPerVerifiedDm: verifiedThisMonth > 0 ? usdThisMonth / verifiedThisMonth : null,
+    minutesPerVerifiedDm:
+      verifiedThisMonth > 0 ? verifiedDurationMs / 60_000 / verifiedThisMonth : null,
     browserUseUsdThisMonth,
-    aiGatewayUsdThisMonth,
+    yield: {
+      discovered: totalLeads,
+      enriched: enrichedLeads,
+      verifiedDm: readyToCall,
+    },
     usdByProvider,
     balances: await getCreditBalances(),
   };
@@ -336,12 +443,14 @@ export const listLeads = cache(async function listLeads(filters?: {
   crmStatus?: string;
   type?: string;
   minScore?: number;
-  dudsOnly?: boolean;
+  /** Default ready = verified DMs only. */
+  inventoryMode?: InventoryMode;
   limit?: number;
 }): Promise<LeadRow[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
   const limit = filters?.limit ?? 500;
+  const inventoryMode: InventoryMode = filters?.inventoryMode ?? "ready";
 
   const rows = await sql`
     SELECT leads.place_id, leads.business_name, leads.market_key, leads.category_key, leads.city,
@@ -351,21 +460,44 @@ export const listLeads = cache(async function listLeads(filters?: {
     FROM leads
     LEFT JOIN sales_feedback sf ON sf.place_id = leads.place_id
     WHERE leads.enriched_json IS NOT NULL
+      AND lower(COALESCE(leads.enrichment_status, '')) NOT IN (
+        'skipped', 'needs_manual', 'enriching'
+      )
+      ${
+        inventoryMode === "ready"
+          ? sql`AND public.is_verified_decision_maker(
+              leads.enriched_json,
+              leads.enriched_json ->> 'verification_level'
+            )`
+          : inventoryMode === "partial"
+            ? sql`AND COALESCE(leads.enriched_json->>'verification_level', 'unverified') = 'partial'`
+            : sql`AND COALESCE(leads.enriched_json->>'verification_level', 'unverified') IN ('verified', 'partial')`
+      }
     ${filters?.market ? sql`AND leads.market_key = ${filters.market}` : sql``}
     ${filters?.category ? sql`AND leads.category_key = ${filters.category}` : sql``}
     ${
-      filters?.minScore !== undefined
-        ? sql`AND COALESCE(leads.lead_score, 0) >= ${filters.minScore}`
-        : sql``
+      filters?.type === "vendor"
+        ? sql`AND COALESCE(leads.category_key, '') LIKE 'vendor_%'`
+        : filters?.type === "client"
+          ? sql`AND COALESCE(leads.category_key, '') NOT LIKE 'vendor_%'`
+          : sql``
     }
     ${
-      filters?.dudsOnly
-        ? sql`AND (
-            COALESCE(leads.lead_score, 0) < 40
-            OR leads.enrichment_status = 'needs_manual'
-            OR leads.confidence = 'Low'
-            OR leads.enrichment_status = 'unverified'
+      filters?.status === "Ready to call"
+        ? sql`AND public.is_verified_decision_maker(
+            leads.enriched_json,
+            leads.enriched_json ->> 'verification_level'
           )`
+        : filters?.status === "Needs research"
+          ? sql`AND NOT public.is_verified_decision_maker(
+              leads.enriched_json,
+              leads.enriched_json ->> 'verification_level'
+            )`
+          : sql``
+    }
+    ${
+      filters?.minScore !== undefined
+        ? sql`AND COALESCE(leads.lead_score, 0) >= ${filters.minScore}`
         : sql``
     }
     ORDER BY COALESCE(leads.lead_score, 0) DESC, leads.last_enriched_at DESC
@@ -375,6 +507,8 @@ export const listLeads = cache(async function listLeads(filters?: {
   const leads: LeadRow[] = [];
   for (const row of rows) {
     const data = parseEnrichedJson(row.enriched_json);
+    // Belt-and-suspenders: SQL already gates ready / status / type before LIMIT.
+    if (inventoryMode === "ready" && !isVerifiedDecisionMaker(data)) continue;
     const status = salesStatus(data);
     if (filters?.status && status !== filters.status) continue;
     const crmStatus = String(row.crm_status ?? "New");
@@ -399,6 +533,8 @@ export const listLeads = cache(async function listLeads(filters?: {
       crm_status: crmStatus as CrmStatus,
       lead_type: leadType,
       phone: primaryPhone(data),
+      best_contact_name: presentOrNull(data.best_contact_name),
+      best_contact_role: presentOrNull(data.best_contact_role),
     });
   }
   return leads;
@@ -413,31 +549,12 @@ function presentOrNull(value: unknown): string | null {
   return trimmed;
 }
 
-/** Some enriched fields are stored as stringified lists ("['• a', '• b']") — flatten to lines. */
-function normalizeListText(value: string | null): string | null {
-  if (!value) return value;
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return value;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) return parsed.map(String).join("\n");
-  } catch {
-    // fall through to Python-repr handling
-  }
-  const parts = trimmed
-    .slice(1, -1)
-    .split(/['"],\s*['"]/)
-    .map((p) => p.replace(/^\s*['"]+|['"]+\s*$/g, "").trim())
-    .filter(Boolean);
-  return parts.length > 0 ? parts.join("\n") : value;
-}
-
 export async function getRelatedLeads(placeId: string): Promise<RelatedLead[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
 
   const leadRows = await sql`
-    SELECT enriched_json, profile_key FROM leads WHERE place_id = ${placeId}
+    SELECT enriched_json, profile_key, mgmt_profile_key FROM leads WHERE place_id = ${placeId}
   `;
   const row = leadRows[0];
   if (!row) return [];
@@ -485,11 +602,15 @@ export async function getRelatedLeads(placeId: string): Promise<RelatedLead[]> {
   }
 
   const profileKey = (row.profile_key as string | null) ?? "";
-  if (profileKey.startsWith("mgmt:")) {
+  const mgmtKey =
+    (row.mgmt_profile_key as string | null) ??
+    ((profileKey.startsWith("mgmt:") ? profileKey : "") || "");
+  if (mgmtKey) {
     const mgrRows = await sql`
       SELECT place_id, business_name, city
       FROM leads
-      WHERE profile_key = ${profileKey} AND place_id != ${placeId}
+      WHERE (mgmt_profile_key = ${mgmtKey} OR profile_key = ${mgmtKey})
+        AND place_id != ${placeId}
       LIMIT 10
     `;
     for (const r of mgrRows) {
@@ -501,7 +622,7 @@ export async function getRelatedLeads(placeId: string): Promise<RelatedLead[]> {
         business_name: String(r.business_name),
         city: (r.city as string | null) ?? null,
         relation: "same_manager",
-        detail: profileKey,
+        detail: mgmtKey,
       });
     }
   }
@@ -577,15 +698,8 @@ function emptyLeadCosts(): LeadCosts {
   };
 }
 
-function classifyCostBilling(
-  provider: string,
-  operation: string,
-  meta: Record<string, unknown>,
-): LeadCostBilling {
+function classifyCostBilling(provider: string, operation: string): LeadCostBilling {
   if (provider === "browser_use") return "verified";
-  if (provider === "ai_gateway" && typeof meta.prompt_tokens === "number") {
-    return "verified";
-  }
   if (provider === "firecrawl" && FIRECRAWL_ESTIMATE_OPS.has(operation)) {
     return "estimated";
   }
@@ -643,7 +757,7 @@ export async function getLeadCosts(placeId: string): Promise<LeadCosts> {
     const usd = row.usd != null ? Number(row.usd) : 0;
     const provider = String(row.provider);
     const operation = String(row.operation);
-    const billing = classifyCostBilling(provider, operation, meta);
+    const billing = classifyCostBilling(provider, operation);
     const event: LeadCostEvent = {
       id: Number(row.id),
       runId: row.run_id != null ? String(row.run_id) : null,
@@ -736,6 +850,25 @@ export const getLeadDetail = cache(async function getLeadDetail(placeId: string)
     ? "vendor"
     : "client";
 
+  // Canonical provenance ledger (includes rejected extractions). Fall back to
+  // enriched_json.facts for older rows that never wrote lead_facts.
+  const factRows = await sql`
+    SELECT fact_kind, value_json, source_kind, source_url, method, quote,
+           verification, observed_at
+    FROM lead_facts
+    WHERE place_id = ${placeId}
+    ORDER BY observed_at ASC NULLS LAST, id ASC
+  `;
+  const factsFromTable = factRows.map((f) => mapLeadFactRow(f as Record<string, unknown>));
+  const factsFromJson = Array.isArray(data.facts)
+    ? (data.facts as Record<string, unknown>[]).map((f) => mapLeadFactRecord(f))
+    : [];
+  const facts = (factsFromTable.length > 0 ? factsFromTable : factsFromJson).sort((a, b) => {
+    const aRejected = a.verification === "rejected" ? 1 : 0;
+    const bRejected = b.verification === "rejected" ? 1 : 0;
+    return aRejected - bRejected;
+  });
+
   return {
     place_id: String(row.place_id),
     business_name: String(data.business_name ?? row.business_name ?? "Unknown"),
@@ -760,30 +893,13 @@ export const getLeadDetail = cache(async function getLeadDetail(placeId: string)
     best_contact_phone: presentOrNull(data.best_contact_phone),
     best_contact_email_or_form: presentOrNull(data.best_contact_email_or_form),
     property_manager_clue: presentOrNull(data.property_manager_or_ownership_clue),
-    why_good_fit: presentOrNull(data.why_this_is_a_good_fit),
     why_now: presentOrNull(data.why_now),
     score_breakdown:
       data.score_breakdown && typeof data.score_breakdown === "object"
         ? (data.score_breakdown as Record<string, number>)
         : {},
-    talking_points: normalizeListText(presentOrNull(data.sales_talking_points)),
-    need_signals: normalizeListText(presentOrNull(data.exterior_cleaning_need_signals)),
     site_contacts: siteContacts,
-    facts: Array.isArray(data.facts)
-      ? (data.facts as Record<string, unknown>[]).map((f) => ({
-          fact_kind: String(f.fact_kind ?? ""),
-          value:
-            f.value && typeof f.value === "object"
-              ? (f.value as Record<string, string>)
-              : {},
-          source_kind: String(f.source_kind ?? ""),
-          source_url: String(f.source_url ?? ""),
-          method: String(f.method ?? ""),
-          quote: String(f.quote ?? ""),
-          verification: String(f.verification ?? ""),
-          observed_at: String(f.observed_at ?? ""),
-        }))
-      : [],
+    facts,
     evidence_urls: Array.isArray(data.evidence_urls)
       ? (data.evidence_urls as string[]).filter((u) => typeof u === "string" && u.trim())
       : [],
@@ -793,6 +909,48 @@ export const getLeadDetail = cache(async function getLeadDetail(placeId: string)
     costs: await getLeadCosts(placeId),
   };
 });
+
+function coerceFactValue(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value == null) continue;
+    if (typeof value === "string") {
+      out[key] = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      out[key] = String(value);
+    }
+  }
+  return out;
+}
+
+function mapLeadFactRecord(f: Record<string, unknown>): LeadFact {
+  return {
+    fact_kind: String(f.fact_kind ?? ""),
+    value: coerceFactValue(f.value ?? f.value_json),
+    source_kind: String(f.source_kind ?? ""),
+    source_url: String(f.source_url ?? ""),
+    method: String(f.method ?? ""),
+    quote: String(f.quote ?? ""),
+    verification: String(f.verification ?? ""),
+    observed_at: String(f.observed_at ?? ""),
+  };
+}
+
+function mapLeadFactRow(row: Record<string, unknown>): LeadFact {
+  let valueRaw: unknown = row.value_json;
+  if (typeof valueRaw === "string") {
+    try {
+      valueRaw = JSON.parse(valueRaw);
+    } catch {
+      valueRaw = {};
+    }
+  }
+  return mapLeadFactRecord({
+    ...row,
+    value: valueRaw,
+  });
+}
 
 function mapRunEventRow(row: Record<string, unknown>): RunEventRow {
   return {
@@ -865,26 +1023,33 @@ export async function getRun(runId: string): Promise<RunRow | null> {
   if (!dbAvailable()) return null;
   const sql = getSql();
 
-  const rows = await sql`
-    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
-           discovered_count, skipped_known_count, enriched_count, status
-    FROM runs
-    WHERE run_id = ${runId}
-  `;
-  const row = rows[0];
-  if (!row) return null;
-  return {
-    run_id: String(row.run_id),
-    started_at: toIso(row.started_at),
-    finished_at: toIsoOrNull(row.finished_at),
-    run_type: String(row.run_type),
-    market_key: (row.market_key as string | null) ?? null,
-    category_key: (row.category_key as string | null) ?? null,
-    discovered_count: Number(row.discovered_count),
-    skipped_known_count: Number(row.skipped_known_count),
-    enriched_count: Number(row.enriched_count),
-    status: String(row.status),
-  };
+  try {
+    const rows = await sql`
+      SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+             campaign_key, job_id,
+             discovered_count, skipped_known_count, enriched_count, status,
+             stop_reason, stop_detail, error, verified_dm_count, duration_ms
+      FROM runs
+      WHERE run_id = ${runId}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const mapped = mapRunRow(row as Record<string, unknown>);
+    if (mapped.status !== "running") return mapped;
+    const [hydrated] = await hydrateRunningCounters([mapped]);
+    return hydrated;
+  } catch {
+    // Pre-migration fallback when observability columns are absent.
+    const rows = await sql`
+      SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+             discovered_count, skipped_known_count, enriched_count, status
+      FROM runs
+      WHERE run_id = ${runId}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return mapRunRow(row as Record<string, unknown>);
+  }
 }
 
 export async function getRunCosts(runId: string): Promise<RunCosts> {
@@ -935,11 +1100,10 @@ export async function getRunCosts(runId: string): Promise<RunCosts> {
 
   for (const row of rows) {
     if (row.place_id) leadIds.add(String(row.place_id));
-    const meta = parseCostMeta(row.meta_json);
     const usd = row.usd != null ? Number(row.usd) : 0;
     const provider = String(row.provider);
     const operation = String(row.operation);
-    const billing = classifyCostBilling(provider, operation, meta);
+    const billing = classifyCostBilling(provider, operation);
     totalUsd += usd;
     if (billing === "verified") verifiedUsd += usd;
     else estimatedUsd += usd;
@@ -1009,8 +1173,14 @@ export async function getRunCosts(runId: string): Promise<RunCosts> {
 }
 
 function toTimelineStage(row: RunEventRow): RunTimelineStage {
+  const meta =
+    row.meta_json && typeof row.meta_json === "object" && !Array.isArray(row.meta_json)
+      ? (row.meta_json as Record<string, unknown>)
+      : {};
+  const metaStage = typeof meta.stage === "string" ? meta.stage : null;
+  const stage = metaStage || row.stage;
   return {
-    stage: row.stage,
+    stage,
     ran: row.ran === 1,
     reason: row.reason,
     credits_est: row.credits_est,
@@ -1018,8 +1188,11 @@ function toTimelineStage(row: RunEventRow): RunTimelineStage {
   };
 }
 
-export async function getRunTimeline(runId: string): Promise<RunTimeline> {
-  const events = await getRunEvents(runId);
+export async function getRunTimeline(
+  runId: string,
+  preloadedEvents?: RunEventRow[],
+): Promise<RunTimeline> {
+  const events = preloadedEvents ?? (await getRunEvents(runId));
   const runEvents: RunTimelineStage[] = [];
   const leadMap = new Map<string, RunTimelineLead>();
 
@@ -1027,6 +1200,45 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
     return { runEvents, leads: [] };
   }
   const sql = getSql();
+
+  const placeIds = [
+    ...new Set(
+      events
+        .map((row) => row.place_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  ];
+  const leadMetaByPlace = new Map<
+    string,
+    {
+      business_name: string | null;
+      category_key: string | null;
+      verification_level: string | null;
+      lead_score: number | null;
+    }
+  >();
+  if (placeIds.length > 0) {
+    const leadRows = await sql`
+      SELECT place_id, business_name, category_key, lead_score, enriched_json
+      FROM leads WHERE place_id = ANY(${placeIds})
+    `;
+    for (const leadRow of leadRows) {
+      const placeId = String(leadRow.place_id);
+      let verificationLevel: string | null = null;
+      if (leadRow.enriched_json) {
+        const data = parseEnrichedJson(leadRow.enriched_json);
+        verificationLevel =
+          typeof data.verification_level === "string" ? data.verification_level : null;
+      }
+      leadMetaByPlace.set(placeId, {
+        business_name:
+          leadRow.business_name != null ? String(leadRow.business_name) : null,
+        category_key: (leadRow.category_key as string | null) ?? null,
+        verification_level: verificationLevel,
+        lead_score: (leadRow.lead_score as number | null) ?? null,
+      });
+    }
+  }
 
   for (const row of events) {
     if (!row.place_id) {
@@ -1036,25 +1248,13 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
 
     let lead = leadMap.get(row.place_id);
     if (!lead) {
-      const leadRows = await sql`
-        SELECT business_name, category_key, lead_score, enriched_json
-        FROM leads WHERE place_id = ${row.place_id}
-      `;
-      const leadRow = leadRows[0];
-
-      let verificationLevel: string | null = null;
-      if (leadRow?.enriched_json) {
-        const data = parseEnrichedJson(leadRow.enriched_json);
-        verificationLevel =
-          typeof data.verification_level === "string" ? data.verification_level : null;
-      }
-
+      const metaRow = leadMetaByPlace.get(row.place_id);
       lead = {
         place_id: row.place_id,
-        business_name: leadRow?.business_name != null ? String(leadRow.business_name) : null,
-        category_key: (leadRow?.category_key as string | null) ?? null,
-        verification_level: verificationLevel,
-        lead_score: (leadRow?.lead_score as number | null) ?? null,
+        business_name: metaRow?.business_name ?? null,
+        category_key: metaRow?.category_key ?? null,
+        verification_level: metaRow?.verification_level ?? null,
+        lead_score: metaRow?.lead_score ?? null,
         creditsEst: 0,
         done: false,
         stages: [],
@@ -1062,9 +1262,22 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
       leadMap.set(row.place_id, lead);
     }
 
-    lead.stages.push(toTimelineStage(row));
+    const stageRow = toTimelineStage(row);
+    lead.stages.push(stageRow);
     lead.creditsEst += row.credits_est ?? 0;
-    if (row.stage === "final") lead.done = true;
+    const meta =
+      row.meta_json && typeof row.meta_json === "object" && !Array.isArray(row.meta_json)
+        ? (row.meta_json as Record<string, unknown>)
+        : {};
+    const metaEvent = typeof meta.event === "string" ? meta.event : null;
+    // Production + progress paths emit `lead_done` (not legacy `final`).
+    if (
+      isLeadFinishedStage(row.stage) ||
+      isLeadFinishedStage(stageRow.stage) ||
+      isLeadFinishedStage(metaEvent)
+    ) {
+      lead.done = true;
+    }
   }
 
   return {
@@ -1076,38 +1289,115 @@ export async function getRunTimeline(runId: string): Promise<RunTimeline> {
 export async function getRunDetail(runId: string): Promise<RunDetail | null> {
   const run = await getRun(runId);
   if (!run) return null;
+  const studioEvents = await getRunEvents(runId);
+  const studioCosts = await getRunCostEvents(runId);
   return {
     run,
     costs: await getRunCosts(runId),
-    timeline: await getRunTimeline(runId),
+    timeline: await getRunTimeline(runId, studioEvents),
+    studioEvents,
+    studioCosts,
   };
 }
 
-export async function listRuns(limit = 50): Promise<RunRow[]> {
+async function hydrateRunningCounters(runs: RunRow[]): Promise<RunRow[]> {
+  const running = runs.filter((r) => r.status === "running");
+  if (running.length === 0 || !dbAvailable()) return runs;
+  const sql = getSql();
+  const ids = running.map((r) => r.run_id);
+  try {
+    const live = await sql`
+      SELECT
+        r.run_id,
+        COALESCE(
+          (
+            SELECT NULLIF(re.meta_json->>'count', '')::int
+            FROM run_events re
+            WHERE re.run_id = r.run_id
+              AND (
+                re.meta_json->>'event' = 'discovery_done'
+                OR re.stage = 'discovery'
+              )
+            ORDER BY re.created_at DESC
+            LIMIT 1
+          ),
+          r.discovered_count
+        ) AS discovered_count,
+        COALESCE(
+          (
+            SELECT NULLIF(re.meta_json->>'skipped_known', '')::int
+            FROM run_events re
+            WHERE re.run_id = r.run_id
+              AND re.meta_json->>'skipped_known' IS NOT NULL
+            ORDER BY re.created_at DESC
+            LIMIT 1
+          ),
+          r.skipped_known_count
+        ) AS skipped_known_count,
+        GREATEST(
+          r.enriched_count,
+          (
+            SELECT COUNT(DISTINCT re.place_id)::int
+            FROM run_events re
+            WHERE re.run_id = r.run_id
+              AND re.place_id IS NOT NULL
+              AND (
+                re.meta_json->>'event' = 'lead_done'
+                OR re.stage IN ('lead_done', 'final')
+              )
+          )
+        ) AS enriched_count
+      FROM runs r
+      WHERE r.run_id = ANY(${ids})
+        AND r.status = 'running'
+    `;
+    const byId = new Map(
+      live.map((row) => [
+        String(row.run_id),
+        {
+          discovered_count: Number(row.discovered_count ?? 0),
+          skipped_known_count: Number(row.skipped_known_count ?? 0),
+          enriched_count: Number(row.enriched_count ?? 0),
+        },
+      ]),
+    );
+    return runs.map((run) => {
+      const overlay = byId.get(run.run_id);
+      if (!overlay) return run;
+      return { ...run, ...overlay };
+    });
+  } catch {
+    return runs;
+  }
+}
+
+export const listRuns = cache(async function listRuns(limit = 50): Promise<RunRow[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
 
-  const rows = await sql`
-    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
-           discovered_count, skipped_known_count, enriched_count, status
-    FROM runs
-    ORDER BY started_at DESC
-    LIMIT ${limit}
-  `;
-
-  return rows.map((row) => ({
-    run_id: String(row.run_id),
-    started_at: toIso(row.started_at),
-    finished_at: toIsoOrNull(row.finished_at),
-    run_type: String(row.run_type),
-    market_key: (row.market_key as string | null) ?? null,
-    category_key: (row.category_key as string | null) ?? null,
-    discovered_count: Number(row.discovered_count),
-    skipped_known_count: Number(row.skipped_known_count),
-    enriched_count: Number(row.enriched_count),
-    status: String(row.status),
-  }));
-}
+  try {
+    const rows = await sql`
+      SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+             campaign_key, job_id,
+             discovered_count, skipped_known_count, enriched_count, status,
+             stop_reason, stop_detail, error, verified_dm_count, duration_ms
+      FROM runs
+      ORDER BY started_at DESC
+      LIMIT ${limit}
+    `;
+    return hydrateRunningCounters(rows.map((row) => mapRunRow(row as Record<string, unknown>)));
+  } catch {
+    // Pre-migration fallback when observability columns are absent.
+    const rows = await sql`
+      SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+             discovered_count, skipped_known_count, enriched_count, status
+      FROM runs
+      ORDER BY started_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => mapRunRow(row as Record<string, unknown>));
+  }
+});
 
 function parseSpecJson(raw: unknown): Record<string, unknown> {
   if (raw != null && typeof raw === "object" && !Array.isArray(raw)) {
@@ -1173,7 +1463,6 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
            usd,
            firecrawl_credits,
            browser_use_usd,
-           ai_gateway_usd,
            google_places_usd
     FROM cost_by_day
     WHERE date >= ${sinceDate}
@@ -1185,7 +1474,6 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
     usd: Number(row.usd),
     firecrawlCredits: Number(row.firecrawl_credits),
     browserUseUsd: Number(row.browser_use_usd),
-    aiGatewayUsd: Number(row.ai_gateway_usd),
     googlePlacesUsd: Number(row.google_places_usd),
   }));
 
@@ -1360,11 +1648,25 @@ export async function getLeadOutcome(placeId: string): Promise<LeadOutcome | nul
   const sql = getSql();
   let rows;
   try {
+    // Prefer non-auto lead_outcomes, then latest partner outcome, then auto.
     rows = await sql`
       SELECT place_id, outcome, outcome_reason, deal_value_usd, quality_rating,
              data_flags, source, notes, decided_at
-      FROM lead_outcomes
-      WHERE place_id = ${placeId}
+      FROM (
+        SELECT place_id, outcome, outcome_reason, deal_value_usd, quality_rating,
+               data_flags, source, notes, decided_at,
+               case when source = 'auto' then 2 else 0 end as source_rank
+        FROM lead_outcomes
+        WHERE place_id = ${placeId}
+        UNION ALL
+        SELECT place_id, outcome, outcome_reason, deal_value_usd, quality_rating,
+               data_flags, 'partner_api'::text as source, notes, decided_at,
+               1 as source_rank
+        FROM partner_lead_outcomes
+        WHERE place_id = ${placeId}
+      ) x
+      ORDER BY source_rank ASC, decided_at DESC NULLS LAST
+      LIMIT 1
     `;
   } catch {
     return null;

@@ -7,19 +7,14 @@ from typing import TYPE_CHECKING
 
 from pallares_leads.config_loader import JurisdictionRegistry, load_jurisdictions, load_markets
 from pallares_leads.enrich.apply import derive_best_contact_fields
-from pallares_leads.enrich.browser_use_client import (
-    BrowserUseClient,
-    LoopNetResult,
-    SosEntityCandidate,
-    SosEntityResult,
-)
 from pallares_leads.enrich.contact_requirements import EnrichmentRules, enriched_meets_bar
+from pallares_leads.enrich.firecrawl_client import FirecrawlClient
+from pallares_leads.progress import emit as progress_emit
 from pallares_leads.schemas import NOT_FOUND, EnrichedLead, ExtractedContact, RawLead, SiteContact
+from pallares_leads.settings import Settings
 
 if TYPE_CHECKING:
     from pallares_leads.db.store import LeadStore
-    from pallares_leads.enrich.firecrawl_client import FirecrawlClient
-    from pallares_leads.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +23,16 @@ _ENTITY_SUFFIX = re.compile(
     re.I,
 )
 
+_STATE_DISPLAY_NAMES: dict[str, str] = {
+    "ca": "California",
+    "hi": "Hawaii",
+    "or": "Oregon",
+    "wa": "Washington",
+    "nm": "New Mexico",
+    "nv": "Nevada",
+    "az": "Arizona",
+}
+
 
 @dataclass(frozen=True)
 class OwnerChainResult:
@@ -35,6 +40,8 @@ class OwnerChainResult:
     ran: bool
     reason: str
     contact_improved: bool = False
+    # Historical field: dedicated LoopNet/Browser Use lookups are gone; brokers may
+    # still arrive via the Firecrawl agent payload (see _agent_data_to_contacts).
     loopnet_used: bool = False
 
 
@@ -78,57 +85,6 @@ def _seed_party_name(raw: RawLead, enriched: EnrichedLead) -> str:
     return raw.business_name
 
 
-def _sos_to_contacts(result: SosEntityResult, source: str) -> list[ExtractedContact]:
-    contacts: list[ExtractedContact] = []
-    if result.registered_agent.strip():
-        contacts.append(
-            ExtractedContact(
-                contact_type="registered_agent",
-                name=result.registered_agent.strip(),
-                role="Registered Agent",
-                source_url=source,
-            )
-        )
-    for officer in result.officers:
-        if not officer.name.strip():
-            continue
-        contacts.append(
-            ExtractedContact(
-                contact_type="property_owner",
-                name=officer.name.strip(),
-                role=officer.title.strip() or "Principal",
-                source_url=source,
-            )
-        )
-    if result.entity_name.strip() and not contacts:
-        contacts.append(
-            ExtractedContact(
-                contact_type="property_owner",
-                name=result.entity_name.strip(),
-                role="Entity",
-                source_url=source,
-            )
-        )
-    return contacts
-
-
-def _loopnet_to_contacts(result: LoopNetResult) -> list[ExtractedContact]:
-    contacts: list[ExtractedContact] = []
-    for broker in result.listed_by:
-        if not broker.name.strip() and not broker.phone.strip():
-            continue
-        contacts.append(
-            ExtractedContact(
-                contact_type="cre_broker",
-                name=broker.name.strip(),
-                role=broker.company.strip() or "CRE Broker",
-                phone=broker.phone.strip() or None,
-                source_url=result.listing_url or None,
-            )
-        )
-    return contacts
-
-
 def _apply_contacts(enriched: EnrichedLead, contacts: list[ExtractedContact]) -> EnrichedLead:
     if not contacts:
         return enriched
@@ -141,8 +97,9 @@ def _apply_contacts(enriched: EnrichedLead, contacts: list[ExtractedContact]) ->
                 phone=contact.phone or "",
                 email=contact.email_or_form or "",
                 priority="good",
+                # SOS / recorder / agent officers are source-backed public records.
+                verification="verified",
                 source_url=contact.source_url or "",
-                verification="corroborated",
             )
         )
     enriched.site_contacts = site_contacts
@@ -161,11 +118,9 @@ def _resolve_via_firecrawl_agent(
     entity_seed: str,
     firecrawl: FirecrawlClient | None = None,
 ) -> OwnerChainResult:
-    """Experimental owner-chain via Firecrawl /v2/agent (research preview)."""
+    """Owner-chain via Firecrawl /v2/agent (SOS, recorder, parcel portals)."""
     if not settings.firecrawl_api_key:
         return OwnerChainResult(enriched=enriched, ran=False, reason="firecrawl agent: no API key")
-
-    from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 
     state_cfg = registry.state_for_county(county_cfg)
     if state_cfg is None:
@@ -176,8 +131,6 @@ def _resolve_via_firecrawl_agent(
     entity_name = _seed_entity_name(raw, enriched, entity_seed=entity_seed)
     fc = firecrawl or FirecrawlClient(settings, store=store)
     fc.set_cost_context(place_id=raw.place_id)
-
-    from pallares_leads.enrich.browser_use_client import _STATE_DISPLAY_NAMES
 
     state_name = _STATE_DISPLAY_NAMES.get(county_cfg.state.lower(), county_cfg.state.upper())
     data = fc.run_owner_chain_agent(
@@ -289,84 +242,29 @@ def _agent_data_to_contacts(data: dict, source: str) -> list[ExtractedContact]:
     return contacts
 
 
-def _pick_sos_entity_with_ai(
-    raw: RawLead,
-    candidates: list[SosEntityCandidate],
-    settings: Settings,
+def _emit_owner_chain_backend(
     *,
-    store: LeadStore | None = None,
-    run_id: str | None = None,
-    place_id: str | None = None,
-) -> int | None:
-    """Pick the best SOS candidate index via AI Gateway; None keeps the heuristic choice."""
-    import json
-
-    from pallares_leads.enrich.ai_gateway_client import gateway_chat_completion, gateway_configured
-
-    if not settings.ai_owner_disambiguation or len(candidates) <= 1:
-        return None
-    if not gateway_configured(settings):
-        return None
-
-    lines = [
-        (
-            f"{idx}: {item.entity_name} | #{item.entity_number} | "
-            f"{item.status} | {item.principal_address}"
-        )
-        for idx, item in enumerate(candidates)
-    ]
-    user = (
-        f"Business: {raw.business_name}\n"
-        f"Address: {raw.formatted_address}\n"
-        f"City: {raw.city}, {raw.state}\n\n"
-        f"SOS search candidates:\n"
-        + "\n".join(lines)
-        + '\n\nReturn JSON: {"index": <0-based int>, "confidence": <0.0-1.0>}'
+    backend: str,
+    reason: str,
+    place_id: str,
+    run_id: str | None,
+    available: bool,
+) -> None:
+    logger.info(
+        "owner_chain backend selected: backend=%s available=%s reason=%s place_id=%s",
+        backend,
+        available,
+        reason,
+        place_id,
     )
-    completion = gateway_chat_completion(
-        settings,
-        system_prompt=(
-            "Pick the state business registry entity that best matches the commercial property. "
-            "Prefer active records at or near the property address."
-        ),
-        user_content=user,
-        operation="owner_disambiguation",
-        stage="owner_chain",
-        temperature=0,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "owner_disambiguation",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "index": {"type": "integer"},
-                        "confidence": {"type": "number"},
-                    },
-                    "required": ["index", "confidence"],
-                    "additionalProperties": False,
-                },
-                "strict": True,
-            },
-        },
-        store=store,
+    progress_emit(
+        "owner_chain_backend",
+        place_id=place_id,
         run_id=run_id,
-        place_id=place_id or raw.place_id,
+        backend=backend,
+        available=available,
+        reason=reason,
     )
-    if not completion or not completion.content:
-        return None
-    try:
-        parsed = json.loads(completion.content)
-    except json.JSONDecodeError:
-        logger.warning("owner_disambiguation returned invalid JSON")
-        return None
-    confidence = float(parsed.get("confidence") or 0.0)
-    if confidence < 0.5:
-        return None
-    index = int(parsed.get("index", -1))
-    if index < 0 or index >= len(candidates):
-        return None
-    return index
 
 
 def resolve_owner_chain(
@@ -376,15 +274,13 @@ def resolve_owner_chain(
     *,
     settings: Settings,
     store: LeadStore | None = None,
-    browser: BrowserUseClient | None = None,
     firecrawl: FirecrawlClient | None = None,
     jurisdictions: JurisdictionRegistry | None = None,
     owner_chain_count: int = 0,
-    loopnet_count: int = 0,
     entity_seed: str = "",
     run_id: str | None = None,
 ) -> OwnerChainResult:
-    """Escalate to county/state portals when Firecrawl tiers did not meet the contact bar."""
+    """Escalate to county/state portals via Firecrawl agent when tiers miss the contact bar."""
     if not rules.allow_owner_chain:
         return OwnerChainResult(
             enriched=enriched, ran=False, reason="category disallows owner chain"
@@ -411,25 +307,19 @@ def resolve_owner_chain(
             enriched=enriched, ran=False, reason="no county jurisdiction configured"
         )
 
-    if settings.owner_chain_backend == "firecrawl_agent":
-        return _resolve_via_firecrawl_agent(
-            raw,
-            enriched,
-            rules,
-            settings=settings,
-            store=store,
-            registry=registry,
-            county_cfg=county_cfg,
-            entity_seed=bbb_entity,
-            firecrawl=firecrawl,
-        )
-
-    client = browser or BrowserUseClient(settings, store=store)
-    if not client.is_available():
+    available = bool(settings.firecrawl_api_key)
+    _emit_owner_chain_backend(
+        backend="firecrawl_agent",
+        reason="owner chain uses Firecrawl agent only",
+        place_id=raw.place_id,
+        run_id=run_id,
+        available=available,
+    )
+    if not available:
         return OwnerChainResult(
             enriched=enriched,
             ran=False,
-            reason=client.last_skip_reason or "browser use unavailable",
+            reason="FIRECRAWL_API_KEY required for owner-chain Firecrawl agent",
         )
 
     cached = _reuse_owner_record(raw, enriched, store, rules)
@@ -464,149 +354,16 @@ def resolve_owner_chain(
                 contact_improved=after_met and not before_met,
             )
 
-    state_cfg = registry.state_for_county(county_cfg)
-    contacts: list[ExtractedContact] = []
-    owner_name = ""
-    owner_kind = ""
-    apn = ""
-    sos_number = ""
-    registered_agent = ""
-    principals_json: list[dict[str, str]] = []
-    mailing_address = ""
-    broker_json: list[dict[str, str]] = []
-    source = "owner_chain"
-
-    if entity_name and state_cfg:
-        collect_candidates = settings.ai_owner_disambiguation
-        sos = client.sos_entity_lookup(
-            entity_name,
-            state_cfg,
-            state_code=county_cfg.state,
-            collect_candidates=collect_candidates,
-        )
-        if sos and collect_candidates and len(sos.search_candidates) > 1:
-            picked_idx = _pick_sos_entity_with_ai(
-                raw,
-                sos.search_candidates,
-                settings,
-                store=store,
-                run_id=run_id,
-                place_id=raw.place_id,
-            )
-            if picked_idx is not None:
-                chosen = sos.search_candidates[picked_idx]
-                chosen_name = chosen.entity_name.strip()
-                if chosen_name and chosen_name.casefold() != (sos.entity_name or "").casefold():
-                    sos = client.sos_entity_lookup(
-                        chosen_name,
-                        state_cfg,
-                        state_code=county_cfg.state,
-                        collect_candidates=False,
-                    )
-        if sos:
-            contacts.extend(_sos_to_contacts(sos, state_cfg.sos_business_search.url))
-            owner_name = sos.entity_name or entity_name
-            owner_kind = "entity"
-            sos_number = sos.entity_number
-            registered_agent = sos.registered_agent
-            mailing_address = sos.principal_address
-            principals_json = [o.model_dump() for o in sos.officers]
-            source = "owner_chain:sos"
-
-    if not contacts:
-        party = _seed_party_name(raw, enriched)
-        recorder = client.recorder_party_search(party, county_cfg)
-        if recorder and recorder.matches:
-            owner_name = recorder.matches[0].party_name or party
-            owner_kind = "recorder_party"
-            source = "owner_chain:recorder"
-            if _looks_like_entity(owner_name) and state_cfg:
-                sos = client.sos_entity_lookup(owner_name, state_cfg, state_code=county_cfg.state)
-                if sos:
-                    contacts.extend(_sos_to_contacts(sos, state_cfg.sos_business_search.url))
-                    sos_number = sos.entity_number
-                    registered_agent = sos.registered_agent
-                    principals_json = [o.model_dump() for o in sos.officers]
-                    source = "owner_chain:recorder+sos"
-
-    if (
-        not contacts
-        and county_cfg.parcel_portal
-        and county_cfg.parcel_portal.owner_names_online is not False
-    ):
-        parcel = client.parcel_owner_lookup(raw.formatted_address, raw.city, county_cfg)
-        if parcel and parcel.owner_name.strip():
-            owner_name = parcel.owner_name
-            owner_kind = parcel.owner_kind or "parcel_owner"
-            apn = parcel.apn
-            mailing_address = parcel.mailing_address
-            contacts.append(
-                ExtractedContact(
-                    contact_type="property_owner",
-                    name=parcel.owner_name.strip(),
-                    role="Parcel Owner",
-                )
-            )
-            source = "owner_chain:parcel"
-            if _looks_like_entity(owner_name) and state_cfg:
-                sos = client.sos_entity_lookup(owner_name, state_cfg, state_code=county_cfg.state)
-                if sos:
-                    contacts.extend(_sos_to_contacts(sos, state_cfg.sos_business_search.url))
-                    sos_number = sos.entity_number
-                    registered_agent = sos.registered_agent
-                    principals_json = [o.model_dump() for o in sos.officers]
-                    source = "owner_chain:parcel+sos"
-
-    loopnet_used = False
-    leasing_clue = enriched.property_manager_or_ownership_clue not in ("", NOT_FOUND)
-    needs_loopnet = leasing_clue or raw.property_type in {
-        "parking",
-        "strip_mall",
-        "shopping_center",
-    }
-    if not contacts and needs_loopnet and loopnet_count < settings.loopnet_max_per_run:
-        loopnet = client.loopnet_listing_lookup(raw.business_name, raw.city, raw.state)
-        if loopnet:
-            contacts.extend(_loopnet_to_contacts(loopnet))
-            broker_json = [b.model_dump() for b in loopnet.listed_by]
-            source = "owner_chain:loopnet"
-            loopnet_used = True
-
-    if not contacts:
-        return OwnerChainResult(
-            enriched=enriched,
-            ran=True,
-            reason="owner chain ran but no portal contacts found",
-        )
-
-    before_met, _ = enriched_meets_bar(enriched, rules)
-    enriched = _apply_contacts(enriched, contacts)
-    if owner_name:
-        enriched.property_manager_or_ownership_clue = owner_name
-    enriched.source_tool = f"{enriched.source_tool}+owner_chain"
-    enriched.notes = (enriched.notes + f"; owner chain: {source}").strip("; ").strip()
-    after_met, _ = enriched_meets_bar(enriched, rules)
-
-    if store:
-        store.upsert_owner_record(
-            place_id=raw.place_id,
-            apn=apn,
-            owner_name=owner_name or entity_name or raw.business_name,
-            owner_kind=owner_kind,
-            sos_entity_number=sos_number,
-            registered_agent=registered_agent,
-            principals_json=principals_json,
-            mailing_address=mailing_address,
-            broker_json=broker_json,
-            source=source,
-        )
-
-    return OwnerChainResult(
-        enriched=enriched,
-        ran=True,
-        reason=source,
-        contact_improved=after_met and not before_met,
-        loopnet_used=loopnet_used,
+    return _resolve_via_firecrawl_agent(
+        raw,
+        enriched,
+        rules,
+        settings=settings,
+        store=store,
+        registry=registry,
+        county_cfg=county_cfg,
+        entity_seed=bbb_entity,
+        firecrawl=firecrawl,
     )
 
 

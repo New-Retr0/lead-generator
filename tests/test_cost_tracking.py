@@ -66,20 +66,19 @@ def test_record_cost_event_and_summary(store: LeadStore) -> None:
 def test_cost_summary_by_request_id(store: LeadStore) -> None:
     request_id = "req-isolated-42"
     store.record_cost_event(
-        provider="ai_gateway",
-        operation="chat_completion",
-        units=1200,
-        unit_type="tokens",
-        usd=0.001,
+        provider="firecrawl",
+        operation="scrape",
+        units=12,
+        unit_type="credits",
+        usd=0.01,
         request_id=request_id,
-        model="gpt-4o-mini",
     )
     store.commit_cost_events()
 
     summary = store.cost_summary(None, request_id=request_id)
     assert summary["request_id"] == request_id
     assert summary["event_count"] >= 1
-    assert summary["units_total"] >= 1200
+    assert summary["units_total"] >= 12
 
 
 def test_page_cache_round_trip(store: LeadStore) -> None:

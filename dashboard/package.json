@@ -3,12 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/bundle-ascii-frames.mjs",
+    "prebuild": "node scripts/bundle-ascii-frames.mjs",
     "dev": "node scripts/dev-portless.mjs",
     "dev:app": "next dev",
     "dev:direct": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "bundle:ascii": "node scripts/bundle-ascii-frames.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "portless": {
     "name": "pallares",
@@ -41,10 +46,12 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "babel-plugin-react-compiler": "^1.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "portless": "^0.13.0",

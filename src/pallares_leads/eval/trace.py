@@ -111,8 +111,6 @@ class LeadEvalTrace:
         from pallares_leads.eval.score import score_lead_report
 
         export_preview = {
-            "why_call": enriched.why_this_is_a_good_fit,
-            "talking_points": enriched.sales_talking_points,
             "exterior_notes": enriched.exterior_cleaning_need_signals,
             "phone": primary_phone(enriched),
             "contacts": format_contacts_block(enriched),

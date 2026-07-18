@@ -15,7 +15,6 @@ import { formatUsd } from "@/lib/utils";
 
 const PROVIDER_CHART_COLORS: Record<string, string> = {
   browser_use: "var(--chart-3)",
-  ai_gateway: "var(--chart-4)",
   google_places: "var(--chart-5)",
 };
 
@@ -24,7 +23,6 @@ export function CostsUsdChart({ data }: { data: CostDayRow[] }) {
     <ChartContainer
       config={{
         browserUseUsd: { label: "Browser Use", color: PROVIDER_CHART_COLORS.browser_use },
-        aiGatewayUsd: { label: "AI Gateway", color: PROVIDER_CHART_COLORS.ai_gateway },
         googlePlacesUsd: {
           label: "Google Places",
           color: PROVIDER_CHART_COLORS.google_places,
@@ -36,10 +34,6 @@ export function CostsUsdChart({ data }: { data: CostDayRow[] }) {
           <linearGradient id="buFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--chart-3)" stopOpacity={0.35} />
             <stop offset="100%" stopColor="var(--chart-3)" stopOpacity={0} />
-          </linearGradient>
-          <linearGradient id="aiFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--chart-4)" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="var(--chart-4)" stopOpacity={0} />
           </linearGradient>
           <linearGradient id="gpFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--chart-5)" stopOpacity={0.35} />
@@ -57,13 +51,6 @@ export function CostsUsdChart({ data }: { data: CostDayRow[] }) {
           stackId="usd"
           stroke="var(--chart-3)"
           fill="url(#buFill)"
-        />
-        <Area
-          type="monotone"
-          dataKey="aiGatewayUsd"
-          stackId="usd"
-          stroke="var(--chart-4)"
-          fill="url(#aiFill)"
         />
         <Area
           type="monotone"

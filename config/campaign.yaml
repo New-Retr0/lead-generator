@@ -2,6 +2,9 @@
 # Use: pallares-leads smoke-sample  (5 enriched leads per combo, default Reedley)
 #      pallares-leads smoke-sample --all-markets
 #      pallares-leads run-campaign --limit 20
+#
+# Tier A (default money path): multi-tenant / CRE decision-maker targets.
+# Franchise volume categories live in central_valley_franchise (optional budget bucket).
 
 _expansion_categories: &expansion_categories
   - gas_station
@@ -32,7 +35,29 @@ _expansion_categories: &expansion_categories
 
 campaigns:
   central_valley:
-    description: Central Valley commercial exterior cleaning targets
+    description: Central Valley Tier A — verified DM targets for exterior cleaning
+    markets:
+      - reedley
+      - dinuba
+      - selma
+      - kingsburg
+      - sanger
+      - fresno
+      - visalia
+    categories:
+      - property_manager
+      - strip_mall
+      - shopping_center
+      - parking_large_private
+      - industrial
+      - hotel
+      - medical_plaza
+    # property_manager searches Fresno County, not individual cities
+    county_overrides:
+      property_manager: fresno_county
+
+  central_valley_franchise:
+    description: Optional franchise volume bucket (separate credit budget from Tier A)
     markets:
       - reedley
       - dinuba
@@ -44,30 +69,11 @@ campaigns:
     categories:
       - gas_station
       - fast_food
-      - strip_mall
-      - shopping_center
       - grocery
-      - medical_plaza
       - pharmacy
       - bank
-      - industrial
-      - big_box
-      - auto_dealer
-      - dollar_store
       - restaurant
-      - parking
-      - parking_small
-      - parking_large_private
-      - hotel
-      - thrift_store
-      - community_facility
-      - amusement_facility
-      - public_agency
-      - hoa
-      - property_manager
-    # property_manager searches Fresno County, not individual cities
-    county_overrides:
-      property_manager: fresno_county
+      - dollar_store
 
   hawaii:
     description: Hawaii commercial exterior cleaning targets

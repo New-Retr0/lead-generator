@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { AlertTriangle, Bot, Coins, DollarSign, RotateCw, Sparkles, TrendingUp } from "lucide-react";
+import { AlertTriangle, Bot, Coins, DollarSign, RotateCw, TrendingUp } from "lucide-react";
 import { Globe } from "lucide-react";
 import ASCIIAnimation from "@/components/console/ascii-animation";
 import { AnimatedNumber } from "@/components/animated";
@@ -55,7 +55,6 @@ const FIRECRAWL_CREDIT_REFERENCE = [
   { operation: "Scrape / crawl", cost: "1 credit per page" },
   { operation: "Map", cost: "1 credit" },
   { operation: "Search", cost: "2 credits per 10 results" },
-  { operation: "JSON mode", cost: "+4 credits per page" },
   { operation: "PDF", cost: "+1 credit per page" },
   {
     operation: "Standard public plan",
@@ -80,7 +79,6 @@ const CostsCreditsChart = dynamic(
 const PROVIDER_CHIP_COLORS: Record<string, string> = {
   firecrawl: "var(--chart-1)",
   browser_use: "var(--chart-3)",
-  ai_gateway: "var(--chart-4)",
   google_places: "var(--chart-5)",
 };
 
@@ -113,7 +111,6 @@ export function CostsClient({
       billingPeriodEnd: string | null;
       live: boolean;
     };
-    aiGateway: { balanceUsd: number | null; live: boolean };
   } | null>(null);
 
   useEffect(() => {
@@ -122,7 +119,9 @@ export function CostsClient({
       .then((body) => setLiveCredits(body));
   }, []);
 
-  const data = rangeData?.days === days ? rangeData.data : initialData;
+  // Keep prior series painted while a new range loads — avoid blanking the page.
+  const data =
+    rangeData?.days === days ? rangeData.data : (rangeData?.data ?? initialData);
 
   useEffect(() => {
     if (days === initialDays) return;
@@ -159,14 +158,12 @@ export function CostsClient({
         usd: 0,
         firecrawlCredits: 0,
         browserUseUsd: 0,
-        aiGatewayUsd: 0,
       };
     }
     const usd = data.byDay.reduce((s, d) => s + d.usd, 0);
     const firecrawlCredits = data.byDay.reduce((s, d) => s + d.firecrawlCredits, 0);
     const browserUseUsd = data.byDay.reduce((s, d) => s + d.browserUseUsd, 0);
-    const aiGatewayUsd = data.byDay.reduce((s, d) => s + d.aiGatewayUsd, 0);
-    return { usd, firecrawlCredits, browserUseUsd, aiGatewayUsd };
+    return { usd, firecrawlCredits, browserUseUsd };
   }, [data]);
 
   const firecrawlBalance = balanceFor(data, "firecrawl");
@@ -215,19 +212,21 @@ export function CostsClient({
 
   return (
     <div className="space-y-6">
-      <div className="relative overflow-hidden rounded-xl border border-border">
-        <ASCIIAnimation
-          frameFolder="wave"
-          frameCount={300}
-          quality="medium"
-          fps={30}
-          className="absolute inset-x-0 bottom-0 h-[8.5rem] w-full [mask-image:linear-gradient(to_top,black_50%,transparent_100%)]"
-          gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
-          lazy
-          ariaLabel="Wave animation"
-        />
-        <div className="relative flex flex-col gap-4 p-6 md:flex-row md:items-end md:justify-between">
-          <div>
+      <div className="relative overflow-hidden rounded-xl border border-border bg-card p-6">
+        <div className="pointer-events-none absolute right-0 top-0 h-24 w-40 md:h-28 md:w-52 [mask-image:linear-gradient(to_left,black_55%,transparent_100%)]">
+          <ASCIIAnimation
+            frameFolder="wave"
+            frameCount={300}
+            quality="medium"
+            fps={18}
+            className="h-full w-full"
+            gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
+            lazy
+            ariaLabel="Wave animation"
+          />
+        </div>
+        <div className="relative flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div className="max-w-2xl">
             <SectionHeading index="01" title="Costs & Credits" className="mb-2" />
             <p className="text-4xl font-bold tabular-nums tracking-tight">
               <AnimatedNumber value={totals.usd} format={formatUsd} />
@@ -300,16 +299,10 @@ export function CostsClient({
               Used this cycle: {formatCredits(liveCredits.firecrawl.used)}
             </Badge>
           ) : null}
-          <Badge variant="outline">
-            AI Gateway live:{" "}
-            {liveCredits.aiGateway.balanceUsd != null
-              ? formatUsd(liveCredits.aiGateway.balanceUsd)
-              : "—"}
-          </Badge>
         </div>
       ) : null}
 
-      <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StaggerItem className="h-full">
           <StatCard
             label={`Pipeline ledger (${days}d)`}
@@ -342,19 +335,10 @@ export function CostsClient({
             icon={Bot}
           />
         </StaggerItem>
-        <StaggerItem className="h-full">
-          <StatCard
-            label={`AI Gateway (${days}d)`}
-            value={totals.aiGatewayUsd}
-            format={(n) => formatUsdCompact(n)}
-            sub="Sales copy tokens"
-            icon={Sparkles}
-          />
-        </StaggerItem>
       </Stagger>
 
       {budget ? (
-        <Card className={`glass ${budget.projectedOverPlan ? "border-amber-500/50" : ""}`}>
+        <Card className={`panel ${budget.projectedOverPlan ? "border-amber-500/50" : ""}`}>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
               Firecrawl account (live)
@@ -451,7 +435,7 @@ export function CostsClient({
       ) : null}
 
       {(data?.balances.length ?? 0) > 0 ? (
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">Provider balances</CardTitle>
             <CardDescription>
@@ -495,17 +479,17 @@ export function CostsClient({
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">USD per day by provider</CardTitle>
-            <CardDescription>Stacked spend — Browser Use, AI Gateway, Places</CardDescription>
+            <CardDescription>Stacked spend — Browser Use, Google Places</CardDescription>
           </CardHeader>
           <CardContent className="h-72">
             <CostsUsdChart data={data?.byDay ?? []} />
           </CardContent>
         </Card>
 
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">Firecrawl credits per day</CardTitle>
             <CardDescription>Firecrawl credits from single-pass lead runs</CardDescription>
@@ -526,7 +510,7 @@ export function CostsClient({
         </TabsList>
 
         <TabsContent value="providers">
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">By provider</CardTitle>
             <CardDescription>Unit-aware totals for the selected range</CardDescription>
@@ -568,7 +552,7 @@ export function CostsClient({
         </TabsContent>
 
         <TabsContent value="operations">
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">Top operations</CardTitle>
             <CardDescription>Per-stage breakdown including owner-chain stages</CardDescription>
@@ -609,7 +593,7 @@ export function CostsClient({
         </TabsContent>
 
         <TabsContent value="runs">
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">By run</CardTitle>
             <CardDescription>Per-run spend — click a row for stage breakdown</CardDescription>
@@ -669,10 +653,10 @@ export function CostsClient({
         </TabsContent>
 
         <TabsContent value="models">
-        <Card className="glass">
+        <Card className="panel">
           <CardHeader>
             <CardTitle className="text-sm">By model / provider</CardTitle>
-            <CardDescription>AI Gateway models vs Firecrawl vs Browser Use</CardDescription>
+            <CardDescription>Model / provider spend from the cost ledger</CardDescription>
           </CardHeader>
           <CardContent>
             {!data || data.byModel.length === 0 ? (
@@ -716,7 +700,7 @@ export function CostsClient({
         </TabsContent>
 
         <TabsContent value="markets">
-      <Card className="glass">
+      <Card className="panel">
         <CardHeader>
           <CardTitle className="text-sm">By market / category</CardTitle>
           <CardDescription>Where spend is going — last 90 days rollup</CardDescription>
@@ -764,7 +748,7 @@ export function CostsClient({
       </Tabs>
 
       <Collapsible>
-        <Card className="glass">
+        <Card className="panel">
           <CollapsibleTrigger asChild>
             <CardHeader className="cursor-pointer">
               <CardTitle className="font-mono text-sm">Firecrawl credit reference</CardTitle>
@@ -789,14 +773,15 @@ export function CostsClient({
         </Card>
       </Collapsible>
 
-      <Card className="glass border-dashed">
+      <Card className="panel border-dashed">
         <CardContent className="flex items-start gap-3 py-4 text-sm text-muted-foreground">
           <TrendingUp className="mt-0.5 size-4 shrink-0" />
           <p>
-            Browser Use costs are recorded per portal task (SOS, recorder, parcel, LoopNet).
-            Run <span className="font-medium text-foreground">pallares-leads doctor</span> (or{" "}
+            Historical Browser Use ledger rows still appear in spend charts when present.
+            Owner chain now bills through Firecrawl agent. Run{" "}
+            <span className="font-medium text-foreground">pallares-leads doctor</span> (or{" "}
             <span className="font-medium text-foreground">Health check</span> on the overview page)
-            to refresh Firecrawl and Browser Use balance snapshots without spending credits.
+            to refresh Firecrawl balance snapshots without spending credits.
           </p>
           <Globe className="mt-0.5 size-4 shrink-0 opacity-0 sm:opacity-100" aria-hidden />
         </CardContent>

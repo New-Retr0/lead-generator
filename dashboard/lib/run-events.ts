@@ -13,6 +13,33 @@ type RunEventRowLike = {
   created_at: string;
 };
 
+/** Legacy / alternate stage names → Pipeline Studio IDs. */
+const STAGE_ALIASES: Record<string, string> = {
+  scrape_json: "scrape",
+  markdown: "scrape",
+  gateway: "scrape",
+  firecrawl_agent: "owner_chain",
+  final: "lead_done",
+  search: "website_resolve",
+  search_contact: "tier2_search",
+  discovery_done: "discovery",
+  run_started: "discovery",
+  run_done: "lead_done",
+  stage_done: "", // resolved from meta.stage
+};
+
+export function canonicalizeStage(stage: string | null | undefined): string | null {
+  if (!stage) return null;
+  const trimmed = stage.trim();
+  if (!trimmed) return null;
+  if (trimmed in STAGE_ALIASES) {
+    const mapped = STAGE_ALIASES[trimmed];
+    return mapped || null;
+  }
+  if (trimmed.startsWith("source_check:")) return "source_checklist";
+  return trimmed;
+}
+
 function parseMeta(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     return raw as Record<string, unknown>;
@@ -35,13 +62,19 @@ export function runEventRowToJobEvent(row: RunEventRowLike): JobEvent {
   const eventName =
     typeof meta.event === "string" ? meta.event : row.stage;
 
+  // Prefer meta.stage for stage_done rows; otherwise canonicalize column stage.
+  const metaStage =
+    typeof meta.stage === "string" ? canonicalizeStage(meta.stage) : null;
+  const columnStage = canonicalizeStage(row.stage);
+  const stage = metaStage ?? columnStage ?? undefined;
+
   const evt: JobEvent = {
     id: row.id,
     t: "evt",
     ts: typeof meta.ts === "string" ? meta.ts : row.created_at,
     event: eventName,
     run_id: row.run_id,
-    stage: row.stage,
+    stage,
     reason: row.reason ?? undefined,
     credits: row.credits_est ?? undefined,
   };

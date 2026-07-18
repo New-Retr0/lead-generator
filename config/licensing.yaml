@@ -6,6 +6,14 @@ license_lookups:
     serp_site: "www2.dre.ca.gov"
     pm_license_required: true
     adapter: dre_ca
+  CA_CSLB:
+    agency: California CSLB
+    record_url: "https://www.cslb.ca.gov/OnlineServices/CheckLicenseII/CheckLicense.aspx"
+    search_url: "https://www.cslb.ca.gov/OnlineServices/CheckLicenseII/CheckLicense.aspx"
+    serp_site: "cslb.ca.gov"
+    pm_license_required: false
+    adapter: cslb_ca
+    vendor_license: true
   TX:
     agency: TREC
     search_url: "https://www.trec.texas.gov/apps/license-holder-search/"

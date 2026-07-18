@@ -16,7 +16,7 @@ def test_verified_when_person_and_phone_grounded():
             SiteContact(
                 name="Ahmad A. Jaber",
                 phone="(559) 743-7184",
-                label="President",
+                label="Facilities Manager",
                 verification="verified",
                 source_url="https://bbb.org/profile",
             ),
@@ -45,7 +45,8 @@ def test_partial_when_phone_only():
     assert compute_verification_level(lead) == "partial"
 
 
-def test_verified_with_bbb_person_fact():
+def test_bbb_person_fact_with_nameless_phone_is_partial():
+    """BBB/SOS person facts alone must not upgrade to verified."""
     lead = EnrichedLead(
         place_id="x",
         business_name="Test",
@@ -66,7 +67,7 @@ def test_verified_with_bbb_person_fact():
             ),
         ],
     )
-    assert compute_verification_level(lead) == "verified"
+    assert compute_verification_level(lead) == "partial"
 
 
 def test_unverified_when_nothing_grounded():
@@ -80,3 +81,17 @@ def test_unverified_when_nothing_grounded():
         lead_category="auto_dealer",
     )
     assert compute_verification_level(lead) == "unverified"
+
+
+def test_google_main_phone_only_is_partial():
+    lead = EnrichedLead(
+        place_id="x",
+        business_name="Test",
+        formatted_address="1 Main",
+        city="Reedley",
+        state="CA",
+        property_type="auto_dealer",
+        lead_category="auto_dealer",
+        main_phone="(559) 743-7184",
+    )
+    assert compute_verification_level(lead) == "partial"

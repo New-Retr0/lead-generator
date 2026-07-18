@@ -19,6 +19,7 @@ def _meta(
     secret: bool = False,
     readonly: bool = False,
     help: str = "",
+    title: str = "",
 ) -> dict[str, Any]:
     extra: dict[str, Any] = {"group": group}
     if secret:
@@ -27,6 +28,8 @@ def _meta(
         extra["readonly"] = True
     if help:
         extra["help"] = help
+    if title:
+        extra["title"] = title
     return extra
 
 
@@ -141,6 +144,16 @@ class Settings(BaseSettings):
         default=24,
         json_schema_extra=_meta("Caching & Archive", help="Website domain validation cache TTL"),
     )
+    researched_miss_reopen_days: int = Field(
+        default=90,
+        json_schema_extra=_meta(
+            "Caching & Archive",
+            help=(
+                "Re-enrich researched misses (unverified / skipped) after this many days "
+                "under skip_known; until then they forever-skip"
+            ),
+        ),
+    )
 
     learned_score_weight: float = Field(
         default=0.0,
@@ -177,111 +190,81 @@ class Settings(BaseSettings):
             "Firecrawl", help="Use Firecrawl cache when younger than this (ms)"
         ),
     )
-    firecrawl_max_concurrency: int = Field(
-        default=50,
-        json_schema_extra=_meta(
-            "Firecrawl", help="Max concurrent Firecrawl requests (plan limit 50)"
-        ),
-    )
-    firecrawl_max_credits_per_run: int = Field(
-        default=0,
-        json_schema_extra=_meta("Firecrawl", help="Stop enrichment when exceeded (0 = unlimited)"),
-    )
-    firecrawl_session_credit_stop: int = Field(
-        default=0,
+    firecrawl_agent_max_credits: int = Field(
+        default=10,
         json_schema_extra=_meta(
             "Firecrawl",
-            help="Refuse new runs when total credits exceed this (0 = off)",
+            title="Agent max credits",
+            help="Cap Firecrawl /agent credits for hard contact gaps (0 = disabled).",
         ),
     )
-    enrichment_parallel_workers: int = Field(
-        default=4,
+    firecrawl_agent_model: str = Field(
+        default="spark-1-mini",
+        json_schema_extra=_meta("Firecrawl", help="Model for capped Firecrawl agent"),
+    )
+    firecrawl_agent_timeout_s: int = Field(
+        default=180,
         json_schema_extra=_meta(
-            "Firecrawl", help="Parallel lead enrichment threads per market run"
+            "Firecrawl",
+            title="Agent timeout (seconds)",
+            help="Hard wait cap for Firecrawl /agent (owner-chain + capped agent). "
+            "Without this the SDK polls forever and can stall a whole market cell.",
         ),
     )
-
-    ai_gateway_api_key: str = Field(
+    enrichment_lead_timeout_s: int = Field(
+        default=600,
+        json_schema_extra=_meta(
+            "Enrichment",
+            title="Per-lead timeout (seconds)",
+            help="Abandon a single place enrichment after this wall-clock budget so "
+            "parallel workers cannot pin a cell at N-2/N forever.",
+        ),
+    )
+    firecrawl_grounding_storm_limit: int = Field(
+        default=12,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            help="Pause expensive Firecrawl stages after N grounding rejections in a lead",
+        ),
+    )
+    firecrawl_429_circuit_cooldown_s: float = Field(
+        default=60.0,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            help="Cooldown breaker cooldown (seconds) after repeated Firecrawl 429s",
+        ),
+    )
+    firecrawl_search_recency: str = Field(
         default="",
-        json_schema_extra=_meta("AI Gateway", secret=True, help="Vercel AI Gateway API key"),
-    )
-    ai_gateway_model: str = Field(
-        default="",
         json_schema_extra=_meta(
-            "AI Gateway", help="Default model slug (empty = pricing.yaml default)"
+            "Firecrawl",
+            help="Optional Firecrawl search tbs recency filter (e.g. qdr:w); empty = off",
         ),
     )
-    ai_gateway_enabled: bool = Field(
-        default=True,
-        json_schema_extra=_meta(
-            "AI Gateway", help="Use AI Gateway for contact extract and sales copy"
-        ),
-    )
-    ai_gateway_max_context_chars: int = Field(
-        default=8000,
-        json_schema_extra=_meta("AI Gateway", help="Max markdown chars sent to extract prompt"),
-    )
-    ai_gateway_min_interval_s: float = Field(
-        default=4.0,
-        json_schema_extra=_meta("AI Gateway", help="Minimum seconds between AI Gateway calls"),
-    )
-    ai_gateway_max_retries: int = Field(
-        default=5,
-        json_schema_extra=_meta("AI Gateway", help="Max retries on rate limit / transient errors"),
-    )
-    ai_gateway_retry_base_delay_s: float = Field(
-        default=3.0,
-        json_schema_extra=_meta("AI Gateway", help="Base delay for exponential backoff"),
-    )
-    ai_gateway_rate_limit_cooldown_s: float = Field(
-        default=90.0,
-        json_schema_extra=_meta("AI Gateway", help="Cooldown after sustained 429 responses"),
-    )
-
-    browser_use_enabled: bool = Field(
+    firecrawl_news_search_enabled: bool = Field(
         default=False,
         json_schema_extra=_meta(
-            "Owner Chain", help="Enable Browser Use Cloud for owner-chain lookups"
+            "Firecrawl",
+            help="Opt-in Firecrawl news search helper (default off)",
         ),
     )
-    browser_use_backend: str = Field(
-        default="cloud",
-        json_schema_extra=_meta("Owner Chain", help="Browser Use backend (cloud)"),
-    )
-    browser_use_api_key: str = Field(
-        default="",
-        json_schema_extra=_meta("Owner Chain", secret=True, help="Browser Use Cloud API key"),
-    )
-    browser_use_task_timeout_s: float = Field(
-        default=300.0,
-        json_schema_extra=_meta("Owner Chain", help="Owner-chain browser task timeout in seconds"),
-    )
-    owner_chain_backend: str = Field(
-        default="browser_use",
+    firecrawl_change_tracking_enabled: bool = Field(
+        default=False,
         json_schema_extra=_meta(
-            "Owner Chain",
-            help="Owner chain backend: browser_use | firecrawl_agent",
+            "Firecrawl",
+            help="Opt-in Firecrawl scrape changeTracking helper (default off)",
         ),
     )
     owner_chain_max_per_run: int = Field(
         default=10,
-        json_schema_extra=_meta("Owner Chain", help="Max owner-chain lookups per run"),
-    )
-    loopnet_max_per_run: int = Field(
-        default=5,
-        json_schema_extra=_meta("Owner Chain", help="Max LoopNet lookups per run"),
+        json_schema_extra=_meta(
+            "Owner Chain",
+            help="Max Firecrawl agent owner-chain lookups per run",
+        ),
     )
     source_checklist_max_pages: int = Field(
         default=6,
         json_schema_extra=_meta("Owner Chain", help="Max registry pages per source checklist"),
-    )
-    ai_owner_disambiguation: bool = Field(
-        default=True,
-        json_schema_extra=_meta("Owner Chain", help="Use AI Gateway to pick SOS entity match"),
-    )
-    ai_need_signal_fallback: bool = Field(
-        default=False,
-        json_schema_extra=_meta("Owner Chain", help="LLM fallback for exterior need signals"),
     )
 
 def get_settings() -> Settings:

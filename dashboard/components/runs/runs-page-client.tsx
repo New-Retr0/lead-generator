@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -9,10 +10,12 @@ import {
   Database,
   RefreshCw,
   Search,
+  Terminal,
   Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
-import { RunStatusBadge } from "@/components/badges";
+import { CancelJobButton } from "@/components/cancel-job-button";
+import { RunStatusBadge, StopReasonBadge } from "@/components/badges";
 import { StatCard } from "@/components/stat-card";
 import { AsciiSpinner } from "@/components/console/ascii-spinner";
 import ASCIIAnimation from "@/components/console/ascii-animation";
@@ -45,22 +48,28 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { PipelineConfig, RunRow } from "@/lib/types";
-import { formatPct } from "@/lib/utils";
+import type { JobSummary, PipelineConfig, RunRow } from "@/lib/types";
+import { cn, formatPct } from "@/lib/utils";
 
 const ALL = "__all__";
 
 export function RunsPageClient({
   initialRuns,
+  initialJobs,
   config,
+  initialJobFilter,
 }: {
   initialRuns: RunRow[];
+  initialJobs: JobSummary[];
   config: PipelineConfig;
+  initialJobFilter?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
+  const [jobs, setJobs] = useState(initialJobs);
   const [statusFilter, setStatusFilter] = useState(ALL);
   const [typeFilter, setTypeFilter] = useState(ALL);
   const [marketFilter, setMarketFilter] = useState(ALL);
+  const [jobFilter, setJobFilter] = useState<string | null>(initialJobFilter ?? null);
   const [repairing, setRepairing] = useState(false);
   const router = useRouter();
 
@@ -69,15 +78,24 @@ export function RunsPageClient({
       .then((r) => r.json())
       .then((data) => {
         setRuns(data.runs ?? []);
+        setJobs(data.jobs ?? []);
       });
   }, []);
 
-  const hasRunning = runs.some((r) => r.status === "running");
+  const hasRunning =
+    runs.some((r) => r.status === "running") ||
+    jobs.some((j) => j.status === "running" || j.status === "pending");
 
   useEffect(() => {
+    refreshRuns();
     const id = window.setInterval(refreshRuns, 10_000);
     return () => window.clearInterval(id);
   }, [refreshRuns]);
+
+  const liveJobs = useMemo(
+    () => jobs.filter((j) => j.status === "running" || j.status === "pending"),
+    [jobs],
+  );
 
   const analytics = useMemo(() => {
     const total = runs.length;
@@ -97,12 +115,13 @@ export function RunsPageClient({
 
   const filteredRuns = useMemo(() => {
     return runs.filter((run) => {
+      if (jobFilter && run.job_id !== jobFilter) return false;
       if (statusFilter !== ALL && run.status !== statusFilter) return false;
       if (typeFilter !== ALL && run.run_type !== typeFilter) return false;
       if (marketFilter !== ALL && run.market_key !== marketFilter) return false;
       return true;
     });
-  }, [runs, statusFilter, typeFilter, marketFilter]);
+  }, [runs, jobFilter, statusFilter, typeFilter, marketFilter]);
 
   const repairStaleRuns = async () => {
     setRepairing(true);
@@ -120,22 +139,32 @@ export function RunsPageClient({
     }
   };
 
+  const shortCommand = (command: string) => {
+    const idx = command.indexOf("run-campaign");
+    if (idx >= 0) return command.slice(idx);
+    const runIdx = command.indexOf(" run ");
+    if (runIdx >= 0) return command.slice(runIdx + 1);
+    return command.length > 72 ? `${command.slice(0, 72)}…` : command;
+  };
+
   return (
     <div className="space-y-6">
-      <div className="relative overflow-hidden rounded-xl border border-border">
-        <ASCIIAnimation
-          frameFolder="wave"
-          frameCount={300}
-          quality="medium"
-          fps={18}
-          className="absolute inset-x-0 top-0 h-20 w-full [mask-image:linear-gradient(to_bottom,black_40%,transparent_100%)]"
-          gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
-          lazy
-          ariaLabel="Wave band"
-        />
-        <div className="relative p-6">
+      <div className="relative overflow-hidden rounded-xl border border-border bg-card p-6">
+        <div className="pointer-events-none absolute right-0 top-0 h-24 w-40 md:h-28 md:w-52 [mask-image:linear-gradient(to_left,black_55%,transparent_100%)]">
+          <ASCIIAnimation
+            frameFolder="wave"
+            frameCount={300}
+            quality="medium"
+            fps={18}
+            className="h-full w-full"
+            gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
+            lazy
+            ariaLabel="Wave animation"
+          />
+        </div>
+        <div className="relative max-w-2xl">
           <SectionHeading index="01" title="Run Analytics" />
-          <PageHeader description="View-only run history and aggregate stats — launch new runs from Requests or Campaigns." />
+          <PageHeader description="Local executions and their market cells — launch new work from Launch." />
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-3">
@@ -147,6 +176,88 @@ export function RunsPageClient({
           </span>
         ) : null}
       </div>
+
+      {liveJobs.length > 0 || jobFilter ? (
+        <SectionReveal>
+          <Card className="panel" data-testid="local-executions">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 font-mono text-xs uppercase tracking-[0.14em]">
+                <Terminal className="size-4" />
+                Local executions
+              </CardTitle>
+              <CardDescription>
+                Parent Launch jobs. Each row below is a market×category cell under a job.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {liveJobs.length === 0 && jobFilter ? (
+                <p className="text-sm text-muted-foreground">
+                  Filtering cells for job{" "}
+                  <span className="font-mono text-xs">{jobFilter.slice(0, 8)}…</span>
+                  {" · "}
+                  <button
+                    type="button"
+                    className="text-primary underline-offset-2 hover:underline"
+                    onClick={() => {
+                      setJobFilter(null);
+                      router.replace("/runs");
+                    }}
+                  >
+                    Clear filter
+                  </button>
+                </p>
+              ) : null}
+              {liveJobs.map((job) => {
+                const active = jobFilter === job.id;
+                return (
+                  <div
+                    key={job.id}
+                    className={cn(
+                      "flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2.5",
+                      active
+                        ? "border-primary/40 bg-primary/5"
+                        : "border-border/60 bg-background/40",
+                    )}
+                  >
+                    <Badge variant="outline" className="font-mono text-[10px] uppercase">
+                      {job.status}
+                    </Badge>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-[11px] text-foreground/90">
+                        {shortCommand(job.command)}
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground">
+                        {[job.market, job.category].filter(Boolean).join(" / ") || "starting…"}
+                        {job.runId ? ` · ${job.runId.slice(0, 8)}…` : ""}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={active ? "secondary" : "outline"}
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setJobFilter(job.id);
+                        router.replace(`/runs?job=${encodeURIComponent(job.id)}`);
+                      }}
+                    >
+                      Cells
+                    </Button>
+                    {job.runId ? (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" asChild>
+                        <Link href={`/runs/${encodeURIComponent(job.runId)}`}>Studio</Link>
+                      </Button>
+                    ) : null}
+                    <CancelJobButton
+                      jobId={job.id}
+                      visible={job.status === "running" || job.status === "pending"}
+                    />
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        </SectionReveal>
+      ) : null}
 
       <SectionReveal>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
@@ -161,7 +272,7 @@ export function RunsPageClient({
           <StatCard
             label="Running"
             value={analytics.running}
-            sub="Live count"
+            sub={`${liveJobs.length} local job${liveJobs.length === 1 ? "" : "s"}`}
             icon={Activity}
             tone={analytics.running > 0 ? "warning" : "default"}
           />
@@ -172,16 +283,17 @@ export function RunsPageClient({
             tone={analytics.failed > 0 ? "warning" : "default"}
           />
           <StatCard label="Discovered" value={analytics.discovered} icon={Search} />
-          <StatCard label="Enriched" value={analytics.enriched} icon={CheckCircle2} tone="success" />
+          <StatCard label="Completed" value={analytics.enriched} icon={CheckCircle2} tone="success" />
         </div>
       </SectionReveal>
 
-      <Card className="glass min-w-0">
+      <Card className="panel min-w-0">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <CardTitle>Run history</CardTitle>
             <CardDescription>
-              Persisted runs from the lead database. Click a row for live progress and cost summary.
+              Persisted market cells from the lead database. Click a row for Pipeline Studio.
+              {jobFilter ? " Showing cells for the selected local execution." : null}
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-end gap-3">
@@ -232,6 +344,18 @@ export function RunsPageClient({
                 </SelectContent>
               </Select>
             </div>
+            {jobFilter ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setJobFilter(null);
+                  router.replace("/runs");
+                }}
+              >
+                Clear job filter
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="sm"
@@ -269,16 +393,30 @@ export function RunsPageClient({
                 {filteredRuns.map((run) => (
                   <TableRow
                     key={run.run_id}
-                    className="cursor-pointer transition-colors hover:bg-accent/25"
+                    className={cn(
+                      "cursor-pointer transition-colors hover:bg-accent",
+                      jobFilter && run.job_id === jobFilter && "bg-primary/5",
+                    )}
                     onClick={() => router.push(`/runs/${encodeURIComponent(run.run_id)}`)}
                   >
                     <TableCell>
-                      <RunStatusBadge status={run.status} />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <RunStatusBadge status={run.status} />
+                        <StopReasonBadge
+                          reason={run.stop_reason}
+                          detail={run.stop_detail}
+                          status={run.status}
+                          discoveredCount={run.discovered_count}
+                        />
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{run.run_type}</Badge>
                     </TableCell>
                     <TableCell className="font-medium">
+                      {run.campaign_key ? (
+                        <span className="text-muted-foreground">{run.campaign_key} · </span>
+                      ) : null}
                       {run.market_key ?? "—"}
                       {run.category_key ? (
                         <span className="text-muted-foreground"> / {run.category_key}</span>

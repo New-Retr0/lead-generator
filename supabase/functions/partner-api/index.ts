@@ -4,10 +4,13 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const API_VERSION = "v1";
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
+const MIN_EXPORT_SCORE = 25;
+const LEAD_ACTIONS = new Set(["outcome", "touches", "eligibility"]);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-api-key, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-api-key, apikey, content-type, idempotency-key",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
@@ -77,10 +80,7 @@ type PartnerLeadRow = {
   lead_score: number | null;
   confidence: string | null;
   verification_level: string | null;
-  why_good_fit: string | null;
   why_now: string | null;
-  need_signals: unknown;
-  talking_points: unknown;
   last_enriched_at: string | null;
   updated_at: string;
   site_contacts: unknown;
@@ -118,12 +118,37 @@ function error(code: string, message: string, status: number, retryAfter?: numbe
 }
 
 function extractApiKey(req: Request): string | null {
+  // Prefer x-api-key; Bearer remains supported for compatibility.
   const xApiKey = req.headers.get("x-api-key")?.trim();
   if (xApiKey) return xApiKey;
   const auth = req.headers.get("authorization")?.trim();
   if (!auth) return null;
   const match = auth.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() ?? null;
+}
+
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** Parse /leads/{place_id}[/action] where place_id may contain slashes (e.g. places/ChIJ...). */
+function parseLeadRoute(
+  route: string[],
+): { placeId: string; action?: string } | null {
+  if (route[0] !== "leads" || route.length < 2) return null;
+  const rest = route.slice(1);
+  const last = rest[rest.length - 1]!;
+  if (rest.length >= 2 && LEAD_ACTIONS.has(last)) {
+    return {
+      placeId: rest.slice(0, -1).map(decodePathSegment).join("/"),
+      action: last,
+    };
+  }
+  return { placeId: rest.map(decodePathSegment).join("/") };
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -245,29 +270,6 @@ function categoryLabel(categoryKey: string | null): string | null {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function normalizeList(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
-  if (typeof value !== "string") return [];
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
-    } catch {
-      return trimmed
-        .slice(1, -1)
-        .split(/['"],\s*['"]/)
-        .map((part) => part.replace(/^\s*['"]+|['"]+\s*$/g, "").trim())
-        .filter(Boolean);
-    }
-  }
-  return trimmed
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
 function groupedFacts(value: unknown): Record<string, unknown[]> {
   const groups: Record<string, unknown[]> = {
     phone: [],
@@ -307,6 +309,27 @@ function groupedFacts(value: unknown): Record<string, unknown[]> {
   return groups;
 }
 
+/** Null placeholder / non-dialable best_contact_phone sentinels (e.g. "Not found"). */
+function partnerPrimaryPhone(value: string | null | undefined): string | null {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (
+    lower === "not found" ||
+    lower === "not specified" ||
+    lower === "unknown" ||
+    lower === "n/a" ||
+    lower === "na" ||
+    lower === "none" ||
+    lower === "unavailable" ||
+    lower === "tbd" ||
+    lower === "see website"
+  ) {
+    return null;
+  }
+  return raw;
+}
+
 function toListLead(row: PartnerLeadRow) {
   return {
     lead_id: row.lead_id,
@@ -321,7 +344,7 @@ function toListLead(row: PartnerLeadRow) {
     address: row.address,
     website: row.website,
     google_maps_url: row.google_maps_url,
-    primary_phone: row.primary_phone,
+    primary_phone: partnerPrimaryPhone(row.primary_phone),
     best_contact: {
       name: row.best_contact_name,
       role: row.best_contact_role,
@@ -331,10 +354,7 @@ function toListLead(row: PartnerLeadRow) {
     lead_score: row.lead_score,
     confidence: row.confidence,
     verification_level: row.verification_level,
-    why_good_fit: row.why_good_fit,
     why_now: row.why_now,
-    need_signals: normalizeList(row.need_signals),
-    talking_points: normalizeList(row.talking_points),
     last_enriched_at: row.last_enriched_at,
     updated_at: row.updated_at,
   };
@@ -473,7 +493,7 @@ async function handleDetail(placeId: string, key: PartnerKey) {
   const { data, error: queryError } = await supabase
     .from("partner_leads_v1")
     .select("*")
-    .eq("place_id", decodeURIComponent(placeId))
+    .eq("place_id", placeId)
     .maybeSingle();
 
   if (queryError) return error("lead_query_failed", queryError.message, 500);
@@ -489,14 +509,181 @@ async function handleDetail(placeId: string, key: PartnerKey) {
 }
 
 async function leadExists(placeId: string): Promise<boolean> {
-  const decoded = decodeURIComponent(placeId);
   const { data, error: queryError } = await supabase
     .from("leads")
     .select("place_id")
-    .eq("place_id", decoded)
+    .eq("place_id", placeId)
     .maybeSingle();
   if (queryError) throw new Error(queryError.message);
   return Boolean(data);
+}
+
+async function handleUsage(key: PartnerKey) {
+  const limited = await checkRateLimit(key, 0);
+  if (limited) return limited;
+
+  const minuteAgo = new Date(Date.now() - 60_000).toISOString();
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const dayIso = dayStart.toISOString();
+
+  const [minuteCount, dayRows] = await Promise.all([
+    supabase
+      .from("partner_api_requests")
+      .select("id", { count: "exact", head: true })
+      .eq("key_id", key.id)
+      .gte("created_at", minuteAgo),
+    supabase
+      .from("partner_api_requests")
+      .select("row_count")
+      .eq("key_id", key.id)
+      .gte("created_at", dayIso),
+  ]);
+
+  if (minuteCount.error) return error("usage_lookup_failed", minuteCount.error.message, 500);
+  if (dayRows.error) return error("usage_lookup_failed", dayRows.error.message, 500);
+
+  const requestsLastMinute = minuteCount.count ?? 0;
+  const rowsToday = (dayRows.data ?? []).reduce(
+    (sum, row) => sum + Number(row.row_count ?? 0),
+    0,
+  );
+
+  return json({
+    data: {
+      partner_name: key.partner_name,
+      scopes: key.scopes,
+      rate_limit_per_minute: key.rate_limit_per_minute,
+      requests_last_minute: requestsLastMinute,
+      requests_remaining_minute: Math.max(key.rate_limit_per_minute - requestsLastMinute, 0),
+      daily_row_limit: key.daily_row_limit,
+      rows_today: rowsToday,
+      rows_remaining_today: Math.max(key.daily_row_limit - rowsToday, 0),
+    },
+    meta: {
+      api_version: API_VERSION,
+      generated_at: new Date().toISOString(),
+    },
+  });
+}
+
+async function handleEligibility(placeId: string, key: PartnerKey) {
+  const limited = await checkRateLimit(key, 1);
+  if (limited) return limited;
+
+  const { data: lead, error: leadError } = await supabase
+    .from("leads")
+    .select("place_id, enrichment_status, confidence, lead_score, enriched_json")
+    .eq("place_id", placeId)
+    .maybeSingle();
+  if (leadError) return error("eligibility_query_failed", leadError.message, 500);
+  if (!lead) return error("not_found", "Lead not found.", 404);
+
+  const enrichedJson = lead.enriched_json;
+  const verificationLevel =
+    enrichedJson && typeof enrichedJson === "object"
+      ? String((enrichedJson as Record<string, unknown>).verification_level ?? "")
+      : "";
+
+  const { data: verifiedDm, error: dmError } = await supabase.rpc(
+    "is_verified_decision_maker",
+    {
+      enriched: enrichedJson ?? {},
+      verification_level: verificationLevel || null,
+    },
+  );
+  if (dmError) return error("eligibility_query_failed", dmError.message, 500);
+
+  const { data: partnerRow, error: partnerError } = await supabase
+    .from("partner_leads_v1")
+    .select("place_id")
+    .eq("place_id", placeId)
+    .maybeSingle();
+  if (partnerError) return error("eligibility_query_failed", partnerError.message, 500);
+
+  const gates = {
+    enriched:
+      lead.enrichment_status === "enriched" &&
+      lead.enriched_json != null &&
+      typeof lead.enriched_json === "object",
+    confidence_not_low: String(lead.confidence ?? "") !== "Low",
+    score_gte_min_export: Number(lead.lead_score ?? 0) >= MIN_EXPORT_SCORE,
+    verified_decision_maker: Boolean(verifiedDm),
+  };
+  const failures = Object.entries(gates)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+
+  return json({
+    data: {
+      place_id: placeId,
+      eligible: Boolean(partnerRow),
+      in_partner_leads_v1: Boolean(partnerRow),
+      gates,
+      failures,
+      notes: [
+        "Eligibility requires verified named decision-maker (not partial, not Google mainline alone).",
+        `Score gate uses min_export_score=${MIN_EXPORT_SCORE}.`,
+      ],
+    },
+    meta: {
+      api_version: API_VERSION,
+      generated_at: new Date().toISOString(),
+    },
+  });
+}
+
+async function lookupIdempotency(
+  key: PartnerKey,
+  idempotencyKey: string,
+  route: string,
+): Promise<Response | null> {
+  const { data, error: queryError } = await supabase
+    .from("partner_idempotency_keys")
+    .select("response_json")
+    .eq("partner_key_id", key.id)
+    .eq("idempotency_key", idempotencyKey)
+    .eq("route", route)
+    .maybeSingle();
+  if (queryError || !data?.response_json) return null;
+  return json(data.response_json as Record<string, unknown>);
+}
+
+async function storeIdempotency(
+  key: PartnerKey,
+  idempotencyKey: string,
+  route: string,
+  response: Response,
+): Promise<void> {
+  if (!response.ok) return;
+  const body = await response.clone().json().catch(() => null);
+  if (!body || typeof body !== "object") return;
+  await supabase.from("partner_idempotency_keys").upsert(
+    {
+      partner_key_id: key.id,
+      idempotency_key: idempotencyKey,
+      route,
+      response_json: body,
+    },
+    { onConflict: "partner_key_id,idempotency_key,route" },
+  );
+}
+
+async function withIdempotency(
+  req: Request,
+  key: PartnerKey,
+  route: string,
+  handler: () => Promise<Response>,
+): Promise<Response> {
+  const idempotencyKey = req.headers.get("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey) return handler();
+  const cached = await lookupIdempotency(key, idempotencyKey, route);
+  if (cached) return cached;
+  const response = await handler();
+  await storeIdempotency(key, idempotencyKey, route, response).catch((err) =>
+    console.error("partner-api idempotency store failed", err)
+  );
+  return response;
 }
 
 async function mirrorSalesFeedback(placeId: string, outcome: string, notes?: string | null) {
@@ -521,8 +708,7 @@ async function mirrorSalesFeedback(placeId: string, outcome: string, notes?: str
 async function handlePostOutcome(placeId: string, key: PartnerKey, body: Record<string, unknown>) {
   const limited = await checkRateLimit(key, 1);
   if (limited) return limited;
-  const decoded = decodeURIComponent(placeId);
-  if (!(await leadExists(decoded))) {
+  if (!(await leadExists(placeId))) {
     return error("not_found", "Lead not found.", 404);
   }
   const outcome = String(body.outcome ?? "");
@@ -539,48 +725,80 @@ async function handlePostOutcome(placeId: string, key: PartnerKey, body: Record<
   }
   const now = new Date().toISOString();
   const decidedAt = typeof body.decided_at === "string" ? body.decided_at : now;
+  // Partner-scoped row — does not overwrite other partners or CRM/auto outcomes.
   const row = {
-    place_id: decoded,
+    place_id: placeId,
+    partner_key_id: key.id,
     outcome,
     outcome_reason: reason,
     deal_value_usd: body.deal_value_usd != null ? Number(body.deal_value_usd) : null,
     quality_rating: quality,
     data_flags: body.data_flags && typeof body.data_flags === "object" ? body.data_flags : {},
-    source: "partner_api",
-    partner_key_id: key.id,
     notes: body.notes != null ? String(body.notes) : null,
     decided_at: decidedAt,
     updated_at: now,
   };
   const { data, error: upsertError } = await supabase
-    .from("lead_outcomes")
-    .upsert(row)
+    .from("partner_lead_outcomes")
+    .upsert(row, { onConflict: "place_id,partner_key_id" })
     .select("*")
     .single();
   if (upsertError) return error("outcome_write_failed", upsertError.message, 500);
-  await mirrorSalesFeedback(decoded, outcome, row.notes);
-  return json({ data, meta: { api_version: API_VERSION, generated_at: now } });
+
+  // Mirror into lead_outcomes for dashboard/insights when empty or auto-only.
+  // Never clobber an operator CRM/dashboard row.
+  const { data: existingOutcome } = await supabase
+    .from("lead_outcomes")
+    .select("source")
+    .eq("place_id", placeId)
+    .maybeSingle();
+  if (!existingOutcome || existingOutcome.source === "auto") {
+    await supabase.from("lead_outcomes").upsert(
+      {
+        place_id: placeId,
+        outcome,
+        outcome_reason: reason,
+        deal_value_usd: row.deal_value_usd,
+        quality_rating: quality,
+        data_flags: row.data_flags,
+        source: "partner_api",
+        partner_key_id: key.id,
+        notes: row.notes,
+        decided_at: decidedAt,
+        updated_at: now,
+      },
+      { onConflict: "place_id" },
+    );
+  }
+
+  await mirrorSalesFeedback(placeId, outcome, row.notes);
+  return json({
+    data: { ...data, source: "partner_api", partner_key_id: key.id },
+    meta: { api_version: API_VERSION, generated_at: now },
+  });
 }
 
 async function handleGetOutcome(placeId: string, key: PartnerKey) {
   const limited = await checkRateLimit(key, 1);
   if (limited) return limited;
-  const decoded = decodeURIComponent(placeId);
   const { data, error: queryError } = await supabase
-    .from("lead_outcomes")
+    .from("partner_lead_outcomes")
     .select("*")
-    .eq("place_id", decoded)
+    .eq("place_id", placeId)
+    .eq("partner_key_id", key.id)
     .maybeSingle();
   if (queryError) return error("outcome_query_failed", queryError.message, 500);
-  if (!data) return error("not_found", "No outcome recorded for this lead.", 404);
-  return json({ data, meta: { api_version: API_VERSION, generated_at: new Date().toISOString() } });
+  if (!data) return error("not_found", "No outcome recorded for this lead by this API key.", 404);
+  return json({
+    data: { ...data, source: "partner_api" },
+    meta: { api_version: API_VERSION, generated_at: new Date().toISOString() },
+  });
 }
 
 async function handlePostTouch(placeId: string, key: PartnerKey, body: Record<string, unknown>) {
   const limited = await checkRateLimit(key, 1);
   if (limited) return limited;
-  const decoded = decodeURIComponent(placeId);
-  if (!(await leadExists(decoded))) {
+  if (!(await leadExists(placeId))) {
     return error("not_found", "Lead not found.", 404);
   }
   const touchType = String(body.touch_type ?? "");
@@ -592,7 +810,7 @@ async function handlePostTouch(placeId: string, key: PartnerKey, body: Record<st
     return error("invalid_touch_result", "result is not allowed.", 400);
   }
   const row = {
-    place_id: decoded,
+    place_id: placeId,
     touch_type: touchType,
     result,
     contact_name: body.contact_name != null ? String(body.contact_name) : null,
@@ -618,11 +836,10 @@ async function handleGetTouches(placeId: string, key: PartnerKey, url: URL) {
   const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 50, 1), 200);
   const limited = await checkRateLimit(key, limit);
   if (limited) return limited;
-  const decoded = decodeURIComponent(placeId);
   const { data, error: queryError } = await supabase
     .from("lead_touches")
     .select("*")
-    .eq("place_id", decoded)
+    .eq("place_id", placeId)
     .eq("partner_key_id", key.id)
     .order("occurred_at", { ascending: false })
     .limit(limit);
@@ -700,18 +917,23 @@ Deno.serve(async (req: Request) => {
     errorCode = "auth_failed";
   } else {
     key = authResult;
+    const leadRoute = parseLeadRoute(route);
+    const isUsageRead = req.method === "GET" && route[0] === "usage" && route.length === 1;
     const isLeadRead =
       req.method === "GET" &&
       (route[0] === "metadata" ||
+        isUsageRead ||
         (route[0] === "leads" && route.length === 1) ||
-        (route[0] === "leads" && route[1] && route.length === 2));
+        (leadRoute != null && !leadRoute.action) ||
+        (leadRoute?.action === "eligibility"));
     const isFeedbackRead =
       req.method === "GET" &&
-      route[0] === "leads" &&
-      (route[2] === "outcome" || route[2] === "touches");
+      leadRoute != null &&
+      (leadRoute.action === "outcome" || leadRoute.action === "touches");
     const isFeedbackWrite =
       req.method === "POST" &&
-      ((route[0] === "leads" && (route[2] === "outcome" || route[2] === "touches")) ||
+      ((leadRoute != null &&
+        (leadRoute.action === "outcome" || leadRoute.action === "touches")) ||
         (route[0] === "feedback" && route[1] === "batch"));
 
     if (isLeadRead && !key.scopes.includes("leads:read")) {
@@ -722,31 +944,47 @@ Deno.serve(async (req: Request) => {
       errorCode = "missing_scope";
     } else if (req.method === "GET" && route[0] === "metadata") {
       response = await handleMetadata();
+    } else if (isUsageRead) {
+      response = await handleUsage(key);
     } else if (req.method === "GET" && route[0] === "leads" && route.length === 1) {
       response = await handleList(url, key);
-    } else if (req.method === "GET" && route[0] === "leads" && route[1] && route.length === 2) {
-      response = await handleDetail(route[1], key);
-    } else if (req.method === "GET" && route[0] === "leads" && route[2] === "outcome") {
-      response = await handleGetOutcome(route[1], key);
-    } else if (req.method === "GET" && route[0] === "leads" && route[2] === "touches") {
-      response = await handleGetTouches(route[1], key, url);
-    } else if (req.method === "POST" && route[0] === "leads" && route[2] === "outcome") {
+    } else if (req.method === "GET" && leadRoute && leadRoute.action === "eligibility") {
+      response = await handleEligibility(leadRoute.placeId, key);
+    } else if (req.method === "GET" && leadRoute && !leadRoute.action) {
+      response = await handleDetail(leadRoute.placeId, key);
+    } else if (req.method === "GET" && leadRoute?.action === "outcome") {
+      response = await handleGetOutcome(leadRoute.placeId, key);
+    } else if (req.method === "GET" && leadRoute?.action === "touches") {
+      response = await handleGetTouches(leadRoute.placeId, key, url);
+    } else if (req.method === "POST" && leadRoute?.action === "outcome") {
       const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
       if (!body) {
         response = error("invalid_body", "JSON body required.", 400);
       } else {
-        response = await handlePostOutcome(route[1], key, body);
+        response = await withIdempotency(
+          req,
+          key,
+          `POST /leads/${leadRoute.placeId}/outcome`,
+          () => handlePostOutcome(leadRoute.placeId, key, body),
+        );
       }
-    } else if (req.method === "POST" && route[0] === "leads" && route[2] === "touches") {
+    } else if (req.method === "POST" && leadRoute?.action === "touches") {
       const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
       if (!body) {
         response = error("invalid_body", "JSON body required.", 400);
       } else {
-        response = await handlePostTouch(route[1], key, body);
+        response = await withIdempotency(
+          req,
+          key,
+          `POST /leads/${leadRoute.placeId}/touches`,
+          () => handlePostTouch(leadRoute.placeId, key, body),
+        );
       }
     } else if (req.method === "POST" && route[0] === "feedback" && route[1] === "batch") {
       const body = await req.json().catch(() => null);
-      response = await handleFeedbackBatch(key, body);
+      response = await withIdempotency(req, key, "POST /feedback/batch", () =>
+        handleFeedbackBatch(key, body),
+      );
     } else {
       response = error("not_found", "Unknown partner API endpoint.", 404);
       errorCode = "not_found";

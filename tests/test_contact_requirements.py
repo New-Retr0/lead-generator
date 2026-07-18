@@ -9,6 +9,7 @@ from pallares_leads.enrich.contact_requirements import (
     clear_enrichment_rules_cache,
     get_enrichment_rules,
     investigation_meets_bar,
+    is_junk_role,
     tier2_gap_reason,
 )
 from pallares_leads.enrich.schema import LeadInvestigationResult
@@ -108,3 +109,30 @@ def test_custom_rules_without_category_name_in_python() -> None:
     )
     met, _ = investigation_meets_bar(result, rules)
     assert met is True
+
+
+def test_strip_mall_google_phone_alone_does_not_skip_tier2(config_dir: Path) -> None:
+    raw = RawLead(
+        place_id="ChIJcre",
+        business_name="Reedley Plaza",
+        formatted_address="100 Main St, Reedley, CA",
+        city="Reedley",
+        state="CA",
+        property_type="strip_mall",
+        lead_category="Strip Mall",
+        website="https://example-plaza.com",
+        main_phone="(559) 638-0100",
+    )
+    settings = Settings(config_dir=config_dir)
+    # Bare Google-quality phone on site with no named DM.
+    result = LeadInvestigationResult(contact_phone="(559) 638-0100")
+    needed, reason = tier2_gap_reason(result, raw, settings=settings)
+    assert needed is True
+    assert "decision-maker" in reason.lower() or "contact bar" in reason.lower()
+
+
+def test_junk_role_rejected_outside_medical(config_dir: Path) -> None:
+    del config_dir
+    assert is_junk_role("Front Desk")
+    assert is_junk_role("Reception")
+    assert not is_junk_role("Facilities Manager")

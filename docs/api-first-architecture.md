@@ -4,9 +4,9 @@
 
 **What we sell:** Partner API keys with scoped access to discovery, enrichment, verification, and the outcome-learning loop.
 
-**What we do not sell:** The local `dashboard/` CRM. It is an internal reference client that exercises the same backend tables and Edge Function routes paying partners use.
+**What we do not sell:** The local `dashboard/`. It is a developer/operator/observer console for running and diagnosing the generator, not a CRM or partner application.
 
-In the AI-assisted development era, frontends are cheap to build. Durable value — and pricing power — sits in the backend: Places/Overpass discovery, Firecrawl + AI Gateway enrichment, grounding verification, owner-chain research, and the compounding dataset of features + labeled outcomes. Every partner posting structured feedback (`leads:feedback`) improves extraction, scoring, and targeting for all customers.
+Durable value sits in the backend: Places/Overpass discovery, Firecrawl web intelligence, grounding verification, owner-chain research, evidence provenance, and the compounding dataset of features + labeled outcomes. Every partner posting structured feedback (`leads:feedback`) improves extraction, scoring, and targeting.
 
 ## Parity principle
 
@@ -14,7 +14,7 @@ Any lead-lifecycle capability must ship in the **Partner API** before or at the 
 
 Concretely:
 
-- Outcomes and touches are written to `lead_outcomes` / `lead_touches` via the Edge Function **or** direct Postgres (CRM reference client).
+- Outcomes and touches are written to `lead_outcomes` / `lead_touches` via the Edge Function or the local operator console.
 - Partners use `POST/GET /v1/leads/{place_id}/outcome` and `POST/GET /v1/leads/{place_id}/touches` with the `leads:feedback` scope.
 - Feature snapshots and insight reports are operator-facing today; per-partner insight exports are roadmap.
 
@@ -22,14 +22,15 @@ Concretely:
 
 | Capability | Partner API | Internal reference |
 |------------|-------------|-------------------|
-| Lead list / detail / cursor sync | `GET /v1/leads`, `GET /v1/leads/{id}` (`leads:read`) | Dashboard `/leads`, CRM |
-| Post outcome | `POST /v1/leads/{id}/outcome` (`leads:feedback`) | CRM status dialog |
-| Read outcome | `GET /v1/leads/{id}/outcome` (`leads:feedback`) | Lead detail modal |
-| Log touch | `POST /v1/leads/{id}/touches` (`leads:feedback`) | CRM “Log call” |
+| Lead list / detail / cursor sync | `GET /v1/leads`, `GET /v1/leads/{id}` (`leads:read`) | Dashboard `/data` |
+| Eligibility debug | `GET /v1/leads/{id}/eligibility` (`leads:read`) | verified-DM gates |
+| Post outcome | `POST /v1/leads/{id}/outcome` (`leads:feedback`, key-scoped) | Data learning-feedback form |
+| Read outcome | `GET /v1/leads/{id}/outcome` (`leads:feedback`, key-scoped) | Lead detail modal |
+| Log touch | `POST /v1/leads/{id}/touches` (`leads:feedback`) | Data “Log touch” form |
 | Read touches | `GET /v1/leads/{id}/touches` (`leads:feedback`, key-scoped) | Lead detail timeline |
 | Bulk feedback | `POST /v1/feedback/batch` (`leads:feedback`) | — |
 | Metadata / health | `GET /v1/metadata`, `GET /v1/health` | — |
-| Usage audit | `partner_api_requests` per key | Scripted/operator review |
+| Usage | `GET /v1/usage` (`leads:read`) + `partner_api_requests` | Scripted/operator review |
 
 ## Versioning
 
@@ -37,8 +38,8 @@ Everything under `/v1/` is **additive-only**. Breaking changes require `/v2/`. T
 
 ## Roadmap (documented, not built)
 
-- Per-partner lead pools / territories (`docs/future/multi-tenant-saas-prompt.md`)
-- Webhooks for new-lead push
+- Per-partner lead pools / territories
+- Webhooks for new-lead push (`x-stability: experimental` stubs in OpenAPI)
 - Lead-request ordering via API
 - Per-partner insight reports
 - Usage-based billing from `partner_api_requests`

@@ -1,0 +1,141 @@
+[
+  {
+    "name": "verified best contact",
+    "expected": true,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Pat Rivera",
+      "best_contact_role": "Facilities Manager",
+      "best_contact_phone": "(559) 638-1111",
+      "site_contacts": []
+    }
+  },
+  {
+    "name": "partial is not verified",
+    "expected": false,
+    "lead": {
+      "verification_level": "partial",
+      "best_contact_name": "Pat Rivera",
+      "best_contact_role": "Facilities Manager",
+      "best_contact_phone": "(559) 638-1111",
+      "site_contacts": []
+    }
+  },
+  {
+    "name": "google main line cannot be joined to a name",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "main_phone": "(559) 638-1111",
+      "best_contact_name": "Pat Rivera",
+      "best_contact_role": "Facilities Manager",
+      "best_contact_phone": "Not found",
+      "site_contacts": []
+    }
+  },
+  {
+    "name": "placeholder name rejected",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "John Doe",
+      "best_contact_role": "Owner",
+      "best_contact_phone": "(559) 638-1111",
+      "site_contacts": []
+    }
+  },
+  {
+    "name": "reception role rejected",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Pat Rivera",
+      "best_contact_role": "Front Desk",
+      "best_contact_phone": "(559) 638-1111",
+      "site_contacts": []
+    }
+  },
+  {
+    "name": "toll free phone rejected",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Pat Rivera",
+      "best_contact_role": "Property Owner",
+      "best_contact_phone": "(800) 555-1212",
+      "site_contacts": []
+    }
+  },
+  {
+    "name": "verified site contact",
+    "expected": true,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Alex Chen",
+      "best_contact_role": "Property Manager",
+      "best_contact_phone": "+1 559 638 2222",
+      "site_contacts": [
+        {
+          "name": "Alex Chen",
+          "label": "Property Manager",
+          "phone": "+1 559 638 2222",
+          "verification": "verified"
+        }
+      ]
+    }
+  },
+  {
+    "name": "generic named contact is not a decision maker",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Not found",
+      "best_contact_role": "Not found",
+      "best_contact_phone": "Not found",
+      "site_contacts": [
+        {
+          "name": "Alex Chen",
+          "label": "Contact",
+          "phone": "+1 559 638 2222",
+          "verification": "verified"
+        }
+      ]
+    }
+  },
+  {
+    "name": "not found site contact name rejected",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Not found",
+      "best_contact_role": "Not found",
+      "best_contact_phone": "Not found",
+      "site_contacts": [
+        {
+          "name": "Not found",
+          "label": "Property Manager",
+          "phone": "(559) 638-3333",
+          "verification": "verified"
+        }
+      ]
+    }
+  },
+  {
+    "name": "site contact role field accepted",
+    "expected": true,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Not found",
+      "best_contact_role": "Not found",
+      "best_contact_phone": "Not found",
+      "site_contacts": [
+        {
+          "name": "Alex Chen",
+          "role": "Property Manager",
+          "phone": "+1 559 638 4444",
+          "verification": "verified"
+        }
+      ]
+    }
+  }
+]

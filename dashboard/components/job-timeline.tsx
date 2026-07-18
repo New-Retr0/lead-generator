@@ -25,12 +25,15 @@ import {
   SlideIn,
   TypingDots,
 } from "@/components/animated";
+import { CancelJobButton } from "@/components/cancel-job-button";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useJobStream } from "@/hooks/use-job-stream";
+import { nowLine } from "@/lib/job-activity";
 import { cn } from "@/lib/utils";
 import type { JobEvent } from "@/lib/types";
 
@@ -140,26 +143,6 @@ function groupByLead(events: JobEvent[]): { runEvents: JobEvent[]; leads: LeadGr
   return { runEvents, leads: [...map.values()] };
 }
 
-function eventKey(event: JobEvent): string {
-  if (event.id != null) return `id:${String(event.id)}`;
-  return [
-    event.ts,
-    event.event,
-    event.stage ?? "",
-    event.place_id ?? "",
-    event.reason ?? "",
-    typeof event.duration_ms === "number" ? String(event.duration_ms) : "",
-  ].join("|");
-}
-
-type JobRecordResponse = {
-  job?: {
-    status?: string;
-    logs?: unknown[];
-    events?: unknown[];
-  };
-};
-
 const EventRow = memo(function EventRow({
   event,
   active,
@@ -176,7 +159,7 @@ const EventRow = memo(function EventRow({
   );
   return (
     <SlideIn>
-      <div className="group/row flex items-start gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/40">
+      <div className="group/row flex items-start gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-accent">
         {active ? (
           <motion.span
             className={chipClass}
@@ -242,9 +225,9 @@ const LeadGroupCard = memo(function LeadGroupCard({
   return (
     <SlideIn>
       <Collapsible defaultOpen={defaultOpen}>
-        <div className="glass overflow-hidden rounded-xl">
-          <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-accent/30">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/85 to-[oklch(0.55_0.16_290)] text-white shadow-[0_4px_14px_-4px_oklch(0.5_0.19_262/0.6)]">
+        <div className="panel overflow-hidden rounded-xl">
+          <CollapsibleTrigger className="group/trigger flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-accent">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/85 to-primary/70 text-white shadow-[0_4px_14px_-4px_rgba(255,92,57,0.45)]">
               <Building2 className="size-3.5" strokeWidth={2.25} />
             </span>
             <span className="min-w-0 flex-1">
@@ -322,113 +305,12 @@ function JobTimelineStream({
   onDone?: (status: string) => void;
   compact?: boolean;
 }) {
-  const [lines, setLines] = useState<string[]>([]);
-  const [events, setEvents] = useState<JobEvent[]>([]);
-  const [status, setStatus] = useState("running");
-  const [streamIssue, setStreamIssue] = useState(false);
+  const { status, phase, lines, events } = useJobStream({ jobId, onDone });
   const [showRaw, setShowRaw] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
   const [paused, setPaused] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
-  const wasLiveRef = useRef(false);
-  const seenLinesRef = useRef(new Set<string>());
-  const seenEventsRef = useRef(new Set<string>());
-
-  useEffect(() => {
-    let cancelled = false;
-    wasLiveRef.current = false;
-    seenLinesRef.current.clear();
-    seenEventsRef.current.clear();
-    // Reset stream UI when switching jobs (not an external-store subscription).
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- jobId change reset
-    setLines([]);
-    setEvents([]);
-    setStatus("running");
-    setStreamIssue(false);
-
-    const hydrateFromJobRecord = async () => {
-      try {
-        const body = (await fetch(`/api/jobs/${jobId}`).then((r) =>
-          r.json(),
-        )) as JobRecordResponse;
-        if (cancelled) return;
-        const initial = body.job?.status ?? "running";
-        setStatus(initial);
-        wasLiveRef.current = initial === "running";
-
-        const normalizedLines = (body.job?.logs ?? []).filter(
-          (line): line is string => typeof line === "string",
-        );
-        if (normalizedLines.length > 0) {
-          setLines(normalizedLines);
-          for (const line of normalizedLines) {
-            seenLinesRef.current.add(line);
-          }
-        }
-
-        const normalizedEvents = (body.job?.events ?? []).filter(
-          (event): event is JobEvent =>
-            typeof event === "object" &&
-            event !== null &&
-            (event as { t?: unknown }).t === "evt" &&
-            typeof (event as { event?: unknown }).event === "string" &&
-            typeof (event as { ts?: unknown }).ts === "string",
-        );
-        if (normalizedEvents.length > 0) {
-          setEvents(normalizedEvents);
-          for (const event of normalizedEvents) {
-            seenEventsRef.current.add(eventKey(event));
-          }
-        }
-      } catch {
-        if (!cancelled) wasLiveRef.current = true;
-      }
-    };
-
-    void hydrateFromJobRecord();
-
-    const source = new EventSource(`/api/jobs/${jobId}/stream`);
-
-    source.onopen = () => {
-      setStreamIssue(false);
-    };
-
-    source.addEventListener("log", (event) => {
-      const data = JSON.parse(event.data) as { line: string };
-      setStreamIssue(false);
-      if (seenLinesRef.current.has(data.line)) return;
-      seenLinesRef.current.add(data.line);
-      setLines((prev) => [...prev, data.line]);
-    });
-
-    source.addEventListener("event", (event) => {
-      const data = JSON.parse(event.data) as JobEvent;
-      setStreamIssue(false);
-      const key = eventKey(data);
-      if (seenEventsRef.current.has(key)) return;
-      seenEventsRef.current.add(key);
-      setEvents((prev) => [...prev, data]);
-    });
-
-    source.addEventListener("done", (event) => {
-      const data = JSON.parse(event.data) as { status: string };
-      setStreamIssue(false);
-      setStatus(data.status);
-      if (wasLiveRef.current) onDone?.(data.status);
-      source.close();
-    });
-
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) return;
-      setStreamIssue(true);
-    };
-
-    return () => {
-      cancelled = true;
-      source.close();
-    };
-  }, [jobId, onDone]);
 
   useEffect(() => {
     if (!paused) {
@@ -437,7 +319,7 @@ function JobTimelineStream({
   }, [lines, events, paused, showRaw]);
 
   useEffect(() => {
-    if (status !== "running") return;
+    if (status !== "running" && status !== "pending") return;
     const id = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, [status]);
@@ -472,7 +354,8 @@ function JobTimelineStream({
     () => (showFullLog ? lines : lines.slice(-LOG_CAP)),
     [lines, showFullLog],
   );
-  const running = status === "running";
+  const running = status === "running" || status === "pending";
+  const streamIssue = phase === "reconnecting" || phase === "polling";
   const staleMs = 5 * 60 * 1000;
   const lastEventTs = events.length
     ? Date.parse(events[events.length - 1]?.ts ?? "")
@@ -485,8 +368,7 @@ function JobTimelineStream({
 
   return (
     <div className={cn("rounded-2xl", running && "live-ring p-px")}>
-      <div className="glass-strong glass-sheen overflow-hidden rounded-2xl">
-        {/* header */}
+      <div className="panel-strong panel-sheen overflow-hidden rounded-2xl">
         <div className="relative border-b border-border/50 px-5 pb-4 pt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -494,10 +376,10 @@ function JobTimelineStream({
                 className={cn(
                   "flex size-9 items-center justify-center rounded-xl text-white shadow-lg",
                   running
-                    ? "bg-gradient-to-br from-primary to-[oklch(0.6_0.16_300)]"
+                    ? "bg-gradient-to-br from-primary to-primary/80"
                     : status === "completed"
-                      ? "bg-gradient-to-br from-success to-[oklch(0.62_0.13_183)]"
-                      : "bg-gradient-to-br from-destructive to-[oklch(0.55_0.2_15)]",
+                      ? "bg-gradient-to-br from-success to-success/80"
+                      : "bg-gradient-to-br from-destructive to-destructive/80",
                 )}
               >
                 <SquareTerminal className="size-4.5" strokeWidth={2.25} />
@@ -518,34 +400,36 @@ function JobTimelineStream({
                 </p>
               </div>
             </div>
-            {!compact ? (
-              <div className="flex items-center gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={showRaw ? "secondary" : "ghost"}
-                  className="h-7 px-2.5 text-xs"
-                  onClick={() => setShowRaw((v) => !v)}
-                >
-                  <SquareTerminal className="size-3.5" />
-                  Raw
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2.5 text-xs"
-                  onClick={() => setPaused((v) => !v)}
-                >
-                  {paused ? "Follow" : "Pause"}
-                </Button>
-              </div>
-            ) : null}
+            <div className="flex items-center gap-1.5">
+              <CancelJobButton jobId={jobId} visible={running} />
+              {!compact ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={showRaw ? "secondary" : "ghost"}
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setShowRaw((v) => !v)}
+                  >
+                    <SquareTerminal className="size-3.5" />
+                    Raw
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setPaused((v) => !v)}
+                  >
+                    {paused ? "Follow" : "Pause"}
+                  </Button>
+                </>
+              ) : null}
+            </div>
           </div>
 
-          {/* live counters */}
           <div className="mt-4 grid grid-cols-3 gap-2">
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="panel rounded-xl px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 Leads
               </p>
@@ -557,7 +441,7 @@ function JobTimelineStream({
                 </span>
               </p>
             </div>
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="panel rounded-xl px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <Coins className="size-3" />
                 Credits
@@ -566,7 +450,7 @@ function JobTimelineStream({
                 <Odometer value={totals.credits} climbSeconds={1.4} />
               </p>
             </div>
-            <div className="glass rounded-xl px-3 py-2">
+            <div className="panel rounded-xl px-3 py-2">
               <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                 <ShieldX className="size-3" />
                 Rejected
@@ -583,7 +467,6 @@ function JobTimelineStream({
           </div>
         </div>
 
-        {/* body */}
         <div className="p-3">
           {showRaw && !compact ? (
             <div className="space-y-2">
@@ -611,18 +494,29 @@ function JobTimelineStream({
               )}
             >
               {events.length === 0 ? (
-                <div className="space-y-2 py-2">
-                  <div className="shimmer h-12 rounded-xl border border-border/40" />
-                  <div className="shimmer h-12 rounded-xl border border-border/40" />
-                  <p className="pt-1 text-center text-xs text-muted-foreground">
-                    Waiting for structured events…
+                <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 px-4 py-5">
+                  <div className="flex items-center gap-2 text-xs font-medium text-foreground/80">
+                    {running ? <TypingDots /> : null}
+                    <span className="font-mono text-[11px] leading-relaxed">
+                      {nowLine({
+                        events,
+                        lines,
+                        fallback: running
+                          ? "Spawning pallares-leads… waiting for the first CLI line"
+                          : "No structured events for this job",
+                      })}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Structured lead cards appear after the run emits JSON progress events.
+                    Raw CLI output is available via Raw.
                   </p>
                 </div>
               ) : (
                 <>
                   {visibleRunEvents.length > 0 ? (
                     <SlideIn>
-                      <div className="glass space-y-0.5 rounded-xl px-1.5 py-1.5">
+                      <div className="panel space-y-0.5 rounded-xl px-1.5 py-1.5">
                         {visibleRunEvents.map((evt, i) => (
                           <EventRow key={`run-${evt.ts}-${i}`} event={evt} />
                         ))}

@@ -44,6 +44,57 @@ export function RunStatusBadge({ status }: { status: string }) {
   );
 }
 
+const STOP_REASON_VARIANT: Record<string, "outline" | "warning" | "danger" | "secondary"> = {
+  empty_discovery: "secondary",
+  credit_cap: "warning",
+  firecrawl_credits_exhausted: "warning",
+  session_credit_stop: "warning",
+  http_402: "warning",
+  grounding_storm: "warning",
+  cancelled: "outline",
+  interrupted: "outline",
+  worker_offline: "danger",
+  exception: "danger",
+  failed: "danger",
+};
+
+/** Normalize status/stop_reason into a displayable stop badge. */
+export function resolveStopReason(
+  reason: string | null | undefined,
+  status?: string | null,
+  discoveredCount?: number | null,
+): string | null {
+  if (reason) return reason;
+  if (status === "firecrawl_credits_exhausted") return "credit_cap";
+  if (status === "cancelled") return "cancelled";
+  if (status === "failed") return "failed";
+  if (status === "completed" && discoveredCount === 0) return "empty_discovery";
+  return null;
+}
+
+export function StopReasonBadge({
+  reason,
+  detail,
+  status,
+  discoveredCount,
+}: {
+  reason: string | null | undefined;
+  detail?: string | null;
+  status?: string | null;
+  discoveredCount?: number | null;
+}) {
+  const resolved = resolveStopReason(reason, status, discoveredCount);
+  if (!resolved) return null;
+  const label = resolved.replace(/_/g, " ");
+  const title = detail?.trim() ? detail : undefined;
+  const variant = STOP_REASON_VARIANT[resolved] ?? "outline";
+  return (
+    <Badge variant={variant} className="max-w-[14rem] truncate font-normal" title={title}>
+      {label}
+    </Badge>
+  );
+}
+
 export function ConfidenceBadge({ confidence }: { confidence: string | null }) {
   if (!confidence) return <Badge variant="outline">—</Badge>;
   const variant =
@@ -57,7 +108,7 @@ export function ConfidenceBadge({ confidence }: { confidence: string | null }) {
 
 const VERIFICATION_HINTS: Record<string, string> = {
   verified: "Callable verified phone and at least one verified person name.",
-  partial: "Verified phone on file — no verified person name yet.",
+  partial: "Callable phone on file — no atomic named decision-maker yet.",
   unverified: "No grounded callable contact — we do not guess names.",
 };
 

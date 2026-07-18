@@ -73,24 +73,6 @@ _LEAD_CONTACT_PROPERTIES: dict[str, Any] = {
     },
 }
 
-_SALES_COPY_PROPERTIES: dict[str, Any] = {
-    "pitch_angle": {
-        "type": "string",
-        "description": (
-            "1-2 sentences: why call THIS property now for Pallares managed exterior services"
-        ),
-    },
-    "sales_talking_points": {
-        "type": "string",
-        "description": (
-            "3-5 bullet talking points for a property manager cold call. Include specific "
-            "surfaces (lot, storefront, canopy), multi-location/recurring program angle when "
-            "relevant, and Pallares broker value (managed vendors, photo QC) only if supported "
-            "by research. Use • bullets; conversational, not generic."
-        ),
-    },
-}
-
 LEAD_CONTACT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": _LEAD_CONTACT_PROPERTIES,
@@ -98,16 +80,7 @@ LEAD_CONTACT_SCHEMA: dict[str, Any] = {
 
 LEAD_INVESTIGATION_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {**_LEAD_CONTACT_PROPERTIES, **_SALES_COPY_PROPERTIES},
-}
-
-SALES_COPY_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "why_call": _SALES_COPY_PROPERTIES["pitch_angle"],
-        "talking_points": _SALES_COPY_PROPERTIES["sales_talking_points"],
-    },
-    "required": ["why_call", "talking_points"],
+    "properties": _LEAD_CONTACT_PROPERTIES,
 }
 
 
@@ -120,8 +93,6 @@ class LeadInvestigationResult(BaseModel):
     contact_form_url: str = ""
     property_manager: str = ""
     exterior_signals: str = ""
-    pitch_angle: str = ""
-    sales_talking_points: str = ""
     website_url: str = ""
     source_urls: list[str] = Field(default_factory=list)
 
@@ -166,8 +137,6 @@ class LeadInvestigationResult(BaseModel):
             contact_form_url=str(data.get("contact_form_url") or "").strip(),
             property_manager=str(data.get("property_manager") or "").strip(),
             exterior_signals=str(data.get("exterior_signals") or "").strip(),
-            pitch_angle=str(data.get("pitch_angle") or "").strip(),
-            sales_talking_points=str(data.get("sales_talking_points") or "").strip(),
             website_url=str(data.get("website_url") or "").strip(),
             source_urls=[str(u) for u in urls if u],
         )

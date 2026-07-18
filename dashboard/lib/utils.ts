@@ -5,32 +5,29 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Plain `$` + digits — avoids locale currency glyphs that look raised/thin in UI type. */
+function usdString(value: number, fractionDigits: number, maxFractionDigits?: number): string {
+  const max = maxFractionDigits ?? fractionDigits;
+  const abs = Math.abs(value);
+  const body = abs.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: max,
+  });
+  return `${value < 0 ? "-" : ""}$${body}`;
+}
+
 export function formatUsd(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
+  return usdString(value, 2);
 }
 
 /** Per-unit / per-call amounts under a cent — up to 4 decimal places. */
 export function formatUsdPrecise(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(value);
+  return usdString(value, 2, 4);
 }
 
 /** Headline stat values — max 2 decimal places. */
 export function formatUsdCompact(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(value);
+  return usdString(value, 0, 2);
 }
 
 export function formatPct(value: number): string {
@@ -40,7 +37,6 @@ export function formatPct(value: number): string {
 const PROVIDER_LABELS: Record<string, string> = {
   firecrawl: "Firecrawl",
   browser_use: "Browser Use",
-  ai_gateway: "AI Gateway",
   google_places: "Google Places",
 };
 
@@ -108,7 +104,6 @@ export function formatOverviewSpendSub(
     firecrawl: "FC",
     google_places: "Google",
     browser_use: "BU",
-    ai_gateway: "AI",
   };
 
   const top = [...usdByProvider]

@@ -11,7 +11,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pallares_leads.config_loader import load_campaigns, load_categories, load_markets
 from pallares_leads.db.store import LeadStore
-from pallares_leads.discover.mgmt_directory import harvest_management_directory
+from pallares_leads.discover.mgmt_directory import (
+    expand_portfolio_from_profile,
+    harvest_management_directory,
+)
 from pallares_leads.discover.places import PlacesClient
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.pipeline.run_campaign import DEFAULT_CAMPAIGN, run_campaign
@@ -65,14 +68,14 @@ def _add_lead_db_flags(parser: argparse.ArgumentParser) -> None:
         "--no-skip-known",
         action="store_false",
         dest="skip_known",
-        help="Process all discovered leads even if already enriched in the DB",
+        help="Process all discovered leads even if already researched in the DB",
     )
     parser.set_defaults(skip_known=True)
     parser.add_argument(
         "--refresh-after-days",
         type=int,
         metavar="N",
-        help="Re-enrich leads last processed more than N days ago",
+        help="Re-research leads last processed more than N days ago",
     )
 
 
@@ -180,12 +183,12 @@ def cmd_run_campaign(args: argparse.Namespace) -> int:
 
 
 def cmd_smoke_sample(args: argparse.Namespace) -> int:
-    """Run a small fully-enriched sample (default: Reedley, 5 leads per category)."""
+    """Run a small fully-researched sample (default: Reedley, 5 leads per category)."""
     settings = get_settings()
 
     if not settings.firecrawl_api_key and not args.discover_only:
         print(
-            "FIRECRAWL_API_KEY is required for full enrichment. "
+            "FIRECRAWL_API_KEY is required for full research. "
             "Set it in .env or pass --discover-only.",
             file=sys.stderr,
         )
@@ -202,7 +205,7 @@ def cmd_smoke_sample(args: argparse.Namespace) -> int:
     limit = args.limit or SMOKE_SAMPLE_LIMIT
     print(
         f"Smoke sample: campaign={args.campaign!r}, markets={market_filter or 'all'}, "
-        f"limit={limit}, enrich={'yes' if not args.discover_only else 'no'}"
+        f"limit={limit}, research={'yes' if not args.discover_only else 'no'}"
     )
 
     def _body() -> int:
@@ -253,8 +256,97 @@ def cmd_settings_schema(_args: argparse.Namespace) -> int:
     return print_settings_schema()
 
 
+def _doctor_json_report(settings: Settings) -> dict:
+    """Compact structured health report for dashboards (`doctor --json`)."""
+    checks: list[dict[str, object]] = []
+    ok = True
+
+    if not settings.google_places_api_key:
+        checks.append(
+            {
+                "service": "Places API (New)",
+                "status": "missing",
+                "message": "GOOGLE_PLACES_API_KEY unset",
+                "details": [],
+            }
+        )
+        ok = False
+    else:
+        places_ok, places_msg = PlacesClient(settings).health_check()
+        checks.append(
+            {
+                "service": "Places API (New)",
+                "status": "ok" if places_ok else "fail",
+                "message": places_msg,
+                "details": [],
+            }
+        )
+        ok = ok and places_ok
+
+    if not settings.firecrawl_api_key:
+        checks.append(
+            {
+                "service": "Firecrawl",
+                "status": "missing",
+                "message": "FIRECRAWL_API_KEY unset",
+                "details": [],
+            }
+        )
+    else:
+        fc = FirecrawlClient(settings)
+        fc_ok, fc_msg = fc.health_check()
+        checks.append(
+            {
+                "service": "Firecrawl",
+                "status": "ok" if fc_ok else "fail",
+                "message": fc_msg,
+                "details": [],
+            }
+        )
+        ok = ok and fc_ok
+
+    if not settings.supabase_db_url:
+        checks.append(
+            {
+                "service": "Supabase",
+                "status": "missing",
+                "message": "SUPABASE_DB_URL unset",
+                "details": [],
+            }
+        )
+        ok = False
+    else:
+        checks.append(
+            {
+                "service": "Supabase",
+                "status": "ok",
+                "message": "configured",
+                "details": [],
+            }
+        )
+
+    with LeadStore() as store:
+        lead_count = store.count_leads()
+        enriched_count = store.count_enriched()
+        checks.append(
+            {
+                "service": "Lead database",
+                "status": "ok",
+                "message": f"{lead_count} lead(s), {enriched_count} researched",
+                "details": [_redact_connection_url(store.db_path)],
+            }
+        )
+
+    return {"ok": ok, "checks": checks}
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     settings = get_settings()
+    if getattr(args, "json", False):
+        report = _doctor_json_report(settings)
+        print(json.dumps(report, indent=2, default=str))
+        return 0 if report["ok"] else 1
+
     ok = True
 
     if getattr(args, "config", False):
@@ -281,7 +373,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ok = ok and places_ok
 
     if not settings.firecrawl_api_key:
-        print("Firecrawl: MISSING — set FIRECRAWL_API_KEY in .env (needed for enrichment)")
+        print("Firecrawl: MISSING — set FIRECRAWL_API_KEY in .env (needed for research)")
     else:
         from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 
@@ -290,70 +382,48 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         status = "OK" if fc_ok else "FAIL"
         print(f"Firecrawl: {status} — {fc_msg}")
         ok = ok and fc_ok
-        if settings.firecrawl_max_credits_per_run > 0:
-            print(f"  Run credit cap: {settings.firecrawl_max_credits_per_run} credits/run")
-        if settings.firecrawl_session_credit_stop > 0:
-            print(
-                f"  Session credit stop: {settings.firecrawl_session_credit_stop} "
-                "credits (refuse new runs above this)"
-            )
         queue = fc.get_queue_status()
-        queue_max_conc = None
+        queue_max_conc = fc.plan_max_concurrency()
         if queue.get("error"):
             print(f"  Firecrawl queue: unavailable ({queue['error'][:80]})")
         else:
             jobs = queue.get("jobsInQueue", queue.get("jobs_in_queue"))
-            queue_max_conc = queue.get("maxConcurrency", queue.get("max_concurrency"))
             if jobs is not None or queue_max_conc is not None:
                 print(
                     f"  Firecrawl queue: {jobs or 0} queued, "
-                    f"max concurrency {queue_max_conc or '?'}"
+                    f"plan concurrency {queue_max_conc or '?'}"
                 )
         from pallares_leads.costs import infer_firecrawl_plan, load_pricing
 
         pricing = load_pricing(settings.config_dir)
-        _, inferred_plan = infer_firecrawl_plan(pricing, max_concurrency=queue_max_conc)
-        plan_concurrency = (
+        _, inferred_plan = infer_firecrawl_plan(
+            pricing, max_concurrency=queue_max_conc
+        )
+        plan_concurrency = queue_max_conc or (
             int(inferred_plan.get("concurrent_browsers") or 0) if inferred_plan else None
         )
         if inferred_plan:
             limits = inferred_plan.get("rate_limits_rpm") or {}
             print(
-                f"  Plan status: {inferred_plan.get('name', 'unknown')} inferred from API "
+                f"  Plan status: {inferred_plan.get('name', 'unknown')} "
                 f"({int(inferred_plan.get('monthly_credits') or 0):,} credits/mo, "
                 f"{plan_concurrency or '?'} concurrent browsers, "
                 f"{limits.get('scrape', '?')} scrape rpm, {limits.get('search', '?')} search rpm)"
             )
         else:
             print("  Plan status: unavailable from Firecrawl API")
-        if plan_concurrency and settings.firecrawl_max_concurrency > plan_concurrency:
-            print(
-                f"  WARNING: FIRECRAWL_MAX_CONCURRENCY={settings.firecrawl_max_concurrency} "
-                f"exceeds API plan limit ({plan_concurrency})"
-            )
-        elif plan_concurrency:
-            print(
-                f"  Concurrency: {settings.firecrawl_max_concurrency} "
-                f"(API plan limit {plan_concurrency})"
-            )
+        effective = fc.effective_max_concurrency()
+        workers = fc.effective_parallel_workers()
+        print(
+            f"  Concurrency: {effective} from Firecrawl plan "
+            f"(place-parallel workers: {workers})"
+        )
 
     if not settings.supabase_db_url:
         print("Supabase: MISSING — set SUPABASE_DB_URL in .env")
         ok = False
     else:
         print("Supabase: configured (SUPABASE_DB_URL)")
-
-    if not settings.ai_gateway_enabled:
-        print("AI Gateway: disabled (AI_GATEWAY_ENABLED=false)")
-    elif not settings.ai_gateway_api_key:
-        print("AI Gateway: MISSING — set AI_GATEWAY_API_KEY in .env (sales copy)")
-    elif not settings.ai_gateway_model:
-        print("AI Gateway: INCOMPLETE — set AI_GATEWAY_MODEL in .env")
-    else:
-        print(
-            f"AI Gateway: OK — model {settings.ai_gateway_model} "
-            "(token costs tracked per completion)"
-        )
 
     with LeadStore() as store:
         lead_count = store.count_leads()
@@ -362,7 +432,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if repaired:
             print(f"  Repaired {repaired} stuck run(s) marked as failed")
         db_label = _redact_connection_url(store.db_path)
-        print(f"Lead DB: {db_label} — {lead_count} lead(s), {enriched_count} enriched")
+        print(f"Lead DB: {db_label} — {lead_count} lead(s), {enriched_count} researched")
 
         if settings.firecrawl_api_key:
             from pallares_leads.enrich.firecrawl_client import FirecrawlClient
@@ -396,9 +466,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                         f"({int(inferred_plan.get('monthly_credits') or 0):,} credits/mo, "
                         f"${firecrawl_credit_usd(pricing, plan_credits=plan):.6f}/credit)"
                     )
-                if plan is not None and remaining is not None and float(remaining) > float(plan):
+                extra = fc_balance.get("extraCredits")
+                if extra is None and plan is not None and remaining is not None:
+                    try:
+                        extra = max(0.0, float(remaining) - float(plan))
+                    except (TypeError, ValueError):
+                        extra = None
+                if extra is not None and float(extra) > 0:
                     print(
-                        "  Firecrawl balance includes extra/recharge credits beyond monthly plan"
+                        f"  Extra/recharge credits beyond plan: {float(extra):.0f}"
                     )
                 if used is not None and plan is not None:
                     pct = (float(used) / float(plan)) * 100 if float(plan) > 0 else 0
@@ -406,7 +482,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     if pct >= 80:
                         print(
                             f"  WARNING: over 80% of monthly plan credits used "
-                            f"({pct:.1f}%) — review spend or raise FIRECRAWL_SESSION_CREDIT_STOP"
+                            f"({pct:.1f}%) — review spend before starting large runs"
                         )
                 if billing_end:
                     print(f"  Billing period ends: {billing_end}")
@@ -441,89 +517,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             elif fc_balance.get("error"):
                 print(f"  Firecrawl balance snapshot: unavailable ({fc_balance['error'][:80]})")
             elif remaining is not None and float(remaining) <= 0:
-                print("  WARNING: Firecrawl credits exhausted — enrichment will fail with HTTP 402")
+                print("  WARNING: Firecrawl credits exhausted — research will fail with HTTP 402")
 
-        if settings.browser_use_api_key:
-            from pallares_leads.enrich.browser_use_client import BrowserUseClient
-
-            bu = BrowserUseClient(settings, store=store)
-            if not settings.browser_use_enabled:
-                print("Browser Use: configured but disabled (BROWSER_USE_ENABLED=false)")
-            else:
-                bu_ok, bu_msg = bu.health_check()
-                status = "OK" if bu_ok else "FAIL"
-                print(f"Browser Use: {status} — {bu_msg}")
-                ok = ok and bu_ok
-                if settings.owner_chain_max_per_run > 0:
-                    print(f"  Owner-chain cap: {settings.owner_chain_max_per_run} lookups/run")
-        elif settings.browser_use_enabled:
-            print("Browser Use: MISSING — set BROWSER_USE_API_KEY in .env (owner-chain lookups)")
-            ok = False
+        if settings.owner_chain_max_per_run > 0 and settings.firecrawl_api_key:
+            print(
+                f"Owner chain: Firecrawl agent "
+                f"(cap {settings.owner_chain_max_per_run} lookups/run)"
+            )
 
     return 0 if ok else 1
-
-
-def cmd_warm_portals(args: argparse.Namespace) -> int:
-    """Seed Browser Use Cloud cached scripts for county/state portal adapters."""
-    settings = get_settings()
-    from pallares_leads.config_loader import load_jurisdictions
-    from pallares_leads.enrich.browser_use_client import BrowserUseClient
-
-    if args.dry_run:
-        print("warm-portals dry-run: would warm all configured state SOS and county adapters")
-        return 0
-
-    if not settings.browser_use_api_key:
-        print("BROWSER_USE_API_KEY is required for warm-portals", file=sys.stderr)
-        return 1
-
-    registry = load_jurisdictions(settings.config_dir)
-    county_filter = args.county
-    counties = registry.counties
-    if county_filter:
-        if county_filter not in counties:
-            print(
-                f"Unknown county {county_filter!r}. Options: {', '.join(sorted(counties))}",
-                file=sys.stderr,
-            )
-            return 1
-        counties = {county_filter: counties[county_filter]}
-
-    with LeadStore() as store:
-        client = BrowserUseClient(settings, store=store)
-        if not client.is_available():
-            print(client.last_skip_reason or "Browser Use unavailable", file=sys.stderr)
-            return 1
-
-        warmed = 0
-        for state_code, state_cfg in sorted(registry.states.items()):
-            print(f"Warming {state_code.upper()} SOS template...")
-            client.sos_entity_lookup(
-                f"{state_code.upper()} TEST LLC",
-                state_cfg,
-                state_code=state_code,
-            )
-            warmed += 1
-
-        for key, county in counties.items():
-            print(f"Warming county adapters for {key}...")
-            if county.recorder:
-                client.recorder_party_search("TEST PROPERTY LLC", county)
-                warmed += 1
-            if county.parcel_portal and county.parcel_portal.owner_names_online is not False:
-                city = "Visalia" if key == "tulare_ca" else "Fresno"
-                client.parcel_owner_lookup("100 Main St", city, county)
-                warmed += 1
-
-        print(f"warm-portals complete — {warmed} adapter task(s) submitted")
-    return 0
 
 
 def cmd_db_status(args: argparse.Namespace) -> int:
     with LeadStore() as store:
         print(f"Database: {_redact_connection_url(store.db_path)}")
         print(f"  Total leads:    {store.count_leads()}")
-        print(f"  Enriched:       {store.count_enriched()}")
+        print(f"  Researched:     {store.count_enriched()}")
         runs = store.recent_runs(limit=args.limit)
         if runs:
             print(f"\nRecent runs (last {len(runs)}):")
@@ -535,7 +544,7 @@ def cmd_db_status(args: argparse.Namespace) -> int:
                     f"  {_format_cli_timestamp(run['started_at'])}  {label}  "
                     f"discovered={run['discovered_count']}  "
                     f"skipped={run['skipped_known_count']}  "
-                    f"enriched={run['enriched_count']}  "
+                    f"completed={run['enriched_count']}  "
                     f"{run['status']}"
                 )
         else:
@@ -574,7 +583,7 @@ def cmd_db_import(args: argparse.Namespace) -> int:
 def cmd_db_profiles(args: argparse.Namespace) -> int:
     with LeadStore() as store:
         profiles = store.list_profiles(limit=args.limit)
-        print(f"Enrichment profiles: {store.count_profiles()} total\n")
+        print(f"Research profiles: {store.count_profiles()} total\n")
         for row in profiles:
             playbook = row.get("playbook") or {}
             print(
@@ -697,6 +706,38 @@ def cmd_harvest_managers(args: argparse.Namespace) -> int:
 
     return _run_under_pipeline_lock(settings, _body)
 
+def cmd_expand_portfolio(args: argparse.Namespace) -> int:
+    settings = get_settings()
+
+    def _body() -> int:
+        if not settings.firecrawl_api_key:
+            print("FIRECRAWL_API_KEY is required for expand-portfolio", file=sys.stderr)
+            return 1
+        markets = load_markets(settings.config_dir)
+        if args.market not in markets:
+            print(f"Unknown market {args.market!r}", file=sys.stderr)
+            return 1
+        mgmt_key = args.mgmt_key
+        if not mgmt_key.startswith("mgmt:"):
+            mgmt_key = f"mgmt:{mgmt_key}"
+        firecrawl = FirecrawlClient(settings)
+        with LeadStore() as store:
+            expansion = expand_portfolio_from_profile(
+                settings=settings,
+                store=store,
+                firecrawl=firecrawl,
+                mgmt_key=mgmt_key,
+                market_key=args.market,
+                limit=args.limit,
+            )
+        print(
+            f"Expanded {mgmt_key}: {len(expansion.properties)} portfolio lot(s) "
+            f"({expansion.company_name})"
+        )
+        return 0
+
+    return _run_under_pipeline_lock(settings, _body)
+
 
 def cmd_request(args: argparse.Namespace) -> int:
     settings = get_settings()
@@ -747,7 +788,7 @@ def cmd_request(args: argparse.Namespace) -> int:
         )
 
         if args.dry_run:
-            print("\nDry run — no discovery or enrichment performed.")
+            print("\nDry run — no discovery or research performed.")
             return 0
 
         if spec.needs_confirmation and not args.yes:
@@ -769,7 +810,7 @@ def cmd_request(args: argparse.Namespace) -> int:
 
     print(
         f"\nRequest {result.request_id}: delivered {len(result.delivered)} lead(s) "
-        f"({result.reused_from_db} reused, {result.newly_enriched} newly enriched)"
+        f"({result.reused_from_db} reused, {result.newly_enriched} newly researched)"
     )
     if result.output_path:
         print(f"Export: {result.output_path}")
@@ -781,11 +822,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="Run discovery (+ enrichment) for a market")
+    run = sub.add_parser("run", help="Run discovery (+ research) for a market")
     run.add_argument("--market", help="Market key from config/markets.yaml")
     run.add_argument("--category", help="Category key from config/categories.yaml")
     run.add_argument("--all-categories", action="store_true")
-    run.add_argument("--discover-only", action="store_true", help="Skip Firecrawl enrichment")
+    run.add_argument("--discover-only", action="store_true", help="Skip Firecrawl research")
     run.add_argument("--dry-run", action="store_true", help="Print queries only")
     run.add_argument("--limit", type=int, help="Max leads to discover per category")
     _add_lead_db_flags(run)
@@ -807,7 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     smoke = sub.add_parser(
         "smoke-sample",
-        help="Small enriched sample run (default: Reedley, 5 leads × each campaign category)",
+        help="Small researched sample run (default: Reedley, 5 leads × each campaign category)",
     )
     smoke.add_argument("--campaign", default=DEFAULT_CAMPAIGN)
     smoke.add_argument("--market", help="Market key(s), comma-separated (default: reedley only)")
@@ -829,6 +870,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate markets, categories, campaigns, and jurisdictions YAML",
     )
+    doc.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON health report (preferred by the dashboard)",
+    )
     doc.set_defaults(func=cmd_doctor)
 
     schema = sub.add_parser(
@@ -837,32 +883,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     schema.set_defaults(func=cmd_settings_schema)
 
-    warm = sub.add_parser(
-        "warm-portals",
-        help="Seed Browser Use Cloud cached portal scripts (one-time setup)",
-    )
-    warm.add_argument(
-        "--county",
-        help="County jurisdiction key (default: all counties in jurisdictions.yaml)",
-    )
-    warm.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print planned warm-up steps without calling Browser Use",
-    )
-    warm.set_defaults(func=cmd_warm_portals)
-
     from pallares_leads.queue_worker import add_worker_parser
 
     add_worker_parser(sub)
 
     harvest = sub.add_parser(
         "harvest-managers",
-        help="Harvest property-management company profiles into enrichment_profiles",
+        help="Harvest property-management company profiles into research playbooks",
     )
     harvest.add_argument("--market", required=True, help="Market key from config/markets.yaml")
     harvest.add_argument("--limit", type=int, default=15, help="Max profiles to harvest")
     harvest.set_defaults(func=cmd_harvest_managers)
+
+    expand = sub.add_parser(
+        "expand-portfolio",
+        help="Fan out a mgmt: profile portfolio into Places-seeded lots with PM phone/clue",
+    )
+    expand.add_argument("--market", required=True, help="Market key from config/markets.yaml")
+    expand.add_argument(
+        "--mgmt-key",
+        required=True,
+        help="Management profile key (mgmt:domain or domain)",
+    )
+    expand.add_argument("--limit", type=int, default=25, help="Max portfolio lots to seed")
+    expand.set_defaults(func=cmd_expand_portfolio)
 
     req = sub.add_parser(
         "request",
@@ -893,11 +937,11 @@ def build_parser() -> argparse.ArgumentParser:
     db_import.add_argument("--jsonl", help="Single JSONL file to import")
     db_import.set_defaults(func=cmd_db_import)
 
-    db_profiles = db_sub.add_parser("profiles", help="List learned enrichment profiles")
+    db_profiles = db_sub.add_parser("profiles", help="List learned research profiles")
     db_profiles.add_argument("--limit", type=int, default=30)
     db_profiles.set_defaults(func=cmd_db_profiles)
 
-    db_lead = db_sub.add_parser("lead", help="Show canonical enriched record for a place_id")
+    db_lead = db_sub.add_parser("lead", help="Show canonical researched record for a place_id")
     db_lead.add_argument("place_id", help="Google place_id")
     db_lead.set_defaults(func=cmd_db_lead)
 
@@ -941,7 +985,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     eval_replay = sub.add_parser(
         "eval-replay",
-        help="Replay enrichment from saved raw JSONL with stage-traced eval reports",
+        help="Replay research from saved raw JSONL with stage-traced eval reports",
     )
     eval_replay.add_argument(
         "--from-jsonl",
@@ -967,12 +1011,12 @@ def build_parser() -> argparse.ArgumentParser:
     eval_replay.add_argument(
         "--db-only",
         action="store_true",
-        help="Replay only place_ids already enriched in the local DB (smoke-sample set)",
+        help="Replay only place_ids already researched in the local DB (smoke-sample set)",
     )
     eval_replay.add_argument(
         "--no-learn",
         action="store_true",
-        help="Do not update enrichment playbooks during eval replay",
+        help="Do not update research playbooks during eval replay",
     )
     eval_replay.add_argument(
         "--min-sales-ready-rate",

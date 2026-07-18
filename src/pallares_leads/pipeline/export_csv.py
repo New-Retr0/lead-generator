@@ -90,8 +90,6 @@ def load_enriched_from_csv(csv_path: Path) -> list[EnrichedLead]:
                     site_contacts=site_contacts,
                     contact_source_url=row.get("website") or "Not found",
                     exterior_cleaning_need_signals=row.get("exterior_notes", ""),
-                    why_this_is_a_good_fit=row.get("why_call", ""),
-                    sales_talking_points=row.get("talking_points", ""),
                     confidence=Confidence(row.get("confidence", "Low")),
                     notes=row.get("notes", ""),
                     investigation_status=inv_status,

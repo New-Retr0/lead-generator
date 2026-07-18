@@ -1,5 +1,7 @@
 import { Suspense } from "react";
 import { CommandCenterClient } from "@/components/command-center-client";
+import type { AttentionItem } from "@/components/overview/attention-strip";
+import { CommandCenterFallback } from "@/components/overview/command-center-fallback";
 import {
   getCostSeries,
   getCreditBalances,
@@ -7,7 +9,13 @@ import {
   listRequests,
   listRuns,
 } from "@/lib/db";
+import { loadProjectEnv } from "@/lib/env";
+import { fetchFirecrawlLive } from "@/lib/firecrawl-live";
+import { listJobs } from "@/lib/jobs";
+import { repairOrphanedRuns } from "@/lib/run-reconcile";
 import type { CostDayRow, RequestRow, RunRow } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
 
 export default async function CommandCenterPage() {
   let stats = null;
@@ -18,9 +26,11 @@ export default async function CommandCenterPage() {
   let usdByProviderMonth: { provider: string; usd: number }[] = [];
   let usdByProvider7d: { provider: string; usd: number }[] = [];
   let enrichedLeads = 0;
+  let attentionItems: AttentionItem[] = [];
   let error = "";
 
   try {
+    await repairOrphanedRuns();
     const [statsResult, runsResult, requestsResult, costSeries, creditBalances] =
       await Promise.all([
         getOverview(),
@@ -32,8 +42,45 @@ export default async function CommandCenterPage() {
 
     const weekDays = costSeries.byDay.slice(-7);
     const usdThisWeek = weekDays.reduce((s, d) => s + d.usd, 0);
-    const fcBalance = creditBalances.find((b) => b.provider === "firecrawl");
-    const aiBalance = creditBalances.find((b) => b.provider === "ai_gateway");
+    const fcSnap = creditBalances.find((b) => b.provider === "firecrawl");
+    const env = loadProjectEnv();
+    const firecrawlKey = env.FIRECRAWL_API_KEY ?? process.env.FIRECRAWL_API_KEY;
+    let fcBalance = fcSnap
+      ? {
+          remaining: fcSnap.remaining,
+          used: fcSnap.used,
+          plan: fcSnap.plan,
+          planName: fcSnap.planName ?? null,
+          billingPeriodEnd: fcSnap.billingPeriodEnd,
+          snapshotAt: fcSnap.snapshotAt,
+          extraCredits:
+            fcSnap.remaining != null &&
+            fcSnap.plan != null &&
+            fcSnap.remaining > fcSnap.plan
+              ? fcSnap.remaining - fcSnap.plan
+              : null,
+          planConcurrency: null as number | null,
+          live: false,
+        }
+      : null;
+    if (firecrawlKey) {
+      try {
+        const live = await fetchFirecrawlLive(firecrawlKey);
+        fcBalance = {
+          remaining: live.remaining,
+          used: live.used,
+          plan: live.plan,
+          planName: live.planName,
+          billingPeriodEnd: live.billingPeriodEnd,
+          snapshotAt: live.snapshotAt,
+          extraCredits: live.extraCredits,
+          planConcurrency: live.planConcurrency,
+          live: true,
+        };
+      } catch {
+        // keep snapshot
+      }
+    }
 
     enrichedLeads = statsResult.enrichedLeads;
     usdByProviderMonth = statsResult.usdByProvider.map((r) => ({
@@ -45,14 +92,12 @@ export default async function CommandCenterPage() {
       weekDays.reduce((s, d) => s + Number(d[field] ?? 0), 0);
 
     const browser7d = sum7d("browserUseUsd");
-    const gateway7d = sum7d("aiGatewayUsd");
     const places7d = sum7d("googlePlacesUsd");
-    const firecrawl7d = Math.max(0, usdThisWeek - browser7d - gateway7d - places7d);
+    const firecrawl7d = Math.max(0, usdThisWeek - browser7d - places7d);
 
     usdByProvider7d = [
       { provider: "firecrawl", usd: firecrawl7d },
       { provider: "browser_use", usd: browser7d },
-      { provider: "ai_gateway", usd: gateway7d },
       { provider: "google_places", usd: places7d },
     ].filter((r) => r.usd > 0);
 
@@ -60,32 +105,103 @@ export default async function CommandCenterPage() {
       totalLeads: statsResult.totalLeads,
       readyToCall: statsResult.readyToCall,
       readyToCallRate: statsResult.readyToCallRate,
+      partialInventory: statsResult.partialInventory,
+      verifiedThisMonth: statsResult.verifiedThisMonth,
       creditsThisMonth: statsResult.creditsThisMonth,
+      creditsPerVerifiedDm: statsResult.creditsPerVerifiedDm,
+      creditsPerVerifiedDmCaveat: statsResult.creditsPerVerifiedDmCaveat,
+      usdPerVerifiedDm: statsResult.usdPerVerifiedDm,
+      minutesPerVerifiedDm: statsResult.minutesPerVerifiedDm,
       usdThisWeek,
       enrichedLeads,
-      aiGatewayUsdThisMonth: statsResult.aiGatewayUsdThisMonth,
     };
     credits = {
       firecrawlRemaining: fcBalance?.remaining ?? 0,
-      aiGatewayBalance: aiBalance?.remaining ?? null,
       firecrawlUsed: fcBalance?.used ?? null,
       firecrawlPlan: fcBalance?.plan ?? null,
+      firecrawlPlanName: fcBalance?.planName ?? null,
       firecrawlBillingEnd: fcBalance?.billingPeriodEnd ?? null,
       firecrawlSnapshotAt: fcBalance?.snapshotAt ?? null,
-      aiGatewayUsed: aiBalance?.used ?? null,
+      firecrawlExtraCredits: fcBalance?.extraCredits ?? null,
+      firecrawlPlanConcurrency: fcBalance?.planConcurrency ?? null,
+      firecrawlLive: fcBalance?.live ?? false,
     };
     runs = runsResult;
     requests = requestsResult;
     costDays = costSeries.byDay;
+
+    const runningJobs = listJobs(20).filter(
+      (j) => j.status === "running" || j.status === "pending",
+    ).length;
+    const cellsInFlight = (runsResult ?? []).filter(
+      (r) => r.status === "running",
+    ).length;
+
+    attentionItems = [
+      {
+        key: "running",
+        label: "Active jobs",
+        count: runningJobs,
+        href: "/launch",
+        tone: "warning",
+        hint:
+          runningJobs > 0
+            ? `${cellsInFlight} market cell${cellsInFlight === 1 ? "" : "s"} in flight under local executions`
+            : "No local CLI executions running",
+      },
+      {
+        key: "ready",
+        label: "Verified DMs",
+        count: statsResult.readyToCall,
+        href: "/data?inventory=ready",
+        tone: "success",
+        hint: "Grounded named decision-makers with local callable phones",
+      },
+      {
+        key: "partial",
+        label: "Partial inventory",
+        count: statsResult.partialInventory,
+        href: "/data?inventory=partial",
+        tone: "secondary",
+        hint: "Callable phone on file without a verified named DM",
+      },
+    ];
   } catch (err) {
     error = err instanceof Error ? err.message : "Failed to load overview";
     runs = [];
     requests = [];
     costDays = [];
+    // Keep Attention strip mounted for E2E + empty-state UX when DB is down.
+    attentionItems = [
+      {
+        key: "running",
+        label: "Active jobs",
+        count: 0,
+        href: "/runs",
+        tone: "warning",
+        hint: "CLI jobs currently running or queued",
+      },
+      {
+        key: "ready",
+        label: "Verified DMs",
+        count: 0,
+        href: "/data?inventory=ready",
+        tone: "success",
+        hint: "Grounded named decision-makers with local callable phones",
+      },
+      {
+        key: "partial",
+        label: "Partial inventory",
+        count: 0,
+        href: "/data?inventory=partial",
+        tone: "secondary",
+        hint: "Callable phone on file without a verified named DM",
+      },
+    ];
   }
 
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<CommandCenterFallback />}>
       <CommandCenterClient
         stats={stats}
         credits={credits}
@@ -94,6 +210,7 @@ export default async function CommandCenterPage() {
         costDays={costDays ?? []}
         usdByProvider7d={usdByProvider7d}
         usdByProviderMonth={usdByProviderMonth}
+        attentionItems={attentionItems}
         error={error}
       />
     </Suspense>

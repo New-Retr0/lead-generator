@@ -17,9 +17,9 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { StageStat } from "@/lib/pipeline/rollup";
 import type { PipelineTimelineEntry } from "@/lib/pipeline/stages";
 
-const SPEEDS = [1, 4, 16, 60] as const;
+const SPEEDS = [1, 2, 4] as const;
 const REPLAY_STATE_STORAGE_PREFIX = "pipeline-replay-state";
-const DEFAULT_REPLAY_STATE = { virtualMs: null, speed: 4 as (typeof SPEEDS)[number] };
+const DEFAULT_REPLAY_STATE = { virtualMs: null, speed: 1 as (typeof SPEEDS)[number] };
 
 function formatClock(ms: number): string {
   const sec = Math.floor(ms / 1000);
@@ -258,10 +258,12 @@ function readStoredReplayState(runId: string | null, isLive: boolean): StoredRep
       !Number.isNaN(parsed.speed)
         ? (parsed.speed as (typeof SPEEDS)[number])
         : DEFAULT_REPLAY_STATE.speed;
-    const virtualMs =
-      parsed.virtualMs == null || typeof parsed.virtualMs === "number"
+    const virtualMs: number | null =
+      typeof parsed.virtualMs === "number"
         ? parsed.virtualMs
-        : DEFAULT_REPLAY_STATE.virtualMs;
+        : parsed.virtualMs === null
+          ? null
+          : DEFAULT_REPLAY_STATE.virtualMs;
     return { virtualMs, speed };
   } catch {
     safeStorageRemove(getReplayStateStorageKey(runId));
@@ -288,14 +290,11 @@ export function useReplayState(runId: string | null, isLive: boolean) {
     );
   }, [isLive, runId]);
 
-  const setVirtualMsPersist = useCallback(
-    (value: number | null) => {
-      virtualMsRef.current = value;
-      setVirtualMs(value);
-      persistNow();
-    },
-    [persistNow],
-  );
+  const setVirtualMsPersist = useCallback((value: number | null) => {
+    virtualMsRef.current = value;
+    setVirtualMs(value);
+    // Persist on pause / unload / blur — not every playhead tick.
+  }, []);
 
   const setSpeedPersist = useCallback(
     (nextSpeed: (typeof SPEEDS)[number]) => {
@@ -341,6 +340,10 @@ export function useReplayState(runId: string | null, isLive: boolean) {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [isLive, runId, persistNow]);
+
+  useEffect(() => {
+    if (!playing) persistNow();
+  }, [playing, persistNow]);
 
   return {
     playing: isLive ? false : playing,

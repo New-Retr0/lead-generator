@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   BadgeCheck,
   BarChart3,
@@ -9,7 +10,6 @@ import {
   DollarSign,
   ExternalLink,
   Globe,
-  Lightbulb,
   Link2,
   MapPin,
   MessageCircle,
@@ -34,9 +34,20 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  formatPhone,
   groupLeadContacts,
   normalizePhoneKey,
   primaryLabel,
@@ -45,6 +56,9 @@ import {
   type EmailGroup,
   type PhoneGroup,
 } from "@/lib/lead-contacts";
+import { apiFetch } from "@/lib/api-client";
+import { primaryCallablePhone } from "@/lib/lead-readiness";
+import { safeExternalUrl } from "@/lib/safe-url";
 import { cn, formatCostUnits, formatProvider, formatUsd, formatUsdPrecise } from "@/lib/utils";
 import { FIRECRAWL_CREDIT_USD } from "@/lib/cost-budget";
 import type {
@@ -55,6 +69,16 @@ import type {
   LeadFact,
   LeadOutcome,
   LeadTouch,
+} from "@/lib/types";
+import {
+  OUTCOME_REASONS,
+  OUTCOME_VALUES,
+  TOUCH_RESULTS,
+  TOUCH_TYPES,
+  type LeadOutcomeValue,
+  type OutcomeReason,
+  type TouchResult,
+  type TouchType,
 } from "@/lib/types";
 
 function Section({
@@ -80,12 +104,13 @@ function Section({
 }
 
 function SourceChip({ url }: { url: string | null | undefined }) {
-  if (!url) return null;
-  const domain = sourceDomain(url);
+  const safe = safeExternalUrl(url);
+  if (!safe) return null;
+  const domain = sourceDomain(safe);
   if (!domain) return null;
   return (
     <a
-      href={url}
+      href={safe}
       target="_blank"
       rel="noreferrer"
       className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
@@ -98,7 +123,10 @@ function SourceChip({ url }: { url: string | null | undefined }) {
 
 function ContactVerificationBadge({ level }: { level: string }) {
   const normalized =
-    level === "verified" || level === "corroborated" || level === "unverified"
+    level === "verified" ||
+    level === "corroborated" ||
+    level === "unverified" ||
+    level === "rejected"
       ? level
       : "unverified";
   const variant =
@@ -106,13 +134,17 @@ function ContactVerificationBadge({ level }: { level: string }) {
       ? "success"
       : normalized === "corroborated"
         ? "warning"
-        : "secondary";
+        : normalized === "rejected"
+          ? "destructive"
+          : "secondary";
   const label =
     normalized === "verified"
       ? "Verified"
       : normalized === "corroborated"
         ? "Corroborated"
-        : "Unverified";
+        : normalized === "rejected"
+          ? "Rejected"
+          : "Unverified";
   return (
     <Badge variant={variant} className="text-[10px]">
       {label}
@@ -153,7 +185,7 @@ function PhoneContactCard({ group }: { group: PhoneGroup }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="glass rounded-xl border border-border/50 p-4">
+      <div className="panel rounded-xl border border-border/50 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -214,7 +246,7 @@ function EmailContactCard({ group }: { group: EmailGroup }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="glass rounded-xl border border-border/50 p-4">
+      <div className="panel rounded-xl border border-border/50 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -259,9 +291,15 @@ function FactProvenanceRow({ fact }: { fact: LeadFact }) {
       .filter(([, v]) => v)
       .map(([k, v]) => (k === "phone" || k === "email" ? v : `${k}: ${v}`))
       .join(" · ") || fact.quote;
+  const rejected = fact.verification === "rejected";
 
   return (
-    <div className="flex items-start gap-2 rounded-lg border border-border/40 px-3 py-2 text-xs">
+    <div
+      className={cn(
+        "flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
+        rejected ? "border-destructive/30 bg-destructive/5" : "border-border/40",
+      )}
+    >
       <Badge variant="outline" className="shrink-0 text-[10px] capitalize">
         {fact.fact_kind.replace(/_/g, " ")}
       </Badge>
@@ -272,7 +310,10 @@ function FactProvenanceRow({ fact }: { fact: LeadFact }) {
           {fact.method ? ` · ${fact.method.replace(/_/g, " ")}` : ""}
         </p>
       </div>
-      <SourceChip url={fact.source_url} />
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <ContactVerificationBadge level={fact.verification} />
+        <SourceChip url={fact.source_url} />
+      </div>
     </div>
   );
 }
@@ -342,11 +383,11 @@ function ProviderCostGroup({ group }: { group: LeadCostByProvider }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="glass rounded-xl border border-border/50">
+      <div className="panel overflow-hidden rounded-xl border border-border/50">
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-accent/30"
+            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent"
           >
             <div className="min-w-0 flex-1">
               <p className="font-medium">{formatProvider(group.provider)}</p>
@@ -400,7 +441,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
   return (
     <Section icon={DollarSign} title="Generation cost">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="panel space-y-1 rounded-xl border border-border/50 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Total recorded
           </p>
@@ -409,7 +450,7 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
             {costs.eventCount} tool call{costs.eventCount === 1 ? "" : "s"}
           </p>
         </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="panel space-y-1 rounded-xl border border-border/50 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Verified / API-reported
           </p>
@@ -417,10 +458,10 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
             {formatUsd(costs.verifiedUsd)}
           </p>
           <p className="text-xs text-muted-foreground">
-            Scrape credits, tokens, Browser Use passthrough
+            Scrape credits, tokens, provider spend
           </p>
         </div>
-        <div className="glass space-y-1 rounded-xl border border-border/50 p-4">
+        <div className="panel space-y-1 rounded-xl border border-border/50 p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Estimated fallback
           </p>
@@ -464,35 +505,369 @@ function LeadCostSection({ costs }: { costs: LeadCosts }) {
   );
 }
 
+function optionLabel(value: string): string {
+  return value
+    .split("_")
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+function LearningFeedbackPanel({
+  placeId,
+  outcome,
+  onUpdated,
+}: {
+  placeId: string;
+  outcome: LeadOutcome | null;
+  onUpdated: (nextOutcome: LeadOutcome | null, nextTouches: LeadTouch[]) => void;
+}) {
+  const [outcomeValue, setOutcomeValue] = useState<LeadOutcomeValue | "">(
+    outcome?.outcome ?? "",
+  );
+  const [outcomeReason, setOutcomeReason] = useState<OutcomeReason | "none">(
+    outcome?.outcome_reason ?? "none",
+  );
+  const [qualityRating, setQualityRating] = useState(
+    outcome?.quality_rating != null ? String(outcome.quality_rating) : "",
+  );
+  const [dealValue, setDealValue] = useState(
+    outcome?.deal_value_usd != null ? String(outcome.deal_value_usd) : "",
+  );
+  const [outcomeNotes, setOutcomeNotes] = useState(outcome?.notes ?? "");
+  const [phoneCorrect, setPhoneCorrect] = useState(
+    outcome?.data_flags.phone_correct ?? false,
+  );
+  const [nameCorrect, setNameCorrect] = useState(
+    outcome?.data_flags.contact_name_correct ?? false,
+  );
+  const [touchType, setTouchType] = useState<TouchType>("call");
+  const [touchResult, setTouchResult] = useState<TouchResult | "none">("none");
+  const [contactName, setContactName] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [durationSeconds, setDurationSeconds] = useState("");
+  const [touchNotes, setTouchNotes] = useState("");
+  const [saving, setSaving] = useState<"outcome" | "touch" | null>(null);
+
+  const refreshFeedback = async () => {
+    const response = await apiFetch(`/api/leads/${encodeURIComponent(placeId)}`);
+    if (!response.ok) return;
+    const data = (await response.json()) as {
+      outcome?: LeadOutcome | null;
+      touches?: LeadTouch[];
+    };
+    onUpdated(data.outcome ?? null, data.touches ?? []);
+  };
+
+  const saveOutcome = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!outcomeValue) {
+      toast.error("Choose an outcome");
+      return;
+    }
+    setSaving("outcome");
+    try {
+      const response = await apiFetch(`/api/leads/${encodeURIComponent(placeId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          outcome: {
+            outcome: outcomeValue,
+            outcome_reason: outcomeReason === "none" ? null : outcomeReason,
+            deal_value_usd: dealValue ? Number(dealValue) : null,
+            quality_rating: qualityRating ? Number(qualityRating) : null,
+            data_flags: {
+              phone_correct: phoneCorrect,
+              contact_name_correct: nameCorrect,
+            },
+            notes: outcomeNotes || null,
+          },
+        }),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Failed to save outcome");
+      await refreshFeedback();
+      toast.success("Learning outcome saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save outcome");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const saveTouch = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving("touch");
+    try {
+      const response = await apiFetch(`/api/leads/${encodeURIComponent(placeId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          touch: {
+            touch_type: touchType,
+            result: touchResult === "none" ? null : touchResult,
+            contact_name: contactName || null,
+            contact_phone: contactPhone || null,
+            duration_seconds: durationSeconds ? Number(durationSeconds) : null,
+            notes: touchNotes || null,
+          },
+        }),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Failed to log touch");
+      await refreshFeedback();
+      setTouchResult("none");
+      setContactName("");
+      setContactPhone("");
+      setDurationSeconds("");
+      setTouchNotes("");
+      toast.success("Learning touch logged");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to log touch");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <Section icon={MessageCircle} title="Learning feedback">
+      <p className="text-xs text-muted-foreground">
+        Record real outreach results so scoring, segment yield, and contact quality improve.
+      </p>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <form
+          onSubmit={saveOutcome}
+          className="panel space-y-3 rounded-xl border border-border/50 p-4"
+        >
+          <p className="text-sm font-semibold">Outcome</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Result</Label>
+              <Select
+                value={outcomeValue}
+                onValueChange={(value) => setOutcomeValue(value as LeadOutcomeValue)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Choose result" />
+                </SelectTrigger>
+                <SelectContent>
+                  {OUTCOME_VALUES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {optionLabel(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Reason</Label>
+              <Select
+                value={outcomeReason}
+                onValueChange={(value) => setOutcomeReason(value as OutcomeReason | "none")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No reason</SelectItem>
+                  {OUTCOME_REASONS.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {optionLabel(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="quality-rating">Quality (1–5)</Label>
+              <Input
+                id="quality-rating"
+                type="number"
+                min={1}
+                max={5}
+                value={qualityRating}
+                onChange={(event) => setQualityRating(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="deal-value">Deal value (USD)</Label>
+              <Input
+                id="deal-value"
+                type="number"
+                min={0}
+                step="0.01"
+                value={dealValue}
+                onChange={(event) => setDealValue(event.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-4 text-xs">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={phoneCorrect}
+                onChange={(event) => setPhoneCorrect(event.target.checked)}
+              />
+              Phone correct
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={nameCorrect}
+                onChange={(event) => setNameCorrect(event.target.checked)}
+              />
+              Contact name correct
+            </label>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="outcome-notes">Notes</Label>
+            <Textarea
+              id="outcome-notes"
+              value={outcomeNotes}
+              onChange={(event) => setOutcomeNotes(event.target.value)}
+              placeholder="What happened, and what should the generator learn?"
+            />
+          </div>
+          <Button type="submit" size="sm" disabled={saving !== null}>
+            {saving === "outcome" ? "Saving…" : outcome ? "Update outcome" : "Save outcome"}
+          </Button>
+        </form>
+
+        <form
+          onSubmit={saveTouch}
+          className="panel space-y-3 rounded-xl border border-border/50 p-4"
+        >
+          <p className="text-sm font-semibold">Log a touch</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Channel</Label>
+              <Select value={touchType} onValueChange={(value) => setTouchType(value as TouchType)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TOUCH_TYPES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {optionLabel(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Result</Label>
+              <Select
+                value={touchResult}
+                onValueChange={(value) => setTouchResult(value as TouchResult | "none")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not recorded</SelectItem>
+                  {TOUCH_RESULTS.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {optionLabel(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="touch-name">Contact name</Label>
+              <Input
+                id="touch-name"
+                value={contactName}
+                onChange={(event) => setContactName(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="touch-phone">Contact phone</Label>
+              <Input
+                id="touch-phone"
+                type="tel"
+                value={contactPhone}
+                onChange={(event) => setContactPhone(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="touch-duration">Duration (seconds)</Label>
+              <Input
+                id="touch-duration"
+                type="number"
+                min={0}
+                value={durationSeconds}
+                onChange={(event) => setDurationSeconds(event.target.value)}
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="touch-notes">Notes</Label>
+            <Textarea
+              id="touch-notes"
+              value={touchNotes}
+              onChange={(event) => setTouchNotes(event.target.value)}
+              placeholder="Reached DM, wrong number, gatekeeper detail, or next step"
+            />
+          </div>
+          <Button type="submit" size="sm" disabled={saving !== null}>
+            {saving === "touch" ? "Logging…" : "Log touch"}
+          </Button>
+        </form>
+      </div>
+    </Section>
+  );
+}
+
 function LeadDetailContent({ placeId }: { placeId: string }) {
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [outcome, setOutcome] = useState<LeadOutcome | null>(null);
   const [touches, setTouches] = useState<LeadTouch[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<"not_found" | "load_failed" | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- new placeId fetch
     setLoading(true);
+    setLead(null);
+    setOutcome(null);
+    setTouches([]);
+    setLoadError(null);
 
     const run = async () => {
       try {
-        const res = await fetch(`/api/leads/${encodeURIComponent(placeId)}`);
+        const res = await apiFetch(`/api/leads/${encodeURIComponent(placeId)}`);
         const data = (await res.json()) as {
           lead?: LeadDetail;
           outcome?: LeadOutcome | null;
           touches?: LeadTouch[];
+          error?: string;
         };
-        if (!cancelled) {
-          setLead(data.lead ?? null);
-          setOutcome(data.outcome ?? null);
-          setTouches(data.touches ?? []);
+        if (cancelled) return;
+        if (!res.ok) {
+          setLead(null);
+          setOutcome(null);
+          setTouches([]);
+          setLoadError(res.status === 404 ? "not_found" : "load_failed");
+          return;
         }
+        if (!data.lead) {
+          setLead(null);
+          setOutcome(null);
+          setTouches([]);
+          setLoadError("not_found");
+          return;
+        }
+        setLead(data.lead);
+        setOutcome(data.outcome ?? null);
+        setTouches(data.touches ?? []);
+        setLoadError(null);
       } catch {
         if (!cancelled) {
           setLead(null);
           setOutcome(null);
           setTouches([]);
+          setLoadError("load_failed");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -519,14 +894,17 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
   );
   const scoreTotal = scoreEntries.reduce((sum, [, v]) => sum + v, 0);
 
-  const mainPhone = grouped?.phones.find((p) => p.isPrimary) ?? grouped?.phones[0];
+  // Call CTA: DM callable phone only — never Google listed/mainline fallback.
+  const callPhone = lead ? primaryCallablePhone(lead) : null;
+  const callPhoneDisplay = callPhone ? formatPhone(callPhone) : null;
+  const callPhoneKey = callPhone ? normalizePhoneKey(callPhone) : "";
 
   if (loading) {
     return (
       <div className="space-y-4 p-6">
         <DialogTitle className="sr-only">Loading lead details</DialogTitle>
         <DialogDescription className="sr-only">
-          Fetching enriched lead contacts and provenance.
+          Fetching lead contacts and provenance.
         </DialogDescription>
         <Skeleton className="h-8 w-2/3" />
         <Skeleton className="h-4 w-1/2" />
@@ -539,11 +917,16 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
   }
 
   if (!lead || !grouped) {
+    const failed = loadError === "load_failed";
     return (
       <div className="p-6">
-        <DialogTitle className="text-lg">Lead not found</DialogTitle>
+        <DialogTitle className="text-lg">
+          {failed ? "Could not load lead" : "Lead not found"}
+        </DialogTitle>
         <DialogDescription className="mt-2">
-          No record for this place id in the database.
+          {failed
+            ? "The request failed. Check the API connection and try again."
+            : "No record for this place id in the database."}
         </DialogDescription>
       </div>
     );
@@ -551,7 +934,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
 
   return (
     <>
-      <div className="sticky top-0 z-10 border-b border-border/60 bg-card/95 px-6 py-4 backdrop-blur-xl supports-[backdrop-filter]:bg-card/80">
+      <div className="sticky top-0 z-10 border-b border-border/60 bg-card px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -569,25 +952,25 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
             </DialogDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {mainPhone ? (
+            {callPhone && callPhoneKey && callPhoneDisplay ? (
               <Button size="sm" asChild>
-                <a href={`tel:+1${mainPhone.key}`}>
+                <a href={`tel:+1${callPhoneKey}`}>
                   <Phone className="size-4" />
-                  Call {mainPhone.display}
+                  Call {callPhoneDisplay}
                 </a>
               </Button>
             ) : null}
-            {lead.website ? (
+            {safeExternalUrl(lead.website) ? (
               <Button size="sm" variant="outline" asChild>
-                <a href={lead.website} target="_blank" rel="noreferrer">
+                <a href={safeExternalUrl(lead.website)!} target="_blank" rel="noreferrer">
                   <Globe className="size-4" />
                   Website
                 </a>
               </Button>
             ) : null}
-            {lead.google_maps_url ? (
+            {safeExternalUrl(lead.google_maps_url) ? (
               <Button size="sm" variant="outline" asChild>
-                <a href={lead.google_maps_url} target="_blank" rel="noreferrer">
+                <a href={safeExternalUrl(lead.google_maps_url)!} target="_blank" rel="noreferrer">
                   <MapPin className="size-4" />
                   Maps
                 </a>
@@ -605,149 +988,136 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
             </p>
           ) : null}
 
-          <div className="grid gap-6 lg:grid-cols-12">
-            <div className="space-y-6 lg:col-span-8">
-              <Section icon={Phone} title="Callable contacts">
-                {grouped.phones.length === 0 && grouped.emails.length === 0 ? (
-                  <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-                    No verified callable contact yet — we don&apos;t guess names.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {grouped.phones.map((phone) => (
-                      <PhoneContactCard key={phone.key} group={phone} />
-                    ))}
-                    {grouped.emails.map((email) => (
-                      <EmailContactCard key={email.key} group={email} />
-                    ))}
-                  </div>
-                )}
-              </Section>
+          <div className="space-y-6">
+            <Section icon={Phone} title="Callable contacts">
+              {grouped.phones.length === 0 && grouped.emails.length === 0 ? (
+                <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                  No verified callable contact yet — we don&apos;t guess names.
+                </p>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {grouped.phones.map((phone) => (
+                    <PhoneContactCard key={phone.key} group={phone} />
+                  ))}
+                  {grouped.emails.map((email) => (
+                    <EmailContactCard key={email.key} group={email} />
+                  ))}
+                </div>
+              )}
+            </Section>
 
-              {grouped.people.length > 0 ? (
-                <Section icon={User} title="People to ask for">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {grouped.people.map((person) => (
-                      <div
-                        key={person.key}
-                        className="glass rounded-xl border border-border/50 p-4"
-                      >
-                        <div className="flex items-start gap-2">
-                          <BadgeCheck className="mt-0.5 size-4 shrink-0 text-success" />
-                          <div className="min-w-0 flex-1">
-                            <p className="font-semibold">{person.name}</p>
-                            {person.title ? (
-                              <p className="text-sm text-muted-foreground">{person.title}</p>
-                            ) : null}
-                            {person.company ? (
-                              <p className="text-xs text-muted-foreground">{person.company}</p>
-                            ) : null}
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {person.sources.map((s, i) => (
-                                <SourceChip key={`${s.source_url}-${i}`} url={s.source_url} />
-                              ))}
+            {grouped.people.length > 0 || grouped.registry || grouped.socials.length > 0 ? (
+              <div className="grid gap-6 lg:grid-cols-12">
+                {grouped.people.length > 0 ? (
+                  <div className={grouped.registry || grouped.socials.length > 0 ? "lg:col-span-7" : "lg:col-span-12"}>
+                    <Section icon={User} title="People to ask for">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {grouped.people.map((person) => (
+                          <div
+                            key={person.key}
+                            className="panel rounded-xl border border-border/50 p-4"
+                          >
+                            <div className="flex items-start gap-2">
+                              <BadgeCheck className="mt-0.5 size-4 shrink-0 text-success" />
+                              <div className="min-w-0 flex-1">
+                                <p className="font-semibold">{person.name}</p>
+                                {person.title ? (
+                                  <p className="text-sm text-muted-foreground">{person.title}</p>
+                                ) : null}
+                                {person.company ? (
+                                  <p className="text-xs text-muted-foreground">{person.company}</p>
+                                ) : null}
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {person.sources.map((s, i) => (
+                                    <SourceChip key={`${s.source_url}-${i}`} url={s.source_url} />
+                                  ))}
+                                </div>
+                              </div>
+                              <ContactVerificationBadge level={person.verification} />
                             </div>
                           </div>
-                          <ContactVerificationBadge level={person.verification} />
+                        ))}
+                      </div>
+                    </Section>
+                  </div>
+                ) : null}
+
+                {grouped.registry || grouped.socials.length > 0 ? (
+                  <div
+                    className={`space-y-6 ${
+                      grouped.people.length > 0 ? "lg:col-span-5" : "lg:col-span-12"
+                    }`}
+                  >
+                    {grouped.registry ? (
+                      <Section icon={User} title="BBB & registry">
+                        <div className="panel space-y-3 rounded-xl border border-border/50 p-4 text-sm">
+                          {grouped.registry.rating ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-muted-foreground">BBB Rating</span>
+                              <Badge variant="success">{grouped.registry.rating}</Badge>
+                            </div>
+                          ) : null}
+                          {grouped.registry.yearsInBusiness ? (
+                            <p>
+                              <span className="text-muted-foreground">Years in business: </span>
+                              {grouped.registry.yearsInBusiness}
+                            </p>
+                          ) : null}
+                          {grouped.registry.accreditedSince ? (
+                            <p>
+                              <span className="text-muted-foreground">Accredited since: </span>
+                              {grouped.registry.accreditedSince}
+                            </p>
+                          ) : null}
+                          {grouped.registry.entityType ? (
+                            <p>
+                              <span className="text-muted-foreground">Entity: </span>
+                              {grouped.registry.entityType}
+                            </p>
+                          ) : null}
+                          {grouped.registry.alternateNames.length > 0 ? (
+                            <div>
+                              <p className="text-muted-foreground">Also known as</p>
+                              <ul className="mt-1 list-inside list-disc">
+                                {grouped.registry.alternateNames.map((name) => (
+                                  <li key={name}>{name}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                          {grouped.registry.sourceUrl ? (
+                            <SourceChip url={grouped.registry.sourceUrl} />
+                          ) : null}
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                </Section>
-              ) : null}
-            </div>
+                      </Section>
+                    ) : null}
 
-            <div className="space-y-6 lg:col-span-4">
-              {lead.why_good_fit ? (
-                <Section icon={Lightbulb} title="Why call">
-                  <div className="glass space-y-2 rounded-xl border border-border/50 p-4">
-                    <Badge variant="outline" className="text-[10px]">
-                      AI-written from verified facts
-                    </Badge>
-                    <p className="text-sm leading-relaxed">{lead.why_good_fit}</p>
-                  </div>
-                </Section>
-              ) : null}
-
-              {lead.talking_points ? (
-                <Section icon={MessageCircle} title="Talking points">
-                  <div className="glass rounded-xl border border-border/50 p-4">
-                    <p className="whitespace-pre-line text-sm leading-relaxed">
-                      {lead.talking_points}
-                    </p>
-                  </div>
-                </Section>
-              ) : null}
-
-              {lead.need_signals ? (
-                <Section icon={Lightbulb} title="Exterior cleaning signals">
-                  <p className="text-sm text-muted-foreground">{lead.need_signals}</p>
-                </Section>
-              ) : null}
-
-              {grouped.registry ? (
-                <Section icon={User} title="BBB & registry">
-                  <div className="glass space-y-3 rounded-xl border border-border/50 p-4 text-sm">
-                    {grouped.registry.rating ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground">BBB Rating</span>
-                        <Badge variant="success">{grouped.registry.rating}</Badge>
-                      </div>
-                    ) : null}
-                    {grouped.registry.yearsInBusiness ? (
-                      <p>
-                        <span className="text-muted-foreground">Years in business: </span>
-                        {grouped.registry.yearsInBusiness}
-                      </p>
-                    ) : null}
-                    {grouped.registry.accreditedSince ? (
-                      <p>
-                        <span className="text-muted-foreground">Accredited since: </span>
-                        {grouped.registry.accreditedSince}
-                      </p>
-                    ) : null}
-                    {grouped.registry.entityType ? (
-                      <p>
-                        <span className="text-muted-foreground">Entity: </span>
-                        {grouped.registry.entityType}
-                      </p>
-                    ) : null}
-                    {grouped.registry.alternateNames.length > 0 ? (
-                      <div>
-                        <p className="text-muted-foreground">Also known as</p>
-                        <ul className="mt-1 list-inside list-disc">
-                          {grouped.registry.alternateNames.map((name) => (
-                            <li key={name}>{name}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {grouped.registry.sourceUrl ? (
-                      <SourceChip url={grouped.registry.sourceUrl} />
+                    {grouped.socials.length > 0 ? (
+                      <Section icon={Globe} title="Socials">
+                        <div className="flex flex-wrap gap-2">
+                          {grouped.socials.map((social) => {
+                            const href = safeExternalUrl(social.url);
+                            if (!href) return null;
+                            return (
+                              <a
+                                key={social.key}
+                                href={href}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-2 rounded-full border bg-card/60 px-3 py-2 text-xs transition-colors hover:bg-accent"
+                              >
+                                <SocialIcon platform={social.platform} />
+                                {socialPlatformLabel(social.platform)}
+                              </a>
+                            );
+                          })}
+                        </div>
+                      </Section>
                     ) : null}
                   </div>
-                </Section>
-              ) : null}
-
-              {grouped.socials.length > 0 ? (
-                <Section icon={Globe} title="Socials">
-                  <div className="flex flex-wrap gap-2">
-                    {grouped.socials.map((social) => (
-                      <a
-                        key={social.key}
-                        href={social.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-2 rounded-full border bg-card/60 px-3 py-2 text-xs hover:bg-accent/50"
-                      >
-                        <SocialIcon platform={social.platform} />
-                        {socialPlatformLabel(social.platform)}
-                      </a>
-                    ))}
-                  </div>
-                </Section>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-6 rounded-2xl border border-border/50 bg-muted/20 p-5">
@@ -810,7 +1180,11 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
             ) : null}
 
             {lead.facts.length > 0 ? (
-              <Section icon={Globe} title="How we found this">
+              <Section icon={BadgeCheck} title="Explain · evidence">
+                <p className="text-xs text-muted-foreground">
+                  Grounded facts and source lineage. Rejected rows were extracted but failed
+                  grounding — they are not offered as people or callable contacts.
+                </p>
                 <div className="grid gap-2 lg:grid-cols-2">
                   {lead.facts.map((fact, i) => (
                     <FactProvenanceRow key={`${fact.fact_kind}-${i}`} fact={fact} />
@@ -819,10 +1193,20 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
               </Section>
             ) : null}
 
+            <LearningFeedbackPanel
+              key={`${placeId}-${outcome?.decided_at ?? "new"}`}
+              placeId={placeId}
+              outcome={outcome}
+              onUpdated={(nextOutcome, nextTouches) => {
+                setOutcome(nextOutcome);
+                setTouches(nextTouches);
+              }}
+            />
+
             {outcome || touches.length > 0 ? (
-              <Section icon={MessageCircle} title="Outcome & activity">
+              <Section icon={MessageCircle} title="Feedback history">
                 {outcome ? (
-                  <div className="glass space-y-2 rounded-xl border border-border/50 p-3 text-sm">
+                  <div className="panel space-y-2 rounded-xl border border-border/50 p-3 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="outline" className="capitalize">
                         {outcome.outcome.replace(/_/g, " ")}
@@ -873,12 +1257,14 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
               </Section>
             ) : null}
 
-            {lead.website || lead.google_maps_url || lead.evidence_urls.length > 0 ? (
+            {safeExternalUrl(lead.website) ||
+            safeExternalUrl(lead.google_maps_url) ||
+            lead.evidence_urls.some((url) => safeExternalUrl(url)) ? (
               <Section icon={Globe} title="Links">
                 <div className="space-y-1">
-                  {lead.website ? (
+                  {safeExternalUrl(lead.website) ? (
                     <a
-                      href={lead.website}
+                      href={safeExternalUrl(lead.website)!}
                       target="_blank"
                       rel="noreferrer"
                       className="flex items-center gap-1.5 break-all text-sm text-primary hover:underline"
@@ -887,9 +1273,9 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                       {lead.website}
                     </a>
                   ) : null}
-                  {lead.google_maps_url ? (
+                  {safeExternalUrl(lead.google_maps_url) ? (
                     <a
-                      href={lead.google_maps_url}
+                      href={safeExternalUrl(lead.google_maps_url)!}
                       target="_blank"
                       rel="noreferrer"
                       className="flex items-center gap-1.5 text-sm text-primary hover:underline"
@@ -898,18 +1284,22 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                       Google Maps
                     </a>
                   ) : null}
-                  {lead.evidence_urls.map((url) => (
-                    <a
-                      key={url}
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1.5 break-all text-xs text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      <ExternalLink className="size-3 shrink-0" />
-                      {url}
-                    </a>
-                  ))}
+                  {lead.evidence_urls.map((url) => {
+                    const href = safeExternalUrl(url);
+                    if (!href) return null;
+                    return (
+                      <a
+                        key={url}
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-1.5 break-all text-xs text-muted-foreground hover:text-foreground hover:underline"
+                      >
+                        <ExternalLink className="size-3 shrink-0" />
+                        {url}
+                      </a>
+                    );
+                  })}
                 </div>
               </Section>
             ) : null}
@@ -920,8 +1310,8 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                   {lead.related.map((rel) => (
                     <a
                       key={rel.place_id}
-                      href={`/leads?place=${encodeURIComponent(rel.place_id)}`}
-                      className="glass block rounded-xl border border-border/50 p-3 text-sm hover:bg-accent/40"
+                      href={`/data?place=${encodeURIComponent(rel.place_id)}`}
+                      className="panel block rounded-xl border border-border/50 p-3 text-sm transition-colors hover:bg-accent"
                     >
                       <div className="flex items-center gap-2">
                         <Badge variant="outline" className="text-[10px] capitalize">
@@ -955,9 +1345,9 @@ export function LeadDetailModal({
     <Dialog open={Boolean(placeId)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton
-        className="glass-strong top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"
+        className="panel-strong top-6 flex h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-6xl translate-x-[-50%] translate-y-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"
       >
-        {placeId ? <LeadDetailContent placeId={placeId} /> : null}
+        {placeId ? <LeadDetailContent key={placeId} placeId={placeId} /> : null}
       </DialogContent>
     </Dialog>
   );

@@ -5,7 +5,12 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+    wait,
+)
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +20,6 @@ from pallares_leads.db.store import LeadStore
 from pallares_leads.discover.county_filter import filter_excluded_counties
 from pallares_leads.discover.overpass import OverpassClient
 from pallares_leads.discover.places import PlacesClient
-from pallares_leads.enrich.ai_gateway_client import gateway_configured, set_gateway_parallel_workers
 from pallares_leads.enrich.apply import (
     _ROLE_PRIORITY,
     _role_priority_rank,
@@ -23,7 +27,6 @@ from pallares_leads.enrich.apply import (
     apply_investigation,
     derive_best_contact_fields,
 )
-from pallares_leads.enrich.browser_use_client import BrowserUseClient
 from pallares_leads.enrich.contact_extract import (
     exterior_signals,
     merge_page_contacts,
@@ -33,12 +36,12 @@ from pallares_leads.enrich.contact_requirements import (
     EnrichmentRules,
     enriched_meets_bar,
     get_enrichment_rules,
+    has_verified_named_decision_maker,
     investigation_meets_bar,
     is_callable_phone,
     tier2_gap_reason,
 )
 from pallares_leads.enrich.domain_verify import scrub_unverified_website
-from pallares_leads.enrich.extract_gateway import extract_contacts as gateway_extract_contacts
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.enrich.gap_fill import (
     finalize_enrichment_notes,
@@ -46,7 +49,7 @@ from pallares_leads.enrich.gap_fill import (
     resolve_website,
 )
 from pallares_leads.enrich.google_gaps import GoogleGaps, gap_summary
-from pallares_leads.enrich.insurance import insurance_facts_from_pages, need_signals_ai_fallback
+from pallares_leads.enrich.insurance import insurance_facts_from_pages
 from pallares_leads.enrich.lead_profile import (
     MULTI_TENANT_PROPERTY_TYPES,
     EnrichmentPlaybook,
@@ -76,11 +79,10 @@ from pallares_leads.enrich.registries.license_lookup import (
     find_license_record_url,
     license_contacts,
     license_record_to_facts,
-    lookup_config_for_state,
+    lookup_config_for_lead,
     parse_license_record,
     should_run_license_lookup,
 )
-from pallares_leads.enrich.sales_copy import maybe_enrich_sales_copy
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.enrich.socials import social_facts_from_pages
 from pallares_leads.enrich.source_checklist import run_source_checklist
@@ -106,6 +108,7 @@ from pallares_leads.schemas import (
     SiteContact,
 )
 from pallares_leads.settings import Settings
+from pallares_leads.utils.errors import failure_fields
 from pallares_leads.utils.http_retry import OutOfCreditsError
 from pallares_leads.utils.normalize import slugify
 from pallares_leads.utils.snapshots import append_jsonl
@@ -295,7 +298,7 @@ def _scrape_fallback(
     enriched: EnrichedLead,
     settings: Settings,
 ) -> tuple[EnrichedLead, LeadInvestigationResult | None]:
-    """Markdown fallback: regex pre-check, then Gateway extract + grounding."""
+    """Markdown fallback: regex pre-check, then Firecrawl scrape+JSON + grounding."""
     pages = firecrawl.scrape_site(raw.website or "")
     if not pages:
         return enriched, None
@@ -325,18 +328,7 @@ def _scrape_fallback(
         return enriched, None
 
     source_url = pages[0][0]
-    result = gateway_extract_contacts(
-        combined,
-        raw,
-        source_url=source_url,
-        settings=settings,
-        store=firecrawl._store,
-        run_id=firecrawl._cost_run_id,
-        place_id=firecrawl._cost_place_id,
-        request_id=firecrawl._cost_request_id,
-        stage="scrape",
-        rejections_sink=firecrawl.session_rejections,
-    )
+    result = firecrawl.scrape_lead_json_url(source_url, raw)
     if not result:
         return enriched, None
 
@@ -531,7 +523,7 @@ def _try_license_tier(
         return enriched
 
     firecrawl.set_cost_context(stage="state_license")
-    cfg = lookup_config_for_state(work_raw.state, config_dir=settings.config_dir)
+    cfg = lookup_config_for_lead(work_raw, config_dir=settings.config_dir)
     should_run, reason = should_run_license_lookup(
         work_raw,
         category_key=work_raw.property_type,
@@ -581,9 +573,9 @@ def _try_license_tier(
             )
         return enriched
 
-    enriched.facts = [*enriched.facts, *license_record_to_facts(record, page_text=markdown)]
+    enriched.facts = [*enriched.facts, *license_record_to_facts(record)]
     existing = {(c.name.casefold(), c.label) for c in enriched.site_contacts}
-    for name, title, quote, verified in license_contacts(record, page_text=markdown):
+    for name, title, quote in license_contacts(record):
         key = (name.casefold(), title)
         if key not in existing:
             enriched.site_contacts = [
@@ -592,7 +584,7 @@ def _try_license_tier(
                     label=title,
                     name=name,
                     source_url=record.url,
-                    verification="verified" if verified else "unverified",
+                    verification="verified",
                     quote=quote,
                     priority="best",
                 ),
@@ -686,26 +678,6 @@ def _try_linkedin_serp_tier(
     return enriched
 
 
-def _append_related_talking_points(
-    enriched: EnrichedLead,
-    store: LeadStore | None,
-) -> None:
-    if not store:
-        return
-    related = store.related_leads(enriched.place_id, limit=3)
-    if not related:
-        return
-    for item in related:
-        line = (
-            f"• Also {item['relation'].replace('_', ' ')}: "
-            f"{item['business_name']} ({item.get('city') or 'local'}) — bundle pitch"
-        )
-        if line not in (enriched.sales_talking_points or ""):
-            enriched.sales_talking_points = (
-                f"{(enriched.sales_talking_points or '').rstrip()}\n{line}".strip()
-            )
-
-
 def _bbb_entity_seed(enriched: EnrichedLead) -> str:
     """Alternate legal entity from BBB facts — triggers SOS even when phone bar is met."""
     for fact in enriched.facts:
@@ -772,29 +744,18 @@ def _try_owner_chain_tier(
             trace=trace,
         )
         return enriched
-    if settings.owner_chain_backend == "browser_use" and not settings.browser_use_enabled:
+    if not settings.firecrawl_api_key:
         _record_owner_chain_skip(
             store=store,
             run_id=run_id,
             place_id=work_raw.place_id,
             business=work_raw.business_name,
-            reason="browser use disabled",
-            trace=trace,
-        )
-        return enriched
-    if settings.owner_chain_backend == "firecrawl_agent" and not settings.firecrawl_api_key:
-        _record_owner_chain_skip(
-            store=store,
-            run_id=run_id,
-            place_id=work_raw.place_id,
-            business=work_raw.business_name,
-            reason="firecrawl agent backend requires FIRECRAWL_API_KEY",
+            reason="owner chain requires FIRECRAWL_API_KEY",
             trace=trace,
         )
         return enriched
 
     owner_count = store.run_stage_count(run_id, "owner_chain") if store and run_id else 0
-    loopnet_count = store.run_stage_count(run_id, "loopnet") if store and run_id else 0
     if store and run_id and not store.try_reserve_run_stage(
         run_id, "owner_chain", settings.owner_chain_max_per_run
     ):
@@ -821,17 +782,14 @@ def _try_owner_chain_tier(
         )
         return enriched
 
-    browser = BrowserUseClient(settings, store=store, run_id=run_id, place_id=work_raw.place_id)
     chain = resolve_owner_chain(
         work_raw,
         enriched,
         tier_rules,
         settings=settings,
         store=store,
-        browser=browser,
         firecrawl=firecrawl,
         owner_chain_count=owner_count,
-        loopnet_count=loopnet_count,
         entity_seed=bbb_entity,
         run_id=run_id,
     )
@@ -853,16 +811,7 @@ def _try_owner_chain_tier(
                 business=work_raw.business_name,
                 reason=chain.reason,
             )
-        if chain.loopnet_used:
-            store.record_run_event(
-                run_id=run_id,
-                place_id=work_raw.place_id,
-                stage="loopnet",
-                ran=True,
-                reason="LoopNet listing lookup",
-                credits_est=0,
-            )
-        # Per-task browser_use cost events are recorded by BrowserUseClient itself.
+        # Firecrawl agent cost events are recorded by FirecrawlClient.
         store.commit_events()
 
     if trace:
@@ -874,7 +823,6 @@ def _try_owner_chain_tier(
             outputs={
                 "contact_improved": chain.contact_improved,
                 "loopnet_used": chain.loopnet_used,
-                "cost_usd": browser.total_cost_usd,
             },
         )
 
@@ -916,62 +864,114 @@ def _load_playbook(
 
 
 def _collect_contact_facts(enriched: EnrichedLead, raw: RawLead) -> list[LeadFact]:
-    """Mirror site_contacts into the fact ledger (BBB contacts are already facts)."""
+    """Mirror site_contacts into the fact ledger.
+
+    BBB principals are normally written by the BBB stage; if a BBB contact is on
+    site_contacts without a matching person fact (partial/legacy runs), mirror it
+    here so People / evidence stay aligned with best_contact and site_contacts.
+    """
     facts: list[LeadFact] = []
+    existing_person_names = {
+        (fact.value.get("name") or "").strip().casefold()
+        for fact in enriched.facts
+        if fact.fact_kind == "person" and (fact.value.get("name") or "").strip()
+    }
+    existing_phones = {
+        re.sub(r"\D", "", fact.value.get("phone") or "")[-10:]
+        for fact in enriched.facts
+        if fact.fact_kind == "phone" and fact.value.get("phone")
+    }
+    existing_phones.discard("")
+    existing_emails = {
+        (fact.value.get("email") or "").strip().casefold()
+        for fact in enriched.facts
+        if fact.fact_kind == "email" and (fact.value.get("email") or "").strip()
+    }
+
     if raw.main_phone:
-        facts.append(
-            LeadFact(
-                fact_kind="phone",
-                value={"phone": raw.main_phone, "label": "Main line"},
-                source_kind="google_places",
-                source_url=raw.google_maps_url or "",
-                method="api",
-                quote="Business phone on the Google Places listing",
-                verification="verified",
-            )
-        )
-    for contact in enriched.site_contacts:
-        if "bbb.org" in (contact.source_url or ""):
-            continue  # already recorded by the BBB stage
-        if contact.label == "Main line (Google)":
-            continue  # recorded above from the raw listing
-        method = "llm_extract" if contact.verification == "unverified" else "deterministic_parse"
-        if contact.name:
-            facts.append(
-                LeadFact(
-                    fact_kind="person",
-                    value={"name": contact.name, "title": contact.label, "phone": contact.phone},
-                    source_kind="website",
-                    source_url=contact.source_url,
-                    method=method,
-                    quote=contact.quote,
-                    verification=contact.verification or "unverified",
-                )
-            )
-        elif contact.phone:
+        main_digits = re.sub(r"\D", "", raw.main_phone)[-10:]
+        if main_digits and main_digits not in existing_phones:
             facts.append(
                 LeadFact(
                     fact_kind="phone",
-                    value={"phone": contact.phone, "label": contact.label},
-                    source_kind="website",
-                    source_url=contact.source_url,
-                    method=method,
-                    quote=contact.quote,
-                    verification=contact.verification or "unverified",
+                    value={"phone": raw.main_phone, "label": "Main line"},
+                    source_kind="google_places",
+                    source_url=raw.google_maps_url or "",
+                    method="api",
+                    quote="Business phone on the Google Places listing",
+                    verification="verified",
                 )
             )
-        elif contact.email:
-            facts.append(
-                LeadFact(
-                    fact_kind="email",
-                    value={"email": contact.email, "label": contact.label},
-                    source_kind="website",
-                    source_url=contact.source_url,
-                    method=method,
-                    quote=contact.quote,
-                    verification=contact.verification or "unverified",
+            existing_phones.add(main_digits)
+
+    for contact in enriched.site_contacts:
+        if contact.label == "Main line (Google)":
+            continue  # recorded above from the raw listing
+        source_url = contact.source_url or ""
+        source_kind = "bbb" if "bbb.org" in source_url else "website"
+        method = "llm_extract" if contact.verification == "unverified" else "deterministic_parse"
+        verification = contact.verification or "unverified"
+
+        if contact.name:
+            name_key = contact.name.strip().casefold()
+            if name_key and name_key not in existing_person_names:
+                person_value = {"name": contact.name, "title": contact.label}
+                if contact.phone:
+                    person_value["phone"] = contact.phone
+                if contact.email:
+                    person_value["email"] = contact.email
+                facts.append(
+                    LeadFact(
+                        fact_kind="person",
+                        value=person_value,
+                        source_kind=source_kind,
+                        source_url=source_url,
+                        method=method,
+                        quote=contact.quote,
+                        verification=verification,
+                    )
                 )
-            )
+                existing_person_names.add(name_key)
+
+        if contact.phone:
+            phone_digits = re.sub(r"\D", "", contact.phone)[-10:]
+            if phone_digits and phone_digits not in existing_phones:
+                label = contact.label
+                if contact.name and contact.name.strip():
+                    label = (
+                        f"{contact.name.strip()} — {contact.label}"
+                        if contact.label
+                        else contact.name.strip()
+                    )
+                facts.append(
+                    LeadFact(
+                        fact_kind="phone",
+                        value={"phone": contact.phone, "label": label},
+                        source_kind=source_kind,
+                        source_url=source_url,
+                        method=method,
+                        quote=contact.quote,
+                        verification=verification,
+                    )
+                )
+                existing_phones.add(phone_digits)
+
+        if contact.email and "@" in contact.email:
+            email_key = contact.email.strip().casefold()
+            if email_key and email_key not in existing_emails:
+                facts.append(
+                    LeadFact(
+                        fact_kind="email",
+                        value={"email": contact.email, "label": contact.label},
+                        source_kind=source_kind,
+                        source_url=source_url,
+                        method=method,
+                        quote=contact.quote,
+                        verification=verification,
+                    )
+                )
+                existing_emails.add(email_key)
+
     return facts
 
 
@@ -1070,21 +1070,17 @@ def _record_production_events(
     tool = enriched.source_tool or ""
     if used_fast_path or "profile_reuse" in tool:
         _evt("profile_fast_path", True, "franchise playbook fast path")
-        _evt("gateway", bool(enriched.why_this_is_a_good_fit), "AI sales copy")
     else:
         if "search" in tool and "scrape_json" not in tool.split("+")[0]:
-            _evt("search", True, "website gap-fill")
+            _evt("website_resolve", True, "website gap-fill")
         if "map" in tool or "scrape" in tool:
             _evt("map", True, "Firecrawl map/scrape")
-        if "scrape_json" in tool:
-            _evt("scrape_json", True, "Tier 1 scrape+JSON")
-        elif "scrape" in tool:
-            _evt("markdown", True, "markdown scrape")
+        if "scrape_json" in tool or "scrape" in tool:
+            _evt("scrape", True, "Tier 1 scrape+JSON")
         if "search" in tool and "firecrawl_search" in tool:
-            _evt("search_contact", True, "Tier 2 search+scrape")
-        _evt("gateway", bool(enriched.why_this_is_a_good_fit), "AI sales copy")
+            _evt("tier2_search", True, "Tier 2 search+scrape")
 
-    _evt("final", True, enriched.source_tool)
+    _evt("lead_done", True, enriched.source_tool)
     store.commit_events()
     return store.lead_run_credits(run_id, place_id)
 
@@ -1152,12 +1148,9 @@ def _finish_profile_fast_path(
     enriched.source_tool = "google_places+profile_reuse"
     enriched.notes = f"Profile fast path ({profile.key}): {reason}"
     enriched = scrub_unverified_website(enriched, store=store, verify_evidence=False)
-    enriched = maybe_enrich_sales_copy(
-        enriched, raw, None, [], settings, trace=trace, store=store, run_id=run_id
-    )
     enriched = _apply_verification_fields(enriched)
     if trace:
-        from pallares_leads.eval.score import contact_score, copy_score, exterior_score
+        from pallares_leads.eval.score import contact_score, exterior_score
 
         trace.record(
             "profile_fast_path",
@@ -1180,7 +1173,6 @@ def _finish_profile_fast_path(
             },
             quality={
                 "contact_score": contact_score(enriched),
-                "copy_score": copy_score(enriched),
                 "exterior_score": exterior_score(enriched),
             },
         )
@@ -1210,6 +1202,7 @@ def enrich_lead(
         "lead_started",
         place_id=raw.place_id,
         business=raw.business_name,
+        market=raw.market_key or None,
         category=raw.lead_category,
     )
     lead_started_at = time.perf_counter()
@@ -1489,14 +1482,38 @@ def enrich_lead(
             trace=trace,
         )
 
-    with _enrichment_stage("linkedin_serp", raw=raw, run_id=run_id, firecrawl=firecrawl):
-        enriched = _try_linkedin_serp_tier(
-            work_raw,
-            enriched,
-            firecrawl,
-            tier_rules,
-            settings,
-            trace=trace,
+    # Capped Firecrawl Agent for hard gaps after Tier 2 + BBB/DRE, before owner chain.
+    bar_met_pre_agent, _ = enriched_meets_bar(enriched, tier_rules)
+    if (
+        not bar_met_pre_agent
+        and firecrawl
+        and not firecrawl.should_stop_expensive_stages()
+        and settings.firecrawl_agent_max_credits > 0
+    ):
+        with _enrichment_stage("owner_chain", raw=raw, run_id=run_id, firecrawl=firecrawl):
+            agent_result = firecrawl.run_capped_agent(work_raw)
+            if agent_result:
+                enriched = apply_investigation(
+                    enriched, agent_result, source_tool="google_places+firecrawl_agent"
+                )
+                if trace:
+                    trace.record(
+                        "firecrawl_agent",
+                        ran=True,
+                        reason="capped agent filled contact gap",
+                        credits_est=settings.firecrawl_agent_max_credits,
+                    )
+            elif trace:
+                trace.record(
+                    "firecrawl_agent",
+                    ran=False,
+                    reason="agent returned no grounded contact",
+                )
+    elif trace:
+        trace.record(
+            "firecrawl_agent",
+            ran=False,
+            reason="skipped — bar met, credit stop, or agent disabled",
         )
 
     with _enrichment_stage("owner_chain", raw=raw, run_id=run_id, firecrawl=firecrawl):
@@ -1508,6 +1525,17 @@ def enrich_lead(
             firecrawl=firecrawl,
             store=store,
             run_id=run_id,
+            trace=trace,
+        )
+
+    # LinkedIn last — never alone for verified (BBB/owner-chain should stamp first).
+    with _enrichment_stage("linkedin_serp", raw=raw, run_id=run_id, firecrawl=firecrawl):
+        enriched = _try_linkedin_serp_tier(
+            work_raw,
+            enriched,
+            firecrawl,
+            tier_rules,
+            settings,
             trace=trace,
         )
 
@@ -1530,23 +1558,6 @@ def enrich_lead(
         if insurance_facts:
             enriched.facts = [*enriched.facts, *insurance_facts]
             logger.info("  Insurance: %d mention(s) found", len(insurance_facts))
-
-    if not enriched.exterior_cleaning_need_signals.strip() and firecrawl.session_markdown:
-        ai_signals = need_signals_ai_fallback(
-            firecrawl.session_markdown,
-            property_type=work_raw.property_type,
-            business_name=work_raw.business_name,
-            city=work_raw.city,
-            state=work_raw.state,
-            settings=settings,
-            store=store,
-            run_id=run_id,
-            place_id=work_raw.place_id,
-            stage="scrape",
-        )
-        if ai_signals:
-            enriched.exterior_cleaning_need_signals = ai_signals
-            logger.info("  Need signals (AI fallback): %s", ai_signals[:120])
 
     bar_met, _bar_detail = enriched_meets_bar(enriched, tier_rules)
     if not bar_met:
@@ -1601,42 +1612,57 @@ def enrich_lead(
 
     enriched = apply_baseline_fields(enriched, raw)
     enriched = scrub_unverified_website(enriched, store=store, verify_evidence=False)
-    with _enrichment_stage("sales_copy", raw=raw, run_id=run_id, firecrawl=firecrawl):
-        enriched = maybe_enrich_sales_copy(
-            enriched,
-            raw,
-            investigation,
-            pdf_snippets,
-            settings,
-            trace=trace,
-            store=store,
-            run_id=run_id,
-        )
-    _append_related_talking_points(enriched, store)
+    enriched = _apply_verification_fields(enriched)
+    enriched = _apply_lead_score(enriched)
+    verified_dm = has_verified_named_decision_maker(enriched)
+    # Partial phone evidence stays inventory; unverified/no-DM becomes a researched miss.
+    researched_miss = not verified_dm and enriched.verification_level != "partial"
+
     if store and firecrawl and firecrawl.session_credits_used:
         store.commit_cost_events()
 
     enriched.facts = [*_collect_contact_facts(enriched, raw), *enriched.facts]
     rejections = firecrawl.session_rejections if firecrawl else []
     _persist_facts(store, run_id, enriched, rejections=rejections)
-    enriched = _apply_verification_fields(enriched)
+
+    if researched_miss:
+        # Record the miss so skip_known will not re-research; hide from inventory.
+        enriched.investigation_status = InvestigationStatus.SKIPPED
+        miss_note = "researched_miss: no verified named decision-maker"
+        enriched.notes = f"{enriched.notes}; {miss_note}" if enriched.notes else miss_note
+        logger.info(
+            "Researched miss %s — stored as skipped (score=%s, verification=%s)",
+            raw.business_name,
+            enriched.lead_score,
+            enriched.verification_level,
+        )
+    elif enriched.investigation_status == InvestigationStatus.DISCOVERED and investigation:
+        enriched.investigation_status = InvestigationStatus.ENRICHED
+    elif (
+        verified_dm or enriched.verification_level == "partial"
+    ) and enriched.investigation_status != InvestigationStatus.NEEDS_MANUAL:
+        enriched.investigation_status = InvestigationStatus.ENRICHED
 
     if trace:
-        from pallares_leads.eval.score import contact_score, copy_score, exterior_score
+        from pallares_leads.eval.score import contact_score, exterior_score
 
         trace.record(
             "final",
             ran=True,
-            reason="enrichment complete",
+            reason=(
+                "researched miss — skipped inventory"
+                if researched_miss
+                else "enrichment complete"
+            ),
             outputs={
                 "source_tool": enriched.source_tool,
                 "confidence": enriched.confidence.value,
                 "verification_level": enriched.verification_level,
                 "sales_status": enriched.sales_status(),
+                "investigation_status": enriched.investigation_status.value,
             },
             quality={
                 "contact_score": contact_score(enriched),
-                "copy_score": copy_score(enriched),
                 "exterior_score": exterior_score(enriched),
             },
         )
@@ -1648,7 +1674,7 @@ def enrich_lead(
         enriched,
         tier_rules,
         used_fast_path=used_fast_path,
-        learn_profiles=learn_profiles,
+        learn_profiles=learn_profiles and verified_dm,
     )
     _persist_trace_events(store, run_id, raw.place_id, trace)
     if not trace:
@@ -1659,13 +1685,15 @@ def enrich_lead(
             enriched,
             used_fast_path=used_fast_path,
         )
-    enriched = _apply_lead_score(enriched)
     progress_emit(
         "lead_done",
         place_id=raw.place_id,
         business=raw.business_name,
+        market=raw.market_key or None,
+        category=raw.lead_category,
         verification_level=enriched.verification_level,
         score=enriched.lead_score,
+        researched_miss=researched_miss,
         credits=firecrawl.session_credits_used if firecrawl else 0,
         duration_ms=int((time.perf_counter() - lead_started_at) * 1000),
     )
@@ -1701,6 +1729,7 @@ def run_market_category(
     refresh_after_days: int | None = None,
     store: LeadStore | None = None,
     exclude_counties: list[str] | None = None,
+    campaign_key: str | None = None,
 ) -> Path | None:
     if dry_run:
         source = category.get("source", "places")
@@ -1736,7 +1765,9 @@ def run_market_category(
         run_type="market",
         market_key=market_key,
         category_key=category_key,
+        campaign_key=campaign_key,
     )
+    run_started_at = time.perf_counter()
 
     try:
         return _run_market_category_body(
@@ -1755,15 +1786,69 @@ def run_market_category(
             run_id=run_id,
             exclude_counties=exclude_counties,
         )
-    except BaseException:
+    except BaseException as exc:
         # Never leave a run stuck in 'running' when the process crashes or is killed.
-        store.finish_run(
-            run_id,
-            discovered_count=0,
-            skipped_known_count=0,
-            enriched_count=0,
-            status="failed",
+        # Persist the real exception + best-effort counters from telemetry.
+        fail = failure_fields(exc)
+        logger.exception(
+            "Market run failed %s / %s — %s",
+            market_key,
+            category_key,
+            fail["stop_detail"],
         )
+        snap = {
+            "discovered_count": 0,
+            "skipped_known_count": 0,
+            "enriched_count": 0,
+        }
+        try:
+            snap = store.run_progress_snapshot(run_id)
+            store.finish_run(
+                run_id,
+                discovered_count=snap["discovered_count"],
+                skipped_known_count=snap["skipped_known_count"],
+                enriched_count=snap["enriched_count"],
+                status="failed",
+                stop_reason=fail["stop_reason"],
+                stop_detail=fail["stop_detail"],
+                error=fail["error"],
+                duration_ms=int((time.perf_counter() - run_started_at) * 1000),
+            )
+            progress_emit(
+                "run_failed",
+                run_id=run_id,
+                market=market_key,
+                category=category_key,
+                reason=fail["stop_detail"],
+                discovered=snap["discovered_count"],
+                skipped_known=snap["skipped_known_count"],
+                enriched=snap["enriched_count"],
+                duration_ms=int((time.perf_counter() - run_started_at) * 1000),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist failure state for run %s (%s / %s) — forcing terminal",
+                run_id,
+                market_key,
+                category_key,
+            )
+            try:
+                store.finish_run(
+                    run_id,
+                    discovered_count=snap["discovered_count"],
+                    skipped_known_count=snap["skipped_known_count"],
+                    enriched_count=snap["enriched_count"],
+                    status="failed",
+                    stop_reason=fail["stop_reason"] or "exception",
+                    stop_detail=fail["stop_detail"] or "finish_run failed",
+                    error=fail["error"],
+                    duration_ms=int((time.perf_counter() - run_started_at) * 1000),
+                )
+            except Exception:
+                logger.exception(
+                    "Hard finish_run also failed for %s — run may stay RUNNING",
+                    run_id,
+                )
         raise
     finally:
         if own_store:
@@ -1796,33 +1881,6 @@ def _run_market_category_body(
         category=category_key,
         discover_only=discover_only,
     )
-    stop = settings.firecrawl_session_credit_stop
-    if stop > 0:
-        used = store.total_firecrawl_credits()
-        if used >= stop:
-            logger.warning(
-                "Session credit stop reached (%d >= %d) — skipping %s/%s",
-                used,
-                stop,
-                market_key,
-                category_key,
-            )
-            store.finish_run(
-                run_id,
-                discovered_count=0,
-                skipped_known_count=0,
-                enriched_count=0,
-            )
-            progress_emit(
-                "run_done",
-                run_id=run_id,
-                discovered=0,
-                skipped_known=0,
-                enriched=0,
-                reason=f"session credit stop ({used}/{stop})",
-                duration_ms=int((time.perf_counter() - run_started_at) * 1000),
-            )
-            return None
     discovered = _discover_category(
         settings=settings,
         market_key=market_key,
@@ -1855,6 +1913,31 @@ def _run_market_category_body(
         category=category_key,
         count=len(discovered),
     )
+    store.update_run_counters(run_id, discovered_count=len(discovered))
+    if not discovered:
+        logger.info("Empty discovery for %s / %s", market_key, category_key)
+        duration_ms = int((time.perf_counter() - run_started_at) * 1000)
+        store.finish_run(
+            run_id,
+            discovered_count=0,
+            skipped_known_count=0,
+            enriched_count=0,
+            status="completed",
+            stop_reason="empty_discovery",
+            duration_ms=duration_ms,
+        )
+        progress_emit(
+            "run_done",
+            run_id=run_id,
+            market=market_key,
+            category=category_key,
+            discovered=0,
+            skipped_known=0,
+            enriched=0,
+            reason="empty_discovery",
+            duration_ms=duration_ms,
+        )
+        return None
 
     run_dir = _run_artifacts_dir(settings, run_id)
     raw_path = run_dir / f"raw_{market_key}_{category_key}.jsonl"
@@ -1872,6 +1955,11 @@ def _run_market_category_body(
             "Skipped %d known lead(s) already in configured database",
             skipped_known,
         )
+    store.update_run_counters(
+        run_id,
+        discovered_count=len(discovered),
+        skipped_known_count=skipped_known,
+    )
     for raw in raw_leads:
         # Progress events reference leads by FK, so seed discovered rows before enrichment.
         store.touch_discovered(
@@ -1903,6 +1991,8 @@ def _run_market_category_body(
         progress_emit(
             "run_done",
             run_id=run_id,
+            market=market_key,
+            category=category_key,
             discovered=len(discovered),
             skipped_known=skipped_known,
             enriched=0,
@@ -1921,20 +2011,56 @@ def _run_market_category_body(
             )
         else:
             firecrawl = FirecrawlClient(settings, store=store)
+            # Live team remaining beats local ledger — stop before spending if empty.
+            usage = firecrawl.get_team_credit_usage()
+            if not usage.get("error"):
+                rem_raw = usage.get("remainingCredits", usage.get("remaining_credits"))
+                try:
+                    remaining = float(rem_raw) if rem_raw is not None else None
+                except (TypeError, ValueError):
+                    remaining = None
+                if remaining is not None and remaining <= 0:
+                    logger.warning(
+                        "Firecrawl team remaining is %.0f — skipping enrich for %s/%s",
+                        remaining,
+                        market_key,
+                        category_key,
+                    )
+                    duration_ms = int((time.perf_counter() - run_started_at) * 1000)
+                    store.finish_run(
+                        run_id,
+                        discovered_count=len(discovered),
+                        skipped_known_count=skipped_known,
+                        enriched_count=0,
+                        status="firecrawl_credits_exhausted",
+                        stop_reason="firecrawl_credits_exhausted",
+                        stop_detail="team remaining <= 0",
+                        duration_ms=duration_ms,
+                    )
+                    progress_emit(
+                        "run_done",
+                        run_id=run_id,
+                        market=market_key,
+                        category=category_key,
+                        discovered=len(discovered),
+                        skipped_known=skipped_known,
+                        enriched=0,
+                        reason="firecrawl team credits exhausted",
+                        duration_ms=duration_ms,
+                    )
+                    return None
+            logger.info(
+                "Firecrawl concurrency for run: %d (plan-driven)",
+                firecrawl.effective_max_concurrency(),
+            )
 
     enriched: list[EnrichedLead] = []
-
-    def _credits_budget_exceeded() -> bool:
-        cap = settings.firecrawl_max_credits_per_run
-        if cap <= 0:
-            return False
-        used = store.run_credits_total(run_id)
-        return used >= cap
 
     def _persist_lead(lead: EnrichedLead, *, client: FirecrawlClient | None = None) -> None:
         if discover_only:
             return
         profile_key = classify_lead(RawLead.model_validate(lead.model_dump())).key
+        mgmt_key = management_profile_key(lead.website)
         if firecrawl or not discover_only:
             store.upsert_enriched(
                 lead,
@@ -1943,6 +2069,7 @@ def _run_market_category_body(
                 run_id=run_id,
                 csv_path=None,
                 profile_key=profile_key,
+                mgmt_profile_key=mgmt_key,
                 credits_total=store.lead_run_credits(run_id, lead.place_id) or None,
                 lead_score=lead.lead_score,
             )
@@ -1983,7 +2110,7 @@ def _run_market_category_body(
             bbb_rating=bbb_rating,
             bbb_years_in_business=bbb_years,
             grounding_rejections_count=len(client.session_rejections) if client else 0,
-            model=settings.ai_gateway_model or "",
+            model="",
             cost_summary={
                 "credits_total": store.lead_run_credits(run_id, lead.place_id),
                 "usd_total": store.lead_cost_usd(run_id, lead.place_id),
@@ -2010,7 +2137,8 @@ def _run_market_category_body(
                 "lead_started",
                 place_id=raw.place_id,
                 business=raw.business_name,
-                category=raw.lead_category,
+                market=market_key,
+                category=category_key,
             )
             lead = EnrichedLead.model_validate(raw.model_dump())
             lead.source_tool = "google_places"
@@ -2022,57 +2150,163 @@ def _run_market_category_body(
                 "lead_done",
                 place_id=raw.place_id,
                 business=raw.business_name,
+                market=market_key,
+                category=category_key,
                 verification_level=lead.verification_level,
                 score=lead.lead_score,
                 credits=0,
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
             return lead
-        if _credits_budget_exceeded():
-            logger.warning(
-                "Firecrawl credit cap reached (%d) — skipping enrichment for %s",
-                settings.firecrawl_max_credits_per_run,
-                raw.business_name,
+
+        if not enrich_store.claim_place_for_enrichment(raw.place_id, run_id=run_id):
+            logger.info("Place %s already claimed — skipping parallel double-enrich", raw.place_id)
+            # Winner owns persistence — return a marker lead so we never overwrite them.
+            started = time.perf_counter()
+            progress_emit(
+                "lead_started",
+                place_id=raw.place_id,
+                business=raw.business_name,
+                market=market_key,
+                category=category_key,
             )
-            return _baseline_discovered(
-                notes=(
-                    "Skipped enrichment: "
-                    f"run credit cap ({settings.firecrawl_max_credits_per_run})"
-                )
+            skipped = EnrichedLead.model_validate(raw.model_dump())
+            skipped.source_tool = "google_places"
+            skipped.investigation_status = InvestigationStatus.DISCOVERED
+            skipped.notes = "__claim_skip__"
+            progress_emit(
+                "lead_done",
+                place_id=raw.place_id,
+                business=raw.business_name,
+                market=market_key,
+                category=category_key,
+                verification_level=skipped.verification_level,
+                score=skipped.lead_score,
+                credits=0,
+                duration_ms=int((time.perf_counter() - started) * 1000),
             )
+            return skipped
+
         if client:
-            return enrich_lead(
-                raw,
-                client,
-                settings,
-                store=enrich_store,
-                run_id=run_id,
-                learn_profiles=True,
-            )
+            try:
+                return enrich_lead(
+                    raw,
+                    client,
+                    settings,
+                    store=enrich_store,
+                    run_id=run_id,
+                    learn_profiles=True,
+                )
+            except Exception as exc:
+                # Persist-on-fail: keep partial progress so skip_known quality gate can retry later.
+                logger.exception("Enrichment failed for %s — persisting partial", raw.business_name)
+                partial = EnrichedLead.model_validate(raw.model_dump())
+                partial = apply_baseline_fields(partial, raw)
+                partial.investigation_status = InvestigationStatus.DISCOVERED
+                partial.notes = f"enrichment failed: {str(exc)[:180]}"
+                partial.lead_score = compute_lead_score(partial)
+                try:
+                    enrich_store.upsert_enriched(
+                        partial,
+                        market_key=market_key,
+                        category_key=category_key,
+                        run_id=run_id,
+                        profile_key=classify_lead(raw).key,
+                        mgmt_profile_key=management_profile_key(raw.website),
+                        lead_score=partial.lead_score,
+                    )
+                finally:
+                    # upsert may no-op (vendor guard); never leave enriching stuck.
+                    enrich_store.release_enrichment_claim(
+                        raw.place_id, status="partial"
+                    )
+                raise
         return _baseline_discovered()
 
-    workers = max(1, settings.enrichment_parallel_workers)
-    if workers > 1 and gateway_configured(settings):
-        interval = settings.ai_gateway_min_interval_s * workers
+    plan_info: dict[str, object] = {}
+    if firecrawl:
+        plan_info = firecrawl.refresh_plan_limits()
+        progress_emit(
+            "firecrawl_plan",
+            run_id=run_id,
+            market=market_key,
+            category=category_key,
+            plan_name=plan_info.get("plan_name"),
+            plan_key=plan_info.get("plan_key"),
+            max_concurrency=plan_info.get("max_concurrency"),
+            place_workers=plan_info.get("place_workers"),
+            credits_remaining=plan_info.get("credits_remaining"),
+        )
+    workers = max(1, firecrawl.effective_parallel_workers()) if firecrawl else 1
+    if workers > 1:
         logger.info(
-            "Parallel enrichment: %d workers for %d leads — Firecrawl concurrent; "
-            "AI Gateway serialized at %.1fs min spacing (%.1fs × workers)",
+            "Parallel research: %d workers for %d leads (Firecrawl %s · %s browsers)",
             workers,
             len(raw_leads),
-            interval,
-            settings.ai_gateway_min_interval_s,
+            plan_info.get("plan_name") or plan_info.get("plan_key") or "plan",
+            plan_info.get("max_concurrency") or "?",
         )
-        set_gateway_parallel_workers(workers)
-    else:
-        set_gateway_parallel_workers(1)
 
     credits_exhausted = False
+    lead_timeout_s = max(60, int(settings.enrichment_lead_timeout_s))
+    # Shared with heartbeat so the dock can surface "stuck on N leads".
+    inflight_state: dict[str, object] = {
+        "pending": 0,
+        "stalled": [],
+        "done": 0,
+        "total": len(raw_leads),
+    }
+    inflight_lock = threading.Lock()
 
     heartbeat_stop = threading.Event()
 
+    def _bump_live_counters() -> None:
+        """Keep runs.*_count current so the Runs table is not stuck at 0/0/0."""
+        store.update_run_counters(
+            run_id,
+            discovered_count=len(discovered),
+            skipped_known_count=skipped_known,
+            enriched_count=len(enriched),
+        )
+
     def _heartbeat_loop() -> None:
         while not heartbeat_stop.wait(30):
-            progress_emit("heartbeat", run_id=run_id)
+            with inflight_lock:
+                pending_n = int(inflight_state.get("pending") or 0)
+                stalled = list(inflight_state.get("stalled") or [])  # type: ignore[arg-type]
+                done_n = int(inflight_state.get("done") or 0)
+                total_n = int(inflight_state.get("total") or 0)
+            progress_emit(
+                "heartbeat",
+                run_id=run_id,
+                market=market_key,
+                category=category_key,
+                pending=pending_n,
+                done=done_n,
+                total=total_n,
+                stalled=stalled[:5],
+            )
+            try:
+                _bump_live_counters()
+            except Exception:
+                logger.debug("heartbeat counter bump failed", exc_info=True)
+
+    def _mark_lead_timeout(raw: RawLead) -> None:
+        logger.error(
+            "Lead enrichment timed out after %ss — abandoning %s so the cell can finish",
+            lead_timeout_s,
+            raw.business_name,
+        )
+        progress_emit(
+            "lead_failed",
+            place_id=raw.place_id,
+            business=raw.business_name,
+            market=market_key,
+            category=category_key,
+            run_id=run_id,
+            reason=f"enrichment_timeout_{lead_timeout_s}s",
+        )
+        store.release_enrichment_claim(raw.place_id, status="partial")
 
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     heartbeat_thread.start()
@@ -2083,42 +2317,101 @@ def _run_market_category_body(
                 with LeadStore(store.db_url) as worker_store:
                     bind_progress(worker_store, run_id=run_id)
                     client = FirecrawlClient(settings, store=worker_store)
+                    # Inherit the parent's live plan ceiling (avoid N queue-status probes).
+                    if firecrawl is not None:
+                        client._plan_max_concurrency = firecrawl.plan_max_concurrency()
+                        client._resolved_concurrency = firecrawl.effective_max_concurrency()
                     return _do_enrich(raw, client, active_store=worker_store)
 
+            pool = ThreadPoolExecutor(max_workers=min(workers, len(raw_leads)))
+            futures = {pool.submit(_worker, raw): raw for raw in raw_leads}
+            started_at = {fut: time.monotonic() for fut in futures}
+            pending = set(futures)
+            completed_n = 0
+            with inflight_lock:
+                inflight_state["pending"] = len(pending)
+                inflight_state["done"] = 0
             try:
-                with ThreadPoolExecutor(max_workers=min(workers, len(raw_leads))) as pool:
-                    futures = {pool.submit(_worker, raw): raw for raw in raw_leads}
-                    for i, future in enumerate(as_completed(futures), start=1):
+                while pending:
+                    done_set, pending = wait(
+                        pending, timeout=5.0, return_when=FIRST_COMPLETED
+                    )
+                    now = time.monotonic()
+                    # Abandon leads that exceeded the wall-clock budget.
+                    for fut in list(pending):
+                        if now - started_at[fut] < lead_timeout_s:
+                            continue
+                        pending.discard(fut)
+                        raw = futures[fut]
+                        _mark_lead_timeout(raw)
+                        completed_n += 1
+                        with inflight_lock:
+                            inflight_state["pending"] = len(pending)
+                            inflight_state["done"] = completed_n
+                            stalled = list(inflight_state.get("stalled") or [])
+                            if raw.business_name not in stalled:
+                                stalled.append(raw.business_name)
+                            inflight_state["stalled"] = stalled
+                    stalled_names = [
+                        futures[f].business_name
+                        for f in pending
+                        if now - started_at[f] >= max(120, lead_timeout_s // 3)
+                    ]
+                    with inflight_lock:
+                        inflight_state["pending"] = len(pending)
+                        inflight_state["stalled"] = stalled_names
+                    for future in done_set:
+                        if future not in futures:
+                            continue
                         raw = futures[future]
                         try:
                             result = future.result()
-                            enriched.append(result)
-                            _persist_lead(result, client=firecrawl)
+                            if result.notes != "__claim_skip__":
+                                enriched.append(result)
+                                _persist_lead(result, client=firecrawl)
+                            completed_n += 1
+                            _bump_live_counters()
+                            with inflight_lock:
+                                inflight_state["done"] = completed_n
+                                inflight_state["pending"] = len(pending)
                             logger.info(
-                                "[%d/%d] %s — done", i, len(raw_leads), raw.business_name
+                                "[%d/%d] %s — done",
+                                completed_n,
+                                len(raw_leads),
+                                raw.business_name,
                             )
                         except OutOfCreditsError:
                             credits_exhausted = True
-                            logger.error("Firecrawl credits exhausted — stopping enrichment")
+                            logger.error(
+                                "Firecrawl credits exhausted — stopping enrichment"
+                            )
                             progress_emit(
                                 "credits_exhausted",
                                 run_id=run_id,
                                 reason="firecrawl_credits_exhausted",
                             )
-                            for pending in futures:
-                                pending.cancel()
+                            pending.clear()
                             break
                         except Exception as exc:
-                            logger.exception("Enrichment failed for %s", raw.business_name)
+                            completed_n += 1
+                            logger.exception(
+                                "Enrichment failed for %s", raw.business_name
+                            )
                             progress_emit(
                                 "lead_failed",
                                 place_id=raw.place_id,
                                 business=raw.business_name,
+                                market=market_key,
+                                category=category_key,
                                 run_id=run_id,
                                 reason=str(exc)[:200],
                             )
+                            with inflight_lock:
+                                inflight_state["done"] = completed_n
+                                inflight_state["pending"] = len(pending)
             finally:
-                set_gateway_parallel_workers(1)
+                # Do not block the campaign forever on zombie agent threads.
+                pool.shutdown(wait=False, cancel_futures=True)
             order = {r.place_id: idx for idx, r in enumerate(raw_leads)}
             enriched.sort(key=lambda lead: order.get(lead.place_id, 999))
         else:
@@ -2126,8 +2419,18 @@ def _run_market_category_body(
                 if credits_exhausted:
                     break
                 logger.info("[%d/%d] %s — enriching", i, len(raw_leads), raw.business_name)
+                with inflight_lock:
+                    inflight_state["pending"] = 1
+                    inflight_state["done"] = i - 1
+                    inflight_state["stalled"] = []
+                one = ThreadPoolExecutor(max_workers=1)
+                fut = one.submit(_do_enrich, raw, firecrawl)
                 try:
-                    result = _do_enrich(raw, firecrawl)
+                    result = fut.result(timeout=lead_timeout_s)
+                except FuturesTimeoutError:
+                    _mark_lead_timeout(raw)
+                    one.shutdown(wait=False, cancel_futures=True)
+                    continue
                 except OutOfCreditsError:
                     credits_exhausted = True
                     logger.error("Firecrawl credits exhausted — stopping enrichment")
@@ -2136,11 +2439,35 @@ def _run_market_category_body(
                         run_id=run_id,
                         reason="firecrawl_credits_exhausted",
                     )
+                    one.shutdown(wait=False, cancel_futures=True)
                     break
-                enriched.append(result)
-                _persist_lead(result, client=firecrawl)
+                except Exception as exc:
+                    logger.exception("Enrichment failed for %s", raw.business_name)
+                    progress_emit(
+                        "lead_failed",
+                        place_id=raw.place_id,
+                        business=raw.business_name,
+                        market=market_key,
+                        category=category_key,
+                        run_id=run_id,
+                        reason=str(exc)[:200],
+                    )
+                    one.shutdown(wait=False, cancel_futures=True)
+                    continue
+                else:
+                    one.shutdown(wait=False, cancel_futures=True)
+                if result.notes != "__claim_skip__":
+                    enriched.append(result)
+                    _persist_lead(result, client=firecrawl)
+                _bump_live_counters()
+                with inflight_lock:
+                    inflight_state["done"] = i
+                    inflight_state["pending"] = 0
     finally:
         heartbeat_stop.set()
+        # Give the daemon heartbeat one moment to exit so a late
+        # update_run_counters cannot race finish_run on the same store lock.
+        heartbeat_thread.join(timeout=2.0)
 
     out_path = run_dir / "export.csv"
     export_csv(enriched, out_path)
@@ -2161,13 +2488,32 @@ def _run_market_category_body(
                 category_key=category_key,
                 run_id=run_id,
             )
-    store.finish_run(
-        run_id,
-        discovered_count=len(discovered),
-        skipped_known_count=skipped_known,
-        enriched_count=len(enriched),
-        status="firecrawl_credits_exhausted" if credits_exhausted else "completed",
-    )
+    duration_ms = int((time.perf_counter() - run_started_at) * 1000)
+    verified_dm_count = sum(1 for lead in enriched if has_verified_named_decision_maker(lead))
+    grounding_rejections = len(firecrawl.session_rejections) if firecrawl else None
+    if credits_exhausted:
+        store.finish_run(
+            run_id,
+            discovered_count=len(discovered),
+            skipped_known_count=skipped_known,
+            enriched_count=len(enriched),
+            status="firecrawl_credits_exhausted",
+            stop_reason="firecrawl_credits_exhausted",
+            duration_ms=duration_ms,
+            verified_dm_count=verified_dm_count,
+            grounding_rejections=grounding_rejections,
+        )
+    else:
+        store.finish_run(
+            run_id,
+            discovered_count=len(discovered),
+            skipped_known_count=skipped_known,
+            enriched_count=len(enriched),
+            status="completed",
+            duration_ms=duration_ms,
+            verified_dm_count=verified_dm_count,
+            grounding_rejections=grounding_rejections,
+        )
     store.wal_checkpoint()
     _write_run_manifest(
         settings,
@@ -2184,11 +2530,13 @@ def _run_market_category_body(
     progress_emit(
         "run_done",
         run_id=run_id,
+        market=market_key,
+        category=category_key,
         discovered=len(discovered),
         skipped_known=skipped_known,
         enriched=len(enriched),
         credits=store.run_credits_total(run_id),
-        duration_ms=int((time.perf_counter() - run_started_at) * 1000),
+        duration_ms=duration_ms,
     )
 
     return out_path

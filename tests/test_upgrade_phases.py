@@ -43,12 +43,22 @@ def test_sales_status_requires_verification():
     lead = EnrichedLead.model_validate(raw.model_dump())
     lead.investigation_status = InvestigationStatus.ENRICHED
     lead.site_contacts = [
-        SiteContact(email="info@example.com", verification="verified"),
+        SiteContact(
+            name="Pat Facilities",
+            phone="(559) 638-1111",
+            label="Facilities Manager",
+            verification="verified",
+        ),
     ]
+    lead.best_contact_phone = "(559) 638-1111"
+    lead.best_contact_role = "Facilities Manager"
     lead.verification_level = "unverified"
     assert lead.sales_status() == "Needs research"
 
     lead.verification_level = "partial"
+    assert lead.sales_status() == "Needs research"
+
+    lead.verification_level = "verified"
     assert lead.sales_status() == "Ready to call"
 
 

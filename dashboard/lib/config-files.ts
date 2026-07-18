@@ -5,7 +5,7 @@ import { projectRoot } from "./paths";
 export const CONFIG_FILE_DESCRIPTIONS: Record<string, string> = {
   "campaign.yaml": "Market × category matrix for run-campaign and smoke-sample",
   "markets.yaml": "Geography definitions (cities, bbox, counties)",
-  "categories.yaml": "Per-category discovery and enrichment behavior",
+  "categories.yaml": "Per-category discovery and research behavior",
   "pricing.yaml": "USD estimates for cost tracking by provider",
   "search_templates.yaml": "Firecrawl search query templates by category",
   "licensing.yaml": "State licensing/registry lookup configuration",

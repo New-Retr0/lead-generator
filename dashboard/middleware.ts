@@ -1,15 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PROTECTED_PREFIXES = ["/api/jobs", "/api/export"];
+const ALWAYS_PROTECTED = ["/api/jobs", "/api/export"];
+
+function isMutating(method: string): boolean {
+  return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+}
+
+function needsAuth(pathname: string, method: string): boolean {
+  if (!pathname.startsWith("/api/")) return false;
+  if (ALWAYS_PROTECTED.some((prefix) => pathname.startsWith(prefix))) return true;
+  // When a token is configured, also gate other mutating API routes.
+  return isMutating(method);
+}
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  const needsAuth = PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
-  if (!needsAuth) {
+  if (!needsAuth(pathname, req.method)) {
     return NextResponse.next();
   }
 
   const expected = process.env.DASHBOARD_API_TOKEN?.trim();
+  // Fail-open for local/dev when no token is configured.
   if (!expected) {
     return NextResponse.next();
   }
@@ -25,5 +36,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/jobs/:path*", "/api/export/:path*"],
+  matcher: ["/api/:path*"],
 };

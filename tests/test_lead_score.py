@@ -26,8 +26,6 @@ def test_owner_contact_scores_higher_than_front_desk() -> None:
     owner = _base_lead(
         best_contact_role="Property Manager",
         best_contact_phone="(559) 555-0200",
-        why_this_is_a_good_fit="Large retail plaza with extensive parking apron.",
-        sales_talking_points="• Parking lot pressure washing\n• Storefront glass",
         exterior_cleaning_need_signals="parking lot, storefront canopy",
         site_contacts=[
             SiteContact(label="Property Manager", name="Jane Doe", phone="(559) 555-0200")
@@ -57,11 +55,42 @@ def test_score_breakdown_sums_to_lead_score() -> None:
     lead = _base_lead(
         best_contact_role="Property Manager",
         best_contact_phone="(559) 555-0200",
-        why_this_is_a_good_fit="Large retail plaza with extensive parking apron.",
-        sales_talking_points="• Parking lot pressure washing",
         exterior_cleaning_need_signals="parking lot, storefront canopy",
     )
     score = compute_lead_score(lead)
     assert lead.score_breakdown
     assert sum(lead.score_breakdown.values()) == score
     assert lead.why_now
+
+
+def test_google_main_line_only_penalized_on_multi_tenant() -> None:
+    google_only = _base_lead(
+        main_phone="(559) 555-0100",
+        best_contact_phone="(559) 555-0100",
+        best_contact_role=NOT_FOUND,
+        verification_level="unverified",
+    )
+    verified_dm = _base_lead(
+        main_phone="(559) 555-0100",
+        best_contact_role="Property Manager",
+        best_contact_phone="(559) 555-0999",
+        verification_level="verified",
+        site_contacts=[
+            SiteContact(
+                label="Property Manager",
+                name="Jane Doe",
+                phone="(559) 555-0999",
+                verification="verified",
+            )
+        ],
+    )
+    assert compute_lead_score(verified_dm) > compute_lead_score(google_only)
+
+
+def test_property_manager_has_ticket_weight() -> None:
+    pm = _base_lead(property_type="property_manager", lead_category="Property Manager")
+    gas = _base_lead(property_type="gas_station", lead_category="Gas Station")
+    compute_lead_score(pm)
+    compute_lead_score(gas)
+    assert pm.score_breakdown["ticket"] >= gas.score_breakdown["ticket"]
+

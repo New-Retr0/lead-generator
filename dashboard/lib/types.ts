@@ -26,6 +26,8 @@ export type LeadRow = {
   crm_status: CrmStatus;
   lead_type: LeadType;
   phone: string | null;
+  best_contact_name: string | null;
+  best_contact_role: string | null;
 };
 
 export type SiteContact = {
@@ -96,11 +98,8 @@ export type LeadDetail = LeadRow & {
   best_contact_phone: string | null;
   best_contact_email_or_form: string | null;
   property_manager_clue: string | null;
-  why_good_fit: string | null;
   why_now: string | null;
   score_breakdown: Record<string, number>;
-  talking_points: string | null;
-  need_signals: string | null;
   site_contacts: SiteContact[];
   facts: LeadFact[];
   evidence_urls: string[];
@@ -130,6 +129,8 @@ export type JobEvent = {
   t: "evt";
   ts: string;
   event: string;
+  /** SSE resume cursor (sequence within the job log stream). */
+  _seq?: number;
   run_id?: string;
   market?: string;
   category?: string;
@@ -243,14 +244,31 @@ export type CostByHourRow = {
   eventCount: number;
 };
 
+export type YieldSummary = {
+  discovered: number;
+  enriched: number;
+  verifiedDm: number;
+};
+
+export type InventoryMode = "ready" | "partial" | "all_quality";
+
 export type OverviewStats = {
   totalLeads: number;
   enrichedLeads: number;
   readyToCall: number;
   readyToCallRate: number;
+  partialInventory: number;
+  verifiedThisMonth: number;
   creditsThisMonth: number;
+  creditsPerVerifiedDm: number | null;
+  /** Set when credits/DM falls back to month-wide Firecrawl sum (no place attribution). */
+  creditsPerVerifiedDmCaveat: string | null;
+  usdThisMonth: number;
+  usdPerVerifiedDm: number | null;
+  minutesPerVerifiedDm: number | null;
   browserUseUsdThisMonth: number;
-  aiGatewayUsdThisMonth: number;
+  /** Inventory yield: discovered / researched / verified DM (no separate event store). */
+  yield: YieldSummary;
   usdByProvider: {
     provider: string;
     usd: number;
@@ -265,7 +283,6 @@ export type CostDayRow = {
   usd: number;
   firecrawlCredits: number;
   browserUseUsd: number;
-  aiGatewayUsd: number;
   googlePlacesUsd: number;
 };
 
@@ -300,10 +317,20 @@ export type RunRow = {
   run_type: string;
   market_key: string | null;
   category_key: string | null;
+  campaign_key: string | null;
+  /** Parent local dashboard job id (PALLARES_JOB_ID), when launched from Launch. */
+  job_id: string | null;
   discovered_count: number;
   skipped_known_count: number;
   enriched_count: number;
   status: string;
+  /** Why the run stopped early (credit cap, cancel, etc.). Null when unset. */
+  stop_reason: string | null;
+  stop_detail: string | null;
+  /** Full traceback / error text when status=failed. */
+  error: string | null;
+  verified_dm_count: number | null;
+  duration_ms: number | null;
 };
 
 export type RunCostOperation = {
@@ -352,7 +379,7 @@ export type RunTimelineLead = {
   verification_level: string | null;
   lead_score: number | null;
   creditsEst: number;
-  /** True once the lead's `final` stage is recorded (enrichment finished). */
+  /** True once the lead's `final` stage is recorded (research finished). */
   done: boolean;
   stages: RunTimelineStage[];
 };
@@ -362,10 +389,27 @@ export type RunTimeline = {
   leads: RunTimelineLead[];
 };
 
+/** Raw cost row for Pipeline Studio (matches /api/runs/[id]/costs). */
+export type RunStudioCostRow = {
+  id: number;
+  provider: string;
+  operation: string;
+  units: number;
+  unit_type: string;
+  usd: number;
+  place_id: string | null;
+  model: string | null;
+  meta_json: unknown;
+  created_at: string;
+};
+
 export type RunDetail = {
   run: RunRow;
   costs: RunCosts;
   timeline: RunTimeline;
+  /** Full ledgers for Pipeline Studio — same source as timeline/costs APIs. */
+  studioEvents: RunEventRow[];
+  studioCosts: RunStudioCostRow[];
 };
 
 export type RequestRow = {
@@ -387,6 +431,8 @@ export type JobStatus =
   | "interrupted"
   | "cancelled";
 
+export type JobExecutionMode = "local" | "worker";
+
 export type JobRecord = {
   id: string;
   kind: "run" | "request" | "export" | "doctor";
@@ -399,6 +445,22 @@ export type JobRecord = {
   pid: number | null;
   createdAt: string;
   finishedAt: string | null;
+  /** Dashboard spawn path today is always local; worker is reserved for pgmq. */
+  executionMode?: JobExecutionMode;
+  /** True when the child predates this server process (recovered after restart). */
+  detached?: boolean;
+  /** Byte offset into `data/jobs/<id>.log` already ingested into logs/events. */
+  logByteOffset?: number;
+  /** Sequence of `logs[0]` after ring-buffer trims (persisted for SSE resume). */
+  firstSeq?: number;
+};
+
+/** JobRecord minus logs/events — cheap enough for the poll path. */
+export type JobSummary = Omit<JobRecord, "logs" | "events"> & {
+  runId: string | null;
+  market: string | null;
+  category: string | null;
+  executionMode: JobExecutionMode;
 };
 
 export type MarketOption = {

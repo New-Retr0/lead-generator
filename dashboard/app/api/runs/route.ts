@@ -1,15 +1,19 @@
 import { NextResponse } from "next/server";
 import { listRuns } from "@/lib/db";
-import { listJobs } from "@/lib/jobs";
+import { listJobSummaries } from "@/lib/jobs";
+import { repairOrphanedRuns } from "@/lib/run-reconcile";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    // Opportunistic: hard refresh must not show dead RUNNING rows.
+    await repairOrphanedRuns();
+    const [runs, jobs] = await Promise.all([listRuns(50), listJobSummaries(20)]);
     return NextResponse.json(
       {
-        runs: await listRuns(50),
-        jobs: listJobs(20),
+        runs,
+        jobs,
       },
       { headers: { "Cache-Control": "no-store" } },
     );
