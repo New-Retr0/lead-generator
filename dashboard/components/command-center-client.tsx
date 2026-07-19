@@ -2,7 +2,17 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Coins, Database, DollarSign, PhoneCall } from "lucide-react";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  Coins,
+  Database,
+  DollarSign,
+  FolderCog,
+  PhoneCall,
+  Rocket,
+  Table2,
+} from "lucide-react";
 import ASCIIAnimation from "@/components/console/ascii-animation";
 import { SectionHeading } from "@/components/console/section-heading";
 import { SectionReveal } from "@/components/console/section-reveal";
@@ -19,7 +29,7 @@ import {
 import { useSpendProviderSummary } from "@/components/campaigns/estimate-breakdown";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import type { CostDayRow, RequestRow, RunRow } from "@/lib/types";
 import { formatCredits, formatPct, formatUsd } from "@/lib/utils";
 
@@ -83,14 +93,22 @@ export function CommandCenterClient({
 
   return (
     <div className="space-y-10">
-      <div className="relative min-h-[12.5rem] overflow-hidden rounded-xl border border-border bg-card p-6 md:min-h-[14rem] md:p-8">
-        <div className="pointer-events-none absolute inset-y-2 right-0 w-[min(48%,20rem)] md:inset-y-3 md:w-[min(42%,22rem)]">
+      <div className="relative min-h-[13.5rem] overflow-hidden rounded-2xl border border-border/70 bg-card p-6 md:min-h-[15rem] md:p-8">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_85%_20%,color-mix(in_oklab,var(--primary)_14%,transparent),transparent_55%)]"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/45 to-transparent"
+        />
+        <div className="pointer-events-none absolute inset-y-3 right-2 flex w-[min(46%,19rem)] items-stretch md:inset-y-4 md:right-3 md:w-[min(40%,21rem)]">
           <ASCIIAnimation
             frameFolder="cube"
             frameCount={134}
-            quality="medium"
+            quality="low"
             fps={30}
-            className="h-full w-full [mask-image:linear-gradient(to_left,black_70%,transparent_100%)]"
+            className="h-full min-h-[11rem] w-full opacity-90 [mask-image:linear-gradient(to_left,black_65%,transparent_100%)]"
             gradient="linear-gradient(160deg, var(--foreground), var(--primary))"
             lazy={false}
             ariaLabel="ASCII cube animation"
@@ -100,7 +118,7 @@ export function CommandCenterClient({
           <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-primary">
             Pallares Leads
           </p>
-          <h2 className="text-lg font-semibold normal-case tracking-tight md:text-xl">
+          <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
             Dev Console
           </h2>
           <TypedText text="PALLARES LEADS — pipeline nominal" />
@@ -208,13 +226,13 @@ export function CommandCenterClient({
           {
             label: "Billing period end",
             value: credits?.firecrawlBillingEnd
-              ? new Date(credits.firecrawlBillingEnd).toLocaleDateString()
+              ? new Date(credits.firecrawlBillingEnd).toLocaleDateString("en-US")
               : "—",
           },
           {
             label: "Fetched",
             value: credits?.firecrawlSnapshotAt
-              ? new Date(credits.firecrawlSnapshotAt).toLocaleString()
+              ? new Date(credits.firecrawlSnapshotAt).toLocaleString("en-US")
               : "—",
           },
         ]}
@@ -324,67 +342,85 @@ export function CommandCenterClient({
 
       <SectionReveal>
         <SectionHeading index="03" title="Recent activity" className="mb-4" />
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="panel lg:col-span-2">
-            <CardHeader className="flex-row items-center justify-between">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(16rem,0.75fr)]">
+          <section className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_1px_0_color-mix(in_oklab,var(--foreground)_4%,transparent)]">
+            <div className="flex items-start justify-between gap-3 border-b border-border/40 bg-muted/15 px-5 py-4">
               <div>
-                <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                  Spend — 14 days
-                </CardTitle>
-                <CardDescription>USD across providers</CardDescription>
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  Spend · 14 days
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">USD across providers</p>
               </div>
-              <Button asChild variant="ghost" size="sm">
+              <Button asChild variant="ghost" size="sm" className="shrink-0 text-muted-foreground">
                 <Link href="/costs">
                   Details
-                  <ArrowRight className="size-3.5" />
+                  <ArrowUpRight className="size-3.5" />
                 </Link>
               </Button>
-            </CardHeader>
-            <CardContent className="h-44 min-h-44">
-              <div className="h-full min-h-0 w-full min-w-0">
+            </div>
+            <div className="relative h-48 min-h-48 px-3 py-3 md:px-4">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-3 rounded-xl bg-[linear-gradient(to_bottom,transparent_0%,color-mix(in_oklab,var(--muted)_35%,transparent)_100%)]"
+              />
+              <div className="relative h-full">
                 <SpendChartLazy data={costDays} />
               </div>
-            </CardContent>
-          </Card>
-          <Card className="panel">
-            <CardHeader>
-              <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
-                Quick links
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <Button asChild variant="outline" size="sm" className="w-full justify-start">
-                <Link href="/campaigns">Campaign Control</Link>
-              </Button>
-              <Button asChild variant="outline" size="sm" className="w-full justify-start">
-                <Link href="/data">Lead Data Explorer</Link>
-              </Button>
-              <Button asChild variant="outline" size="sm" className="w-full justify-start">
-                <Link href="/settings">Settings & Config</Link>
-              </Button>
-            </CardContent>
-          </Card>
+            </div>
+          </section>
+
+          <nav className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_1px_0_color-mix(in_oklab,var(--foreground)_4%,transparent)]">
+            <div className="border-b border-border/40 bg-muted/15 px-5 py-4">
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                Jump to
+              </p>
+            </div>
+            <div className="flex flex-col gap-1 p-2">
+              {(
+                [
+                  { href: "/campaigns", label: "Campaign Control", icon: Rocket },
+                  { href: "/data", label: "Lead Data Explorer", icon: Table2 },
+                  { href: "/settings", label: "Settings & Config", icon: FolderCog },
+                ] as const
+              ).map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="group flex items-center gap-3 rounded-xl px-3 py-3 text-sm transition-colors hover:bg-accent/70"
+                >
+                  <span className="flex size-8 items-center justify-center rounded-lg border border-border/60 bg-background text-muted-foreground transition-colors group-hover:border-primary/35 group-hover:text-primary">
+                    <item.icon className="size-3.5" />
+                  </span>
+                  <span className="flex-1 font-medium tracking-tight">{item.label}</span>
+                  <ArrowUpRight className="size-3.5 text-muted-foreground/40 transition-colors group-hover:text-primary" />
+                </Link>
+              ))}
+            </div>
+          </nav>
         </div>
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-2">
-          <Card className="panel">
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <section className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_1px_0_color-mix(in_oklab,var(--foreground)_4%,transparent)]">
+            <div className="flex items-center justify-between gap-3 border-b border-border/40 bg-muted/15 px-5 py-3.5">
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
                 Recent runs
-              </CardTitle>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/runs">All runs</Link>
+              </p>
+              <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
+                <Link href="/runs">
+                  All runs
+                  <ArrowUpRight className="size-3.5" />
+                </Link>
               </Button>
-            </CardHeader>
-            <CardContent className="space-y-2">
+            </div>
+            <div className="divide-y divide-border/35">
               {runs.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No runs yet.</p>
+                <p className="px-5 py-8 text-sm text-muted-foreground">No runs yet.</p>
               ) : (
                 runs.slice(0, 5).map((run) => (
                   <Link
                     key={run.run_id}
                     href={`/runs/${encodeURIComponent(run.run_id)}`}
-                    className="flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-2 text-sm hover:border-primary/30 hover:bg-muted/50"
+                    className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-accent/45"
                   >
                     <RunStatusBadge status={run.status} />
                     <StopReasonBadge
@@ -393,40 +429,46 @@ export function CommandCenterClient({
                       status={run.status}
                       discoveredCount={run.discovered_count}
                     />
-                    <span className="min-w-0 flex-1 truncate">
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm tracking-tight">
                       {run.market_key ?? run.run_type}
                     </span>
+                    <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/35" />
                   </Link>
                 ))
               )}
-            </CardContent>
-          </Card>
-          <Card className="panel">
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle className="font-mono text-[10px] uppercase tracking-[0.12em]">
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_1px_0_color-mix(in_oklab,var(--foreground)_4%,transparent)]">
+            <div className="flex items-center justify-between gap-3 border-b border-border/40 bg-muted/15 px-5 py-3.5">
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
                 Recent requests
-              </CardTitle>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/requests">All requests</Link>
+              </p>
+              <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
+                <Link href="/requests">
+                  All requests
+                  <ArrowUpRight className="size-3.5" />
+                </Link>
               </Button>
-            </CardHeader>
-            <CardContent className="space-y-2">
+            </div>
+            <div className="divide-y divide-border/35">
               {requests.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No requests yet.</p>
+                <p className="px-5 py-8 text-sm text-muted-foreground">No requests yet.</p>
               ) : (
                 requests.slice(0, 5).map((req) => (
                   <Link
                     key={req.request_id}
                     href="/requests"
-                    className="flex items-center gap-2 rounded-lg border border-border/50 px-2.5 py-2 text-sm hover:border-primary/30 hover:bg-muted/50"
+                    className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-accent/50"
                   >
                     <RunStatusBadge status={req.status} />
-                    <span className="min-w-0 flex-1 truncate">{req.raw_prompt}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm">{req.raw_prompt}</span>
+                    <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/40" />
                   </Link>
                 ))
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </section>
         </div>
       </SectionReveal>
     </div>

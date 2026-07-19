@@ -12,7 +12,7 @@ import {
 import { loadProjectEnv } from "@/lib/env";
 import { fetchFirecrawlLive } from "@/lib/firecrawl-live";
 import { listJobs } from "@/lib/jobs";
-import { repairOrphanedRuns } from "@/lib/run-reconcile";
+import { repairOrphanedRunsThrottled } from "@/lib/run-reconcile";
 import type { CostDayRow, RequestRow, RunRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -30,21 +30,33 @@ export default async function CommandCenterPage() {
   let error = "";
 
   try {
-    await repairOrphanedRuns();
-    const [statsResult, runsResult, requestsResult, costSeries, creditBalances] =
+    const env = loadProjectEnv();
+    const firecrawlKey = env.FIRECRAWL_API_KEY ?? process.env.FIRECRAWL_API_KEY;
+    // Everything in parallel — sequential repair/Firecrawl was stacking seconds
+    // onto every home navigation.
+    const liveFirecrawl = firecrawlKey
+      ? Promise.race([
+          fetchFirecrawlLive(firecrawlKey),
+          new Promise<null>((resolve) => {
+            setTimeout(() => resolve(null), 1200);
+          }),
+        ]).catch(() => null)
+      : Promise.resolve(null);
+
+    const [, statsResult, runsResult, requestsResult, costSeries, creditBalances, live] =
       await Promise.all([
+        repairOrphanedRunsThrottled(),
         getOverview(),
         listRuns(10),
         listRequests(5),
         getCostSeries(14),
         getCreditBalances(),
+        liveFirecrawl,
       ]);
 
     const weekDays = costSeries.byDay.slice(-7);
     const usdThisWeek = weekDays.reduce((s, d) => s + d.usd, 0);
     const fcSnap = creditBalances.find((b) => b.provider === "firecrawl");
-    const env = loadProjectEnv();
-    const firecrawlKey = env.FIRECRAWL_API_KEY ?? process.env.FIRECRAWL_API_KEY;
     let fcBalance = fcSnap
       ? {
           remaining: fcSnap.remaining,
@@ -63,23 +75,18 @@ export default async function CommandCenterPage() {
           live: false,
         }
       : null;
-    if (firecrawlKey) {
-      try {
-        const live = await fetchFirecrawlLive(firecrawlKey);
-        fcBalance = {
-          remaining: live.remaining,
-          used: live.used,
-          plan: live.plan,
-          planName: live.planName,
-          billingPeriodEnd: live.billingPeriodEnd,
-          snapshotAt: live.snapshotAt,
-          extraCredits: live.extraCredits,
-          planConcurrency: live.planConcurrency,
-          live: true,
-        };
-      } catch {
-        // keep snapshot
-      }
+    if (live) {
+      fcBalance = {
+        remaining: live.remaining,
+        used: live.used,
+        plan: live.plan,
+        planName: live.planName,
+        billingPeriodEnd: live.billingPeriodEnd,
+        snapshotAt: live.snapshotAt,
+        extraCredits: live.extraCredits,
+        planConcurrency: live.planConcurrency,
+        live: true,
+      };
     }
 
     enrichedLeads = statsResult.enrichedLeads;
@@ -146,8 +153,8 @@ export default async function CommandCenterPage() {
         tone: "warning",
         hint:
           runningJobs > 0
-            ? `${cellsInFlight} market cell${cellsInFlight === 1 ? "" : "s"} in flight under local executions`
-            : "No local CLI executions running",
+            ? `${cellsInFlight} market cell${cellsInFlight === 1 ? "" : "s"} in flight`
+            : "No local CLI executions running — launch when ready",
       },
       {
         key: "ready",
@@ -155,7 +162,7 @@ export default async function CommandCenterPage() {
         count: statsResult.readyToCall,
         href: "/data?inventory=ready",
         tone: "success",
-        hint: "Grounded named decision-makers with local callable phones",
+        hint: "Named decision-makers with grounded local phones — the sellable queue",
       },
       {
         key: "partial",
@@ -163,7 +170,7 @@ export default async function CommandCenterPage() {
         count: statsResult.partialInventory,
         href: "/data?inventory=partial",
         tone: "secondary",
-        hint: "Callable phone on file without a verified named DM",
+        hint: "Phone on file, still missing a verified named DM — upgrade candidates",
       },
     ];
   } catch (err) {

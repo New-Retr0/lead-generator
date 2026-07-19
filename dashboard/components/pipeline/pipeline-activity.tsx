@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { Building2, Check } from "lucide-react";
 import { LiveDot } from "@/components/animated";
 import { duration, EASE } from "@/components/console/motion";
@@ -214,7 +215,7 @@ export function PipelineActivity({
   /** Replay finished (or scrubbed to the end) — show the settled list. */
   atEnd?: boolean;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const focusKey = canonicalStageId(focusStageId);
 
   /** One-at-a-time while live / playing; list once the film settles at the end. */

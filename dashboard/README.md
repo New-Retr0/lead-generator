@@ -26,11 +26,25 @@ Copy `SUPABASE_DB_URL` from the repo-root `.env`.
 
 ## Development
 
-```powershell
+```bash
 npm run dev
 ```
 
-Open **https://pallares.localhost** (Portless) or `npm run dev:direct` on port 3000.
+Opens **http://127.0.0.1:3000** (Turbopack). This is the Safari-stable path.
+
+### Optional: named Portless URL
+
+```bash
+npm run dev:portless
+```
+
+→ **https://pallares.localhost** (port 3456). HMR WebSockets often fail over Portless HTTPS; a small head script blocks JS `location.reload()` loops so the page stays interactive (live HMR may still be dead). For full HMR, prefer `npm run dev` + `http://127.0.0.1:3000`. After upgrading portless, restart the system proxy once (sudo):
+
+```bash
+npx portless proxy stop && npx portless proxy start
+npx portless hosts sync
+```
+
 
 This dashboard is the only in-repo app surface. It is a developer/operator/observer console for launching runs, monitoring providers and costs, inspecting evidence, and recording learning feedback. It is not a CRM; paying integrations use the Partner API.
 

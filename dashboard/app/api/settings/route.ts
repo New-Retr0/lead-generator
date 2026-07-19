@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runCli } from "@/lib/cli-exec";
 import { updateProjectEnv } from "@/lib/env-write";
+import { clearSettingsSchemaCache } from "@/lib/settings-server";
 
 export const dynamic = "force-dynamic";
 
@@ -82,6 +83,7 @@ export async function PUT(request: Request) {
     const result = updateProjectEnv(updates);
     cachedPayload = null;
     cachedAt = 0;
+    clearSettingsSchemaCache();
 
     const refreshed = await loadSettingsSchema(true);
     return NextResponse.json({ ok: true, ...result, ...refreshed });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listFilterOptions, listLeads } from "@/lib/db";
+import { listLeads } from "@/lib/db";
 import type { InventoryMode } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -24,8 +24,8 @@ export async function GET(req: NextRequest) {
         : undefined,
       limit: params.has("limit") ? Number(params.get("limit")) : 500,
     });
-    const filters = await listFilterOptions();
-    return NextResponse.json({ leads, filters });
+    // Filter option queries were unused by the Data explorer client.
+    return NextResponse.json({ leads });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load leads";
     return NextResponse.json({ error: message }, { status: 500 });

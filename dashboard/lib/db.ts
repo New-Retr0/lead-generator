@@ -8,6 +8,7 @@ import {
 } from "./lead-readiness";
 import { isLeadFinishedStage } from "./pipeline/stages";
 import { dbAvailable, getSql } from "./pg";
+import { createTtlCache } from "./ttl-cache";
 import type {
   CostSeries,
   CrmStatus,
@@ -275,111 +276,123 @@ function primaryPhone(data: EnrichedJson): string | null {
   return null;
 }
 
+/** Overview aggregates change slowly between runs — skip repeat SQL on tab hops. */
+const overviewTtl = createTtlCache<OverviewStats>(30_000);
+
 export const getOverview = cache(async function getOverview(): Promise<OverviewStats> {
+  const cached = overviewTtl.get();
+  if (cached) return cached;
   if (!dbAvailable()) return emptyOverview();
   const sql = getSql();
-
-  const totalRow = await sql`SELECT COUNT(*)::int AS n FROM leads`;
-  const totalLeads = totalRow[0]?.n as number;
-
-  const enrichedRow =
-    await sql`SELECT COUNT(*)::int AS n FROM leads WHERE enriched_json IS NOT NULL`;
-  const enrichedLeads = enrichedRow[0]?.n as number;
-
-  const readyRow = await sql`
-    SELECT COUNT(*)::int AS n
-    FROM leads
-    WHERE lower(COALESCE(enrichment_status, '')) NOT IN (
-        'skipped', 'needs_manual', 'enriching'
-      )
-      AND public.is_verified_decision_maker(
-        enriched_json,
-        enriched_json ->> 'verification_level'
-      )
-  `;
-  const readyToCall = Number(readyRow[0]?.n ?? 0);
-
-  const partialRow = await sql`
-    SELECT COUNT(*)::int AS n
-    FROM leads
-    WHERE enriched_json IS NOT NULL
-      AND lower(COALESCE(enrichment_status, '')) NOT IN (
-        'skipped', 'needs_manual', 'enriching'
-      )
-      AND COALESCE(enriched_json->>'verification_level', 'unverified') = 'partial'
-  `;
-  const partialInventory = Number(partialRow[0]?.n ?? 0);
 
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
   const monthIso = monthStart.toISOString();
 
-  const creditsRow = await sql`
-    SELECT COALESCE(SUM(units), 0)::float AS credits
-    FROM cost_events
-    WHERE provider = 'firecrawl' AND created_at >= ${monthIso}
-  `;
-  const creditsThisMonth = Number(creditsRow[0]?.credits ?? 0);
-
-  const attributedCreditsRow = await sql`
-    SELECT COALESCE(SUM(ce.units), 0)::float AS credits
-    FROM cost_events ce
-    JOIN leads l ON l.place_id = ce.place_id
-    WHERE ce.provider = 'firecrawl'
-      AND ce.created_at >= ${monthIso}
-      AND ce.place_id IS NOT NULL
-      AND public.is_verified_decision_maker(
-        l.enriched_json,
-        l.enriched_json ->> 'verification_level'
-      )
-  `;
-  const attributedCredits = Number(attributedCreditsRow[0]?.credits ?? 0);
-
-  const efficiencyRows = await sql`
-    SELECT
-      COUNT(*) FILTER (
-        WHERE public.is_verified_decision_maker(
+  // Parallelize independent aggregates — sequential round-trips were 4–13s on /.
+  const [
+    totalRow,
+    enrichedRow,
+    readyRow,
+    partialRow,
+    creditsRow,
+    attributedCreditsRow,
+    efficiencyRows,
+    browserUseRow,
+    providerRows,
+    balances,
+  ] = await Promise.all([
+    sql`SELECT COUNT(*)::int AS n FROM leads`,
+    sql`SELECT COUNT(*)::int AS n FROM leads WHERE enriched_json IS NOT NULL`,
+    sql`
+      SELECT COUNT(*)::int AS n
+      FROM leads
+      WHERE lower(COALESCE(enrichment_status, '')) NOT IN (
+          'skipped', 'needs_manual', 'enriching'
+        )
+        AND public.is_verified_decision_maker(
+          enriched_json,
+          enriched_json ->> 'verification_level'
+        )
+    `,
+    sql`
+      SELECT COUNT(*)::int AS n
+      FROM leads
+      WHERE enriched_json IS NOT NULL
+        AND lower(COALESCE(enrichment_status, '')) NOT IN (
+          'skipped', 'needs_manual', 'enriching'
+        )
+        AND COALESCE(enriched_json->>'verification_level', 'unverified') = 'partial'
+    `,
+    sql`
+      SELECT COALESCE(SUM(units), 0)::float AS credits
+      FROM cost_events
+      WHERE provider = 'firecrawl' AND created_at >= ${monthIso}
+    `,
+    sql`
+      SELECT COALESCE(SUM(ce.units), 0)::float AS credits
+      FROM cost_events ce
+      JOIN leads l ON l.place_id = ce.place_id
+      WHERE ce.provider = 'firecrawl'
+        AND ce.created_at >= ${monthIso}
+        AND ce.place_id IS NOT NULL
+        AND public.is_verified_decision_maker(
           l.enriched_json,
           l.enriched_json ->> 'verification_level'
         )
-      )::int AS verified_count,
-      COALESCE((
-        SELECT SUM(re.duration_ms)
-        FROM run_events re
-        JOIN leads duration_lead ON duration_lead.place_id = re.place_id
-        WHERE re.stage = 'lead_done'
-          AND re.created_at >= ${monthIso}
-          AND re.duration_ms IS NOT NULL
-          AND public.is_verified_decision_maker(
-            duration_lead.enriched_json,
-            duration_lead.enriched_json ->> 'verification_level'
+    `,
+    sql`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE public.is_verified_decision_maker(
+            l.enriched_json,
+            l.enriched_json ->> 'verification_level'
           )
-      ), 0)::float AS verified_duration_ms
-    FROM leads l
-    WHERE l.last_enriched_at >= ${monthIso}
-  `;
+        )::int AS verified_count,
+        COALESCE((
+          SELECT SUM(re.duration_ms)
+          FROM run_events re
+          JOIN leads duration_lead ON duration_lead.place_id = re.place_id
+          WHERE re.stage = 'lead_done'
+            AND re.created_at >= ${monthIso}
+            AND re.duration_ms IS NOT NULL
+            AND public.is_verified_decision_maker(
+              duration_lead.enriched_json,
+              duration_lead.enriched_json ->> 'verification_level'
+            )
+        ), 0)::float AS verified_duration_ms
+      FROM leads l
+      WHERE l.last_enriched_at >= ${monthIso}
+    `,
+    sql`
+      SELECT COALESCE(SUM(usd), 0)::float AS usd
+      FROM cost_events
+      WHERE provider = 'browser_use' AND created_at >= ${monthIso}
+    `,
+    sql`
+      SELECT provider,
+             unit_type,
+             COALESCE(SUM(usd), 0)::float AS usd,
+             COALESCE(SUM(units), 0)::float AS units,
+             COUNT(*)::int AS count
+      FROM cost_events
+      WHERE created_at >= ${monthIso}
+      GROUP BY provider, unit_type
+      ORDER BY usd DESC
+    `,
+    getCreditBalances(),
+  ]);
+
+  const totalLeads = totalRow[0]?.n as number;
+  const enrichedLeads = enrichedRow[0]?.n as number;
+  const readyToCall = Number(readyRow[0]?.n ?? 0);
+  const partialInventory = Number(partialRow[0]?.n ?? 0);
+  const creditsThisMonth = Number(creditsRow[0]?.credits ?? 0);
+  const attributedCredits = Number(attributedCreditsRow[0]?.credits ?? 0);
   const verifiedThisMonth = Number(efficiencyRows[0]?.verified_count ?? 0);
   const verifiedDurationMs = Number(efficiencyRows[0]?.verified_duration_ms ?? 0);
-
-  const browserUseRow = await sql`
-    SELECT COALESCE(SUM(usd), 0)::float AS usd
-    FROM cost_events
-    WHERE provider = 'browser_use' AND created_at >= ${monthIso}
-  `;
   const browserUseUsdThisMonth = Number(browserUseRow[0]?.usd ?? 0);
-
-  const providerRows = await sql`
-    SELECT provider,
-           unit_type,
-           COALESCE(SUM(usd), 0)::float AS usd,
-           COALESCE(SUM(units), 0)::float AS units,
-           COUNT(*)::int AS count
-    FROM cost_events
-    WHERE created_at >= ${monthIso}
-    GROUP BY provider, unit_type
-    ORDER BY usd DESC
-  `;
 
   const merged = new Map<string, OverviewStats["usdByProvider"][number]>();
   for (const row of providerRows) {
@@ -410,7 +423,7 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
       ? "Month-wide Firecrawl credits ÷ verified DMs (place_id attribution unavailable for most events)"
       : null;
 
-  return {
+  return overviewTtl.set({
     totalLeads,
     enrichedLeads,
     readyToCall,
@@ -432,8 +445,8 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
       verifiedDm: readyToCall,
     },
     usdByProvider,
-    balances: await getCreditBalances(),
-  };
+    balances,
+  });
 });
 
 export const listLeads = cache(async function listLeads(filters?: {
@@ -842,23 +855,23 @@ export const getLeadDetail = cache(async function getLeadDetail(placeId: string)
     .map((part) => (typeof part === "string" ? part.trim() : ""))
     .filter(Boolean);
 
-  const fbRows = await sql`
-    SELECT status FROM sales_feedback WHERE place_id = ${placeId}
-  `;
-  const crmStatus: CrmStatus = (fbRows[0]?.status as CrmStatus) || "New";
   const leadType: LeadType = (row.category_key as string | null)?.startsWith("vendor_")
     ? "vendor"
     : "client";
 
   // Canonical provenance ledger (includes rejected extractions). Fall back to
   // enriched_json.facts for older rows that never wrote lead_facts.
-  const factRows = await sql`
-    SELECT fact_kind, value_json, source_kind, source_url, method, quote,
-           verification, observed_at
-    FROM lead_facts
-    WHERE place_id = ${placeId}
-    ORDER BY observed_at ASC NULLS LAST, id ASC
-  `;
+  const [fbRows, factRows] = await Promise.all([
+    sql`SELECT status FROM sales_feedback WHERE place_id = ${placeId}`,
+    sql`
+      SELECT fact_kind, value_json, source_kind, source_url, method, quote,
+             verification, observed_at
+      FROM lead_facts
+      WHERE place_id = ${placeId}
+      ORDER BY observed_at ASC NULLS LAST, id ASC
+    `,
+  ]);
+  const crmStatus: CrmStatus = (fbRows[0]?.status as CrmStatus) || "New";
   const factsFromTable = factRows.map((f) => mapLeadFactRow(f as Record<string, unknown>));
   const factsFromJson = Array.isArray(data.facts)
     ? (data.facts as Record<string, unknown>[]).map((f) => mapLeadFactRecord(f))
@@ -1437,7 +1450,23 @@ export const listRequests = cache(async function listRequests(limit = 50): Promi
   }));
 });
 
+/** Historical cost rollups — 30s is plenty between operator navigations. */
+const costSeriesTtl = new Map<number, ReturnType<typeof createTtlCache<CostSeries>>>();
+
+function costSeriesCache(days: number) {
+  let entry = costSeriesTtl.get(days);
+  if (!entry) {
+    entry = createTtlCache<CostSeries>(30_000);
+    costSeriesTtl.set(days, entry);
+  }
+  return entry;
+}
+
 export const getCostSeries = cache(async function getCostSeries(days = 30): Promise<CostSeries> {
+  const ttl = costSeriesCache(days);
+  const cached = ttl.get();
+  if (cached) return cached;
+
   if (!dbAvailable()) {
     return {
       byDay: [],
@@ -1458,16 +1487,81 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
   const sinceDate = since.toISOString().slice(0, 10);
   const sinceIso = since.toISOString();
 
-  const byDayRows = await sql`
-    SELECT date,
-           usd,
-           firecrawl_credits,
-           browser_use_usd,
-           google_places_usd
-    FROM cost_by_day
-    WHERE date >= ${sinceDate}
-    ORDER BY date
-  `;
+  const [
+    byDayRows,
+    providerRows,
+    byOperationRows,
+    byRunRows,
+    byModelRows,
+    byMarketRows,
+    byHourRows,
+    snapshotRows,
+    balances,
+  ] = await Promise.all([
+    sql`
+      SELECT date,
+             usd,
+             firecrawl_credits,
+             browser_use_usd,
+             google_places_usd
+      FROM cost_by_day
+      WHERE date >= ${sinceDate}
+      ORDER BY date
+    `,
+    sql`
+      SELECT provider, unit_type,
+             COALESCE(SUM(usd), 0)::float AS usd,
+             COALESCE(SUM(units), 0)::float AS units,
+             COUNT(*)::bigint AS event_count
+      FROM cost_events
+      WHERE created_at >= ${sinceIso}
+      GROUP BY provider, unit_type
+      ORDER BY usd DESC
+    `,
+    sql`
+      SELECT provider, operation, unit_type,
+             COALESCE(SUM(usd), 0)::float AS usd,
+             COUNT(*)::int AS count
+      FROM cost_events
+      WHERE created_at >= ${sinceIso}
+      GROUP BY provider, operation, unit_type
+      ORDER BY usd DESC
+      LIMIT 20
+    `,
+    sql`
+      SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
+             enriched_count, status, usd, firecrawl_credits, event_count, usd_per_enriched_lead
+      FROM cost_by_run
+      WHERE started_at >= ${sinceIso}
+      ORDER BY started_at DESC
+      LIMIT 50
+    `,
+    sql`
+      SELECT provider, model, operation, unit_type, units, usd, event_count
+      FROM cost_by_model
+      ORDER BY usd DESC
+      LIMIT 30
+    `,
+    sql`
+      SELECT market_key, category_key, usd, firecrawl_credits, run_count, event_count
+      FROM cost_by_market
+      ORDER BY usd DESC
+      LIMIT 30
+    `,
+    sql`
+      SELECT hour, usd, firecrawl_credits, event_count
+      FROM cost_by_hour
+      ORDER BY hour
+    `,
+    sql`
+      SELECT snapshot_json
+      FROM credit_snapshots
+      WHERE provider = 'firecrawl'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    getCreditBalances(),
+  ]);
 
   const byDay = byDayRows.map((row) => ({
     date: String(row.date),
@@ -1476,17 +1570,6 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
     browserUseUsd: Number(row.browser_use_usd),
     googlePlacesUsd: Number(row.google_places_usd),
   }));
-
-  const providerRows = await sql`
-    SELECT provider, unit_type,
-           COALESCE(SUM(usd), 0)::float AS usd,
-           COALESCE(SUM(units), 0)::float AS units,
-           COUNT(*)::bigint AS event_count
-    FROM cost_events
-    WHERE created_at >= ${sinceIso}
-    GROUP BY provider, unit_type
-    ORDER BY usd DESC
-  `;
 
   const mergedProviders = new Map<string, CostSeries["byProvider"][number]>();
   for (const row of providerRows) {
@@ -1511,58 +1594,9 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
   }
   const byProvider = [...mergedProviders.values()].sort((a, b) => b.usd - a.usd);
 
-  const byOperationRows = await sql`
-    SELECT provider, operation, unit_type,
-           COALESCE(SUM(usd), 0)::float AS usd,
-           COUNT(*)::int AS count
-    FROM cost_events
-    WHERE created_at >= ${sinceIso}
-    GROUP BY provider, operation, unit_type
-    ORDER BY usd DESC
-    LIMIT 20
-  `;
-
-  const byRunRows = await sql`
-    SELECT run_id, started_at, finished_at, run_type, market_key, category_key,
-           enriched_count, status, usd, firecrawl_credits, event_count, usd_per_enriched_lead
-    FROM cost_by_run
-    WHERE started_at >= ${sinceIso}
-    ORDER BY started_at DESC
-    LIMIT 50
-  `;
-
-  const byModelRows = await sql`
-    SELECT provider, model, operation, unit_type, units, usd, event_count
-    FROM cost_by_model
-    ORDER BY usd DESC
-    LIMIT 30
-  `;
-
-  const byMarketRows = await sql`
-    SELECT market_key, category_key, usd, firecrawl_credits, run_count, event_count
-    FROM cost_by_market
-    ORDER BY usd DESC
-    LIMIT 30
-  `;
-
-  const byHourRows = await sql`
-    SELECT hour, usd, firecrawl_credits, event_count
-    FROM cost_by_hour
-    ORDER BY hour
-  `;
-
-  const snapshotRows = await sql`
-    SELECT snapshot_json
-    FROM credit_snapshots
-    WHERE provider = 'firecrawl'
-    ORDER BY created_at DESC
-    LIMIT 1
-  `;
-
-  const balances = await getCreditBalances();
   const firecrawlBalance = balances.find((b) => b.provider === "firecrawl");
 
-  return {
+  return ttl.set({
     byDay,
     byProvider,
     byOperation: byOperationRows.map((row) => ({
@@ -1616,7 +1650,7 @@ export const getCostSeries = cache(async function getCostSeries(days = 30): Prom
       snapshotRows[0]?.snapshot_json,
     ),
     balances,
-  };
+  });
 });
 
 export const listFilterOptions = cache(async function listFilterOptions(): Promise<{

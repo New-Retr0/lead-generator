@@ -13,7 +13,7 @@ function needsAuth(pathname: string, method: string): boolean {
   return isMutating(method);
 }
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (!needsAuth(pathname, req.method)) {
     return NextResponse.next();

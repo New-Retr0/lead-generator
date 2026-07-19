@@ -87,7 +87,7 @@ export function RunsPageClient({
     jobs.some((j) => j.status === "running" || j.status === "pending");
 
   useEffect(() => {
-    refreshRuns();
+    // SSR already hydrated runs/jobs — don't immediately re-hit /api/runs.
     const id = window.setInterval(refreshRuns, 10_000);
     return () => window.clearInterval(id);
   }, [refreshRuns]);

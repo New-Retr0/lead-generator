@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "npm --prefix dashboard run dev",
+    "dev:portless": "npm --prefix dashboard run dev:portless",
     "dev:direct": "npm --prefix dashboard run dev:direct",
     "build": "npm --prefix dashboard run build",
     "start": "npm --prefix dashboard run start",

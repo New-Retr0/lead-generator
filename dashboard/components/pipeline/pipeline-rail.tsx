@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import {
   Flame,
   MapPin,
@@ -108,7 +109,7 @@ export function PipelineRail({
   reachedStages: Set<string>;
   onSelect: (stageId: string) => void;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const focusIndex = stageIndex(focusId);
   const last = Math.max(PIPELINE_STAGES.length - 1, 1);

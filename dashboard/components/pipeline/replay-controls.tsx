@@ -16,6 +16,7 @@ import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { StageStat } from "@/lib/pipeline/rollup";
 import type { PipelineTimelineEntry } from "@/lib/pipeline/stages";
+import { timelineBounds } from "@/lib/pipeline/studio";
 
 const SPEEDS = [1, 2, 4] as const;
 const REPLAY_STATE_STORAGE_PREFIX = "pipeline-replay-state";
@@ -54,17 +55,10 @@ export function ReplayControls({
   const rafRef = useRef<number | null>(null);
   const lastTick = useRef<number | null>(null);
 
-  const bounds = useMemo(() => {
-    if (timeline.length === 0) {
-      // eslint-disable-next-line react-hooks/purity -- fallback window when timeline empty
-      const start = runStartedAt ? new Date(runStartedAt).getTime() : Date.now();
-      const end = runEndedAt ? new Date(runEndedAt).getTime() : start + 60_000;
-      return { start, end: Math.max(end, start + 1000) };
-    }
-    const start = new Date(timeline[0].ts).getTime();
-    const end = new Date(timeline[timeline.length - 1].ts).getTime();
-    return { start, end: Math.max(end, start + 1000) };
-  }, [timeline, runStartedAt, runEndedAt]);
+  const bounds = useMemo(
+    () => timelineBounds(timeline, runStartedAt, runEndedAt),
+    [timeline, runStartedAt, runEndedAt],
+  );
 
   const currentMs = virtualMs ?? bounds.end;
   const progress =
@@ -273,11 +267,24 @@ function readStoredReplayState(runId: string | null, isLive: boolean): StoredRep
 
 export function useReplayState(runId: string | null, isLive: boolean) {
   const [playing, setPlaying] = useState(false);
-  const initialState = useMemo(() => readStoredReplayState(runId, isLive), [runId, isLive]);
-  const [virtualMs, setVirtualMs] = useState<number | null>(initialState.virtualMs);
-  const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(initialState.speed);
-  const virtualMsRef = useRef<number | null>(initialState.virtualMs);
-  const speedRef = useRef<(typeof SPEEDS)[number]>(initialState.speed);
+  // Defaults only on first paint — localStorage is loaded after mount to avoid
+  // SSR/client hydration mismatches.
+  const [virtualMs, setVirtualMs] = useState<number | null>(DEFAULT_REPLAY_STATE.virtualMs);
+  const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(DEFAULT_REPLAY_STATE.speed);
+  const virtualMsRef = useRef<number | null>(DEFAULT_REPLAY_STATE.virtualMs);
+  const speedRef = useRef<(typeof SPEEDS)[number]>(DEFAULT_REPLAY_STATE.speed);
+
+  useEffect(() => {
+    const stored = readStoredReplayState(runId, isLive);
+    virtualMsRef.current = stored.virtualMs;
+    speedRef.current = stored.speed;
+    // Defer so we don't sync-setState inside the effect body (React Compiler lint).
+    const boot = window.setTimeout(() => {
+      setVirtualMs(stored.virtualMs);
+      setSpeed(stored.speed);
+    }, 0);
+    return () => window.clearTimeout(boot);
+  }, [runId, isLive]);
 
   const persistNow = useCallback(() => {
     if (!runId || isLive || typeof window === "undefined") return;

@@ -12,7 +12,7 @@ import {
   Stethoscope,
   XCircle,
 } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   AnimatedNumber,
   LiveDot,
@@ -21,6 +21,7 @@ import {
 } from "@/components/animated";
 import { doctorReveal, liveState, progress, spring } from "@/components/console/motion";
 import { Button } from "@/components/ui/button";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { useJobStream } from "@/hooks/use-job-stream";
 import { cn } from "@/lib/utils";
 
@@ -237,7 +238,7 @@ function checkLayoutId(service: string): string {
 function CheckRow({ check }: { check: HealthCheck }) {
   const meta = STATUS_META[check.status];
   const Icon = meta.icon;
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
 
   return (
     <motion.div
@@ -303,7 +304,7 @@ function CheckRow({ check }: { check: HealthCheck }) {
 }
 
 function PendingCheckRow({ service, active }: { service: string; active: boolean }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
 
   return (
     <motion.div
@@ -350,12 +351,16 @@ function PendingCheckRow({ service, active }: { service: string; active: boolean
           <p className="mt-1 text-xs leading-snug text-muted-foreground">
             {active ? "Checking service…" : "Waiting in sequence"}
           </p>
-          {active && !reduced ? (
+          {active ? (
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-primary/15">
               <motion.div
                 className="h-full w-1/2 rounded-full bg-primary/70"
-                animate={{ x: ["-60%", "160%"] }}
-                transition={{ duration: 1.25, ease: "linear", repeat: Infinity }}
+                animate={reduced ? undefined : { x: ["-60%", "160%"] }}
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { duration: 1.25, ease: "linear", repeat: Infinity }
+                }
               />
             </div>
           ) : null}
@@ -403,7 +408,8 @@ export function DoctorHealthPanel({
   jobId: string;
   onDone?: (status: string) => void;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
+  const instantReveal = reduced;
   const { lines, status, phase, retry } = useJobStream({ jobId, onDone });
   const [showRaw, setShowRaw] = useState(false);
   const [revealedCount, setRevealedCount] = useState(0);
@@ -415,17 +421,17 @@ export function DoctorHealthPanel({
   // Pace reveals (~520ms each) so a fast JSON dump doesn't flash every row at once.
   // Remount via key={jobId} resets revealedCount for a new health check.
   useEffect(() => {
-    if (reduced) return;
+    if (instantReveal) return;
     if (checks.length <= revealedCount) return;
     const timer = window.setTimeout(() => {
       setRevealedCount((n) => Math.min(n + 1, checks.length));
     }, doctorReveal.stepMs);
     return () => window.clearTimeout(timer);
-  }, [checks.length, revealedCount, reduced]);
+  }, [checks.length, revealedCount, instantReveal]);
 
-  const visibleCount = reduced ? checks.length : revealedCount;
+  const visibleCount = instantReveal ? checks.length : revealedCount;
   const visibleChecks = checks.slice(0, visibleCount);
-  const revealing = !reduced && visibleCount < checks.length;
+  const revealing = !instantReveal && visibleCount < checks.length;
   const working = streamRunning || revealing;
   const passedChecks = visibleChecks.filter((c) => c.status === "ok").length;
   const warnChecks = visibleChecks.filter((c) => c.status === "warn").length;
@@ -441,9 +447,9 @@ export function DoctorHealthPanel({
     const scrollArea = scrollAreaRef.current;
     scrollArea?.scrollTo({
       top: scrollArea.scrollHeight,
-      behavior: reduced ? "auto" : "smooth",
+      behavior: instantReveal ? "auto" : "smooth",
     });
-  }, [visibleChecks.length, pendingChecks.length, reduced, showRaw]);
+  }, [visibleChecks.length, pendingChecks.length, instantReveal, showRaw]);
 
   const headline = working
     ? revealing && !streamRunning
@@ -459,7 +465,7 @@ export function DoctorHealthPanel({
 
   return (
     <div className="panel-strong panel-sheen flex h-[min(64dvh,660px)] min-h-0 flex-col overflow-hidden rounded-2xl">
-      {working && !reduced ? (
+      {working && !instantReveal ? (
         <div className={progress.trackClass}>
           <motion.div
             className={progress.fillClass}
@@ -488,7 +494,7 @@ export function DoctorHealthPanel({
                       : "bg-gradient-to-br from-destructive to-destructive/80",
                 )}
               >
-                {working && !reduced ? (
+                {working && !instantReveal ? (
                   <motion.span
                     animate={{ rotate: liveState.spinner.rotate }}
                     transition={liveState.spinner.transition}

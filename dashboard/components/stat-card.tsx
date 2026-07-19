@@ -3,9 +3,10 @@
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { ChevronDown } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { Card, CardContent } from "@/components/ui/card";
 import { AnimatedNumber } from "@/components/animated";
+import { useHydrated, useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { cn } from "@/lib/utils";
 
 const TONE_ICON_STYLES = {
@@ -38,7 +39,10 @@ export function StatCard({
   onClick?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const reduced = useReducedMotion();
+  const hydrated = useHydrated();
+  const reduced = useSafeReducedMotion();
+  // Static expand path until hydrated so SSR/client markup matches.
+  const useMotionExpand = hydrated && !reduced;
   const iconStyles = TONE_ICON_STYLES[tone];
   const showExpand = expandable && (details?.length ?? 0) > 0;
   const clickable = Boolean(onClick);
@@ -103,7 +107,7 @@ export function StatCard({
                 className={cn("size-3 transition-transform", open && "rotate-180")}
               />
             </button>
-            {reduced ? (
+            {!useMotionExpand ? (
               open ? (
                 <dl className="mt-1 space-y-0">
                   {details!.map((d) => (

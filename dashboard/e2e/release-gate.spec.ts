@@ -61,7 +61,7 @@ test.describe("Visual smoke", () => {
 test.describe("Visual smoke · reduced motion", () => {
   test.use({
     viewport: { width: 1280, height: 800 },
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
   });
 
   test("command center reduced-motion screenshot", async ({ page }) => {

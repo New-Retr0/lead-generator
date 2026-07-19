@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { duration, EASE } from "@/components/console/motion";
 import { SpringUsd } from "@/components/pipeline/spring-usd";
 import { getStageDef, providerColor, type PipelineCostEvent } from "@/lib/pipeline/stages";
@@ -20,7 +21,7 @@ export function PipelineSpendReel({
   onFocusStage: (stageId: string) => void;
   playing?: boolean;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const groups = useMemo(() => rollupCosts(costs, 2), [costs]);
   const totalUsd = useMemo(
     () => groups.reduce((sum, g) => sum + g.usd, 0),

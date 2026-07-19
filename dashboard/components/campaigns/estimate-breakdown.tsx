@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { AnimatedNumber } from "@/components/animated";
 import type { FirecrawlPlan } from "@/lib/types";
 import { cn, formatCredits, formatUsd, formatUsdPrecise } from "@/lib/utils";
@@ -55,7 +56,7 @@ export function EstimateBreakdown({
   firecrawlBalance?: FirecrawlEstimateBalance | null;
   compact?: boolean;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
 
   if (!estimate?.estimatedCredits && estimate?.estimatedFirecrawlUsd == null) {
     return (

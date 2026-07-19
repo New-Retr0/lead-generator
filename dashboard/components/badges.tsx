@@ -85,6 +85,12 @@ export function StopReasonBadge({
 }) {
   const resolved = resolveStopReason(reason, status, discoveredCount);
   if (!resolved) return null;
+  // Avoid "FAILED · FAILED" when status and stop_reason are the same signal.
+  if (status && resolved.replace(/_/g, " ") === status.replace(/_/g, " ")) {
+    return null;
+  }
+  if (status === "failed" && resolved === "failed") return null;
+  if (status === "cancelled" && resolved === "cancelled") return null;
   const label = resolved.replace(/_/g, " ");
   const title = detail?.trim() ? detail : undefined;
   const variant = STOP_REASON_VARIANT[resolved] ?? "outline";

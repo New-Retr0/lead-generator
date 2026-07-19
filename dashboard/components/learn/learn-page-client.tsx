@@ -128,7 +128,7 @@ export function LearnPageClient({
               </p>
               <p className="text-xs text-muted-foreground">
                 {report
-                  ? new Date(report.created_at).toLocaleString()
+                  ? new Date(report.created_at).toLocaleString("en-US")
                   : "Run `pallares-leads insights`"}
               </p>
             </CardContent>

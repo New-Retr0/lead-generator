@@ -1,5 +1,6 @@
 import { listConfigFiles, readConfigFile, type ConfigFileSummary } from "./config-files";
 import { runCli } from "./cli-exec";
+import { createTtlCache } from "./ttl-cache";
 
 export type SettingsSchemaPayload = {
   schema: {
@@ -23,12 +24,20 @@ export type SettingsSchemaPayload = {
   readonly_fields?: string[];
 };
 
+const settingsSchemaTtl = createTtlCache<SettingsSchemaPayload>(60_000);
+
+export function clearSettingsSchemaCache() {
+  settingsSchemaTtl.clear();
+}
+
 export async function fetchSettingsSchema(): Promise<SettingsSchemaPayload> {
-  const { stdout, stderr, code } = await runCli(["settings-schema"]);
-  if (code !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || "settings-schema failed");
-  }
-  return JSON.parse(stdout) as SettingsSchemaPayload;
+  return settingsSchemaTtl.getOrSet(async () => {
+    const { stdout, stderr, code } = await runCli(["settings-schema"]);
+    if (code !== 0) {
+      throw new Error(stderr.trim() || stdout.trim() || "settings-schema failed");
+    }
+    return JSON.parse(stdout) as SettingsSchemaPayload;
+  });
 }
 
 export function fetchConfigFileList(): ConfigFileSummary[] {

@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState } from "react";
-import { ResponsiveContainer } from "recharts";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export type ChartConfig = Record<
@@ -19,22 +18,50 @@ export function ChartContainer({
 }: {
   config: ChartConfig;
   className?: string;
-  children: React.ReactElement;
+  children: React.ReactElement<{ width?: number; height?: number }>;
 }) {
-  const [mounted, setMounted] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
-    setMounted(true);
+    const el = ref.current;
+    if (!el) return;
+
+    const update = () => {
+      const { width, height } = el.getBoundingClientRect();
+      if (width > 1 && height > 1) {
+        setSize({ w: Math.floor(width), h: Math.floor(height) });
+      }
+    };
+
+    update();
+    // Fallback if layout is delayed (Safari / absolute parents / first paint).
+    const fallback = window.setTimeout(() => {
+      if (!ref.current) return;
+      const { width, height } = ref.current.getBoundingClientRect();
+      if (width > 1 && height > 1) {
+        setSize({ w: Math.floor(width), h: Math.floor(height) });
+      } else {
+        setSize({ w: 480, h: 176 });
+      }
+    }, 32);
+
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      window.clearTimeout(fallback);
+      ro.disconnect();
+    };
   }, []);
 
   return (
     <ChartContext.Provider value={{ config }}>
-      <div className={cn("h-full min-h-32 w-full min-w-0", className)}>
-        {mounted ? (
-          <ResponsiveContainer width="100%" height="100%">
-            {children}
-          </ResponsiveContainer>
-        ) : null}
+      <div ref={ref} className={cn("relative h-full min-h-32 w-full min-w-0", className)}>
+        {size
+          ? React.cloneElement(children, { width: size.w, height: size.h })
+          : (
+            <div className="h-full min-h-32 w-full animate-pulse rounded-md bg-muted/40" />
+          )}
       </div>
     </ChartContext.Provider>
   );

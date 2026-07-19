@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { JobStream } from "@/hooks/use-job-stream";
+import { useNow } from "@/hooks/use-now";
 import { latestRunId, nowLine, recentLogTail } from "@/lib/job-activity";
 import { cn } from "@/lib/utils";
 
@@ -41,13 +42,9 @@ export function ActiveJobDock({
   stream: JobStream;
 }) {
   const { status, phase, lines, events } = stream;
-  const [now, setNow] = useState(() => Date.now());
+  // Start at 0 so SSR and the hydration pass agree; wall clock starts after mount.
+  const now = useNow(15_000);
   const [detached, setDetached] = useState(false);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 15_000);
-    return () => window.clearInterval(id);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;

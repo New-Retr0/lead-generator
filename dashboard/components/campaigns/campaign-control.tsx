@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -37,6 +37,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { apiFetch } from "@/lib/api-client";
 import { cn, formatCredits, formatUsd } from "@/lib/utils";
 import type { JobStatus } from "@/lib/types";
@@ -409,14 +410,18 @@ function axesFromJobArgs(
 }
 
 export function CampaignControl() {
-  const reducedMotion = useReducedMotion();
+  // Avoid SSR/client tree swaps from prefers-reduced-motion resolving late.
+  const reducedMotion = useSafeReducedMotion();
   const [campaigns, setCampaigns] = useState<CampaignInfo[]>([]);
   const [selected, setSelected] = useState<string>("central_valley");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [stateConfigs, setStateConfigs] = useState<Record<string, CampaignConfigState>>({});
   const [stateEstimates, setStateEstimates] = useState<Record<string, EstimateData | null>>({});
   const [credits, setCredits] = useState<CreditsData | null>(null);
-  const [staged, setStaged] = useState<StagedCampaign[]>(() => loadStagedFromStorage());
+  // Always start empty so SSR HTML matches the first client paint; hydrate from
+  // localStorage after mount (see useEffect below).
+  const [staged, setStaged] = useState<StagedCampaign[]>([]);
+  const [stagedStorageReady, setStagedStorageReady] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [resumedNotice, setResumedNotice] = useState<string | null>(null);
   const [externalActiveJobId, setExternalActiveJobId] = useState<string | null>(null);
@@ -435,9 +440,21 @@ export function CampaignControl() {
   }, [campaigns]);
 
   useEffect(() => {
+    // Defer so we don't sync-setState inside the effect body (React Compiler lint).
+    const boot = window.setTimeout(() => {
+      const loaded = loadStagedFromStorage();
+      stagedRef.current = loaded;
+      setStaged(loaded);
+      setStagedStorageReady(true);
+    }, 0);
+    return () => window.clearTimeout(boot);
+  }, []);
+
+  useEffect(() => {
+    if (!stagedStorageReady) return;
     stagedRef.current = staged;
     saveStagedToStorage(staged);
-  }, [staged]);
+  }, [staged, stagedStorageReady]);
 
   useEffect(() => {
     const persistNow = () => {
@@ -1007,19 +1024,10 @@ export function CampaignControl() {
             return (
               <StaggerItem key={state.key}>
                 <div
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Select ${state.name} campaign estimate`}
-                  aria-pressed={selected === state.key}
+                  data-selected={selected === state.key || undefined}
                   onClick={() => selectState(state.key)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      selectState(state.key);
-                    }
-                  }}
                   className={cn(
-                    "hover-lift panel w-full cursor-pointer rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "hover-lift panel w-full cursor-pointer rounded-xl border p-4 text-left transition-colors",
                     selected === state.key && "border-primary/50 ring-1 ring-primary/20",
                   )}
                 >

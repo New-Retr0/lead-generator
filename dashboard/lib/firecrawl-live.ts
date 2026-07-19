@@ -4,6 +4,7 @@ import {
   inferFirecrawlPlan,
 } from "@/lib/config";
 import { dbAvailable, getSql } from "@/lib/pg";
+import { createTtlCache } from "@/lib/ttl-cache";
 import type { FirecrawlPlan } from "@/lib/types";
 
 export type FirecrawlQueueStatus = {
@@ -32,6 +33,10 @@ export type FirecrawlLiveBalance = {
   live: boolean;
   snapshotAt: string;
 };
+
+/** Live Firecrawl balance — shared by home + /api/credits (was uncached on /). */
+const firecrawlLiveTtl = createTtlCache<FirecrawlLiveBalance>(60_000);
+let firecrawlLiveInflight: Promise<FirecrawlLiveBalance> | null = null;
 
 const emptyQueue = (): FirecrawlQueueStatus => ({
   jobsInQueue: null,
@@ -67,6 +72,21 @@ async function persistCreditSnapshot(payload: {
 }
 
 export async function fetchFirecrawlLive(apiKey: string): Promise<FirecrawlLiveBalance> {
+  const hit = firecrawlLiveTtl.get();
+  if (hit) return hit;
+  if (firecrawlLiveInflight) return firecrawlLiveInflight;
+
+  firecrawlLiveInflight = fetchFirecrawlLiveUncached(apiKey)
+    .then((value) => firecrawlLiveTtl.set(value))
+    .finally(() => {
+      firecrawlLiveInflight = null;
+    });
+  return firecrawlLiveInflight;
+}
+
+async function fetchFirecrawlLiveUncached(
+  apiKey: string,
+): Promise<FirecrawlLiveBalance> {
   const [usageRes, queueRes] = await Promise.all([
     fetch("https://api.firecrawl.dev/v2/team/credit-usage", {
       headers: { Authorization: `Bearer ${apiKey}` },

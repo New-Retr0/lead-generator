@@ -73,6 +73,35 @@ export type RunRepairResult = {
   superseded: number;
 };
 
+const REPAIR_THROTTLE_MS = 60_000;
+let lastRepairAt = 0;
+let lastRepairResult: RunRepairResult = {
+  repaired: 0,
+  stale: 0,
+  orphaned: 0,
+  superseded: 0,
+};
+let repairInflight: Promise<RunRepairResult> | null = null;
+
+/**
+ * Same as repairOrphanedRuns, but at most once per minute.
+ * Header/runs polling hit /api/runs every ~8–10s — full repair there was the
+ * main navigation tax. Explicit POST /api/runs/repair still forces a pass.
+ */
+export async function repairOrphanedRunsThrottled(
+  minIntervalMs = REPAIR_THROTTLE_MS,
+): Promise<RunRepairResult> {
+  const now = Date.now();
+  if (now - lastRepairAt < minIntervalMs) {
+    return lastRepairResult;
+  }
+  if (repairInflight) return repairInflight;
+  repairInflight = repairOrphanedRuns().finally(() => {
+    repairInflight = null;
+  });
+  return repairInflight;
+}
+
 /**
  * Close RUNNING run rows that cannot still be live:
  * - older than 2h
@@ -82,7 +111,9 @@ export type RunRepairResult = {
  */
 export async function repairOrphanedRuns(): Promise<RunRepairResult> {
   if (!dbAvailable()) {
-    return { repaired: 0, stale: 0, orphaned: 0, superseded: 0 };
+    lastRepairAt = Date.now();
+    lastRepairResult = { repaired: 0, stale: 0, orphaned: 0, superseded: 0 };
+    return lastRepairResult;
   }
   const sql = getSql();
 
@@ -184,10 +215,12 @@ export async function repairOrphanedRuns(): Promise<RunRepairResult> {
     RETURNING older.run_id
   `;
 
-  return {
+  lastRepairResult = {
     repaired: stale.length + orphaned + superseded.length,
     stale: stale.length,
     orphaned,
     superseded: superseded.length,
   };
+  lastRepairAt = Date.now();
+  return lastRepairResult;
 }

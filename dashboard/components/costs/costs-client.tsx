@@ -196,7 +196,7 @@ export function CostsClient({
       parts.push(`${formatCredits(fc.used)} used`);
     }
     if (fc.billingPeriodEnd) {
-      parts.push(`refresh ${new Date(fc.billingPeriodEnd).toLocaleDateString()}`);
+      parts.push(`refresh ${new Date(fc.billingPeriodEnd).toLocaleDateString("en-US")}`);
     }
     return `${parts.join(" · ")} · api.firecrawl.dev`;
   }, [liveCredits]);
@@ -355,7 +355,7 @@ export function CostsClient({
                 ? `${formatCredits(budget.planCredits)} credits/mo`
                 : "Plan size unknown"}
               {budget.billingPeriodEnd
-                ? ` — refresh ${new Date(budget.billingPeriodEnd).toLocaleDateString()}`
+                ? ` — refresh ${new Date(budget.billingPeriodEnd).toLocaleDateString("en-US")}`
                 : ""}
               {" · from api.firecrawl.dev"}
             </CardDescription>

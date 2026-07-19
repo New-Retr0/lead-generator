@@ -7,13 +7,19 @@ import { CancelJobButton } from "@/components/cancel-job-button";
 import { RunStatusBadge, StopReasonBadge } from "@/components/badges";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useNow } from "@/hooks/use-now";
 import type { JobExecutionMode, RunDetail } from "@/lib/types";
 import { formatCredits, formatUsd, cn } from "@/lib/utils";
 
-function elapsedLabel(startedAt: string, finishedAt: string | null): string {
+function elapsedLabel(
+  startedAt: string,
+  finishedAt: string | null,
+  nowMs: number,
+): string {
   const start = Date.parse(startedAt);
   if (!Number.isFinite(start)) return "—";
-  const end = finishedAt ? Date.parse(finishedAt) : Date.now();
+  const end = finishedAt ? Date.parse(finishedAt) : nowMs;
+  if (!Number.isFinite(end) || end <= 0) return "…";
   const ms = Math.max(0, end - start);
   const minutes = Math.floor(ms / 60_000);
   const seconds = Math.floor((ms % 60_000) / 1000);
@@ -54,6 +60,8 @@ export function RunContextBar({
   const marketFilter = run.market_key
     ? `/data?market=${encodeURIComponent(run.market_key)}`
     : "/data";
+  // Clock only after mount so SSR/client elapsed labels match.
+  const nowMs = useNow(15_000, !run.finished_at);
 
   return (
     <div
@@ -110,7 +118,7 @@ export function RunContextBar({
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <Timer className="size-3" />
-              {elapsedLabel(run.started_at, run.finished_at)}
+              {elapsedLabel(run.started_at, run.finished_at, nowMs)}
             </span>
             <span>
               {formatCredits(costs.firecrawlCreditsEst)} cr · {formatUsd(costs.totalUsd)}

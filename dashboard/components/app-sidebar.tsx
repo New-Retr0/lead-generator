@@ -134,7 +134,7 @@ export function AppSidebar() {
                         tooltip={item.tooltip}
                         className="relative font-mono text-[10px] uppercase tracking-[0.12em]"
                       >
-                        <Link href={item.href}>
+                        <Link href={item.href} prefetch>
                           <item.icon />
                           <span>{item.label}</span>
                           {active ? (

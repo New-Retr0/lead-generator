@@ -1218,7 +1218,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                       ) : null}
                       {outcome.deal_value_usd != null ? (
                         <span className="font-medium tabular-nums">
-                          ${outcome.deal_value_usd.toLocaleString()}
+                          ${outcome.deal_value_usd.toLocaleString("en-US")}
                         </span>
                       ) : null}
                     </div>
@@ -1245,7 +1245,7 @@ function LeadDetailContent({ placeId }: { placeId: string }) {
                           </span>
                         ) : null}
                         <span className="ml-auto text-xs text-muted-foreground">
-                          {new Date(touch.occurred_at).toLocaleString()}
+                          {new Date(touch.occurred_at).toLocaleString("en-US")}
                         </span>
                         {touch.notes ? (
                           <p className="w-full text-xs text-muted-foreground">{touch.notes}</p>

@@ -1,6 +1,7 @@
 "use client";
 
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { duration, EASE } from "@/components/console/motion";
 import type { PipelineProvider } from "@/lib/pipeline/stages";
 import { cn } from "@/lib/utils";
@@ -243,7 +244,7 @@ export function PipelineSignal({
   active: boolean;
   className?: string;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const kind = signalKindFor(stageId, provider);
   const show = kind !== "idle";
   const animating = active && !reduced && show;

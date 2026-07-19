@@ -1,20 +1,6 @@
 import Link from "next/link";
-import {
-  AlertTriangle,
-  ArrowRight,
-  PhoneCall,
-  PlayCircle,
-  ShieldAlert,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { ArrowUpRight, PhoneCall, PlayCircle, Radio } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export type AttentionItem = {
   key: string;
@@ -25,77 +11,97 @@ export type AttentionItem = {
   hint: string;
 };
 
+const TONE_VALUE: Record<AttentionItem["tone"], string> = {
+  default: "text-foreground",
+  warning: "text-warning",
+  danger: "text-destructive",
+  success: "text-success",
+  secondary: "text-foreground",
+};
+
+function iconFor(key: string) {
+  if (key === "running") return PlayCircle;
+  if (key === "ready") return PhoneCall;
+  return Radio;
+}
+
+/**
+ * Ops pulse for the solo operator: what’s running, what’s ready to call,
+ * and what’s still only partial. Not an “alarm” strip — verified DMs are
+ * inventory health, not something that needs triage.
+ */
 export function AttentionStrip({ items }: { items: AttentionItem[] }) {
-  const actionable = items.filter((item) => item.count > 0);
+  const running = items.find((item) => item.key === "running");
+  const live = (running?.count ?? 0) > 0;
 
   return (
-    <Card className="hover-lift border-primary/20" data-testid="attention-strip">
-      <CardHeader className="flex-row items-start justify-between gap-4 pb-2">
+    <section
+      data-testid="attention-strip"
+      className="relative overflow-hidden rounded-2xl border border-border/70 bg-card"
+    >
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent"
+      />
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border/50 px-5 py-4 md:px-6">
         <div>
-          <CardTitle className="flex items-center gap-2 font-mono text-xs uppercase tracking-[0.14em]">
-            <AlertTriangle className="size-4 text-warning" />
-            Attention
-          </CardTitle>
-          <CardDescription className="mt-1">
-            Highest-leverage queues for callable, verified decision-makers.
-          </CardDescription>
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+            Now
+          </p>
+          <h2 className="mt-1 text-base font-semibold tracking-tight">
+            {live ? "Pipeline is live" : "Ready for the next pass"}
+          </h2>
+          <p className="mt-0.5 max-w-xl text-sm text-muted-foreground">
+            Callable verified DMs first — partial inventory is the upgrade queue.
+          </p>
         </div>
-        {actionable.length === 0 ? (
-          <Badge variant="success">Clear</Badge>
-        ) : (
-          <Badge variant="warning">{actionable.length} open</Badge>
-        )}
-      </CardHeader>
-      <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <span
+          className={cn(
+            "inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em]",
+            live ? "text-warning" : "text-muted-foreground",
+          )}
+        >
+          <span
+            className={cn(
+              "size-1.5 rounded-full",
+              live ? "bg-warning shadow-[0_0_0_3px_color-mix(in_oklab,var(--warning)_25%,transparent)]" : "bg-muted-foreground/40",
+            )}
+          />
+          {live ? `${running?.count} active` : "Idle"}
+        </span>
+      </div>
+
+      <div className="grid divide-y divide-border/50 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         {items.map((item) => {
-          const Icon =
-            item.key === "running"
-              ? PlayCircle
-              : item.key === "ready"
-                ? PhoneCall
-                : item.key === "inventory"
-                  ? ShieldAlert
-                  : AlertTriangle;
+          const Icon = iconFor(item.key);
           return (
             <Link
               key={item.key}
               href={item.href}
-              className="panel group flex items-start gap-3 rounded-xl px-3 py-3 transition-colors hover:border-primary/35 hover:bg-accent"
+              className="group relative flex flex-col gap-3 px-5 py-5 transition-colors hover:bg-accent/50 md:px-6"
             >
-              <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background/80">
-                <Icon className="size-3.5 text-muted-foreground" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                    {item.label}
-                  </p>
-                  <Badge variant={item.tone} className="tabular-nums">
-                    {item.count}
-                  </Badge>
-                </div>
-                <p className="mt-1 text-xs leading-snug text-foreground/80">{item.hint}</p>
-                <span className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-                  Open
-                  <ArrowRight className="size-3" />
+              <div className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                  <Icon className="size-3.5" />
+                  {item.label}
                 </span>
+                <ArrowUpRight className="size-3.5 text-muted-foreground/50 transition-colors group-hover:text-primary" />
               </div>
+              <p
+                className={cn(
+                  "font-mono text-3xl font-semibold tabular-nums tracking-tight",
+                  TONE_VALUE[item.tone],
+                )}
+              >
+                {item.count.toLocaleString("en-US")}
+              </p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {item.hint}
+              </p>
             </Link>
           );
         })}
-      </CardContent>
-      {actionable.length > 0 ? (
-        <div className="flex flex-wrap gap-2 px-6 pb-5">
-          {actionable.slice(0, 2).map((item) => (
-            <Button key={item.key} asChild size="sm" variant="outline">
-              <Link href={item.href}>
-                {item.label}
-                <ArrowRight className="size-3.5" />
-              </Link>
-            </Button>
-          ))}
-        </div>
-      ) : null}
-    </Card>
+      </div>
+    </section>
   );
 }

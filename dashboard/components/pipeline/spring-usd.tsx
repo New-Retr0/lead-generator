@@ -1,11 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  useMotionValueEvent,
-  useReducedMotion,
-  useSpring,
-} from "motion/react";
+import { useMotionValueEvent, useSpring } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { cn } from "@/lib/utils";
 
 function formatUsdDigits(value: number, digits: number): string {
@@ -31,7 +28,7 @@ export function SpringUsd({
   stiffness?: number;
   damping?: number;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const spring = useSpring(value, {
     stiffness: reduced ? 1000 : stiffness,
     damping: reduced ? 50 : damping,
@@ -63,7 +60,7 @@ export function SpringCount({
   value: number;
   className?: string;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const spring = useSpring(value, {
     stiffness: reduced ? 1000 : 140,
     damping: reduced ? 50 : 26,
@@ -93,7 +90,7 @@ export function SpringSeconds({
   valueMs: number;
   className?: string;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const seconds = Math.max(0, valueMs) / 1000;
   const spring = useSpring(seconds, {
     stiffness: reduced ? 1000 : 70,

@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { listRuns } from "@/lib/db";
 import { listJobSummaries } from "@/lib/jobs";
-import { repairOrphanedRuns } from "@/lib/run-reconcile";
+import { repairOrphanedRunsThrottled } from "@/lib/run-reconcile";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    // Opportunistic: hard refresh must not show dead RUNNING rows.
-    await repairOrphanedRuns();
+    // Throttled: header + runs page poll this every few seconds.
+    await repairOrphanedRunsThrottled();
     const [runs, jobs] = await Promise.all([listRuns(50), listJobSummaries(20)]);
     return NextResponse.json(
       {

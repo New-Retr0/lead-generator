@@ -8,6 +8,9 @@ test.describe("Command Center + Launch", () => {
     await expectPageTitle(page, "Command Center");
     await expect(page.getByTestId("attention-strip")).toBeVisible();
     await expect(
+      page.getByTestId("attention-strip").getByText("Now", { exact: true }).first(),
+    ).toBeVisible();
+    await expect(
       page.getByTestId("attention-strip").getByText("Verified DMs", { exact: true }).first(),
     ).toBeVisible();
     await expect(

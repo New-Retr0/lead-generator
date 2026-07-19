@@ -2,6 +2,7 @@
 /**
  * Bundle per-frame ASCII .txt files into a single frames.json per folder/quality.
  * One HTTP request (~gzip 300–400KB) beats 100–200 parallel GETs on hero mounts.
+ * Skips rewrite when frames.json is already newer than every frame_*.txt.
  */
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
@@ -20,11 +21,23 @@ function bundleFolder(folder, quality) {
     .filter((name) => /^frame_\d+\.txt$/i.test(name))
     .sort();
   if (files.length === 0) return null;
-  const frames = files.map((name) => readFileSync(path.join(dir, name), "utf8"));
+
   const outPath = path.join(dir, "frames.json");
+  let newestFrameMtime = 0;
+  for (const name of files) {
+    const mtime = statSync(path.join(dir, name)).mtimeMs;
+    if (mtime > newestFrameMtime) newestFrameMtime = mtime;
+  }
+
+  if (existsSync(outPath) && statSync(outPath).mtimeMs >= newestFrameMtime) {
+    const kb = Math.round(statSync(outPath).size / 1024);
+    return { folder, quality, count: files.length, kb, skipped: true };
+  }
+
+  const frames = files.map((name) => readFileSync(path.join(dir, name), "utf8"));
   writeFileSync(outPath, JSON.stringify(frames));
   const kb = Math.round(statSync(outPath).size / 1024);
-  return { folder, quality, count: frames.length, kb, outPath };
+  return { folder, quality, count: frames.length, kb, skipped: false };
 }
 
 const results = [];
@@ -40,6 +53,19 @@ if (results.length === 0) {
   process.exit(0);
 }
 
-for (const r of results) {
-  console.log(`[bundle-ascii-frames] ${r.folder}/${r.quality}: ${r.count} frames → ${r.kb} KB`);
+const wrote = results.filter((r) => !r.skipped);
+const skipped = results.filter((r) => r.skipped);
+if (wrote.length === 0) {
+  console.log(
+    `[bundle-ascii-frames] up to date (${skipped.length} sets, skipped rewrite)`,
+  );
+} else {
+  for (const r of wrote) {
+    console.log(
+      `[bundle-ascii-frames] ${r.folder}/${r.quality}: ${r.count} frames → ${r.kb} KB`,
+    );
+  }
+  if (skipped.length > 0) {
+    console.log(`[bundle-ascii-frames] skipped ${skipped.length} up-to-date set(s)`);
+  }
 }

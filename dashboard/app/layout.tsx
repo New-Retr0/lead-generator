@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AppSidebar } from "@/components/app-sidebar";
+import { ChunkLoadRecovery } from "@/components/chunk-load-recovery";
 import { MotionProvider } from "@/components/motion-provider";
 import { SiteHeader } from "@/components/site-header";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
+import { DEV_PORTLESS_HMR_FIX_SCRIPT } from "@/lib/dev-portless-hmr-fix";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -37,9 +39,18 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full`}
       suppressHydrationWarning
     >
+      <head>
+        {process.env.NODE_ENV === "development" ? (
+          <script
+            id="dev-portless-hmr-fix"
+            dangerouslySetInnerHTML={{ __html: DEV_PORTLESS_HMR_FIX_SCRIPT }}
+          />
+        ) : null}
+      </head>
       <body className="min-h-full" suppressHydrationWarning>
         <ThemeProvider>
           <MotionProvider>
+            <ChunkLoadRecovery />
             <div className="dot-grid pointer-events-none fixed inset-0 -z-10" aria-hidden />
             <div className="noise-overlay pointer-events-none fixed inset-0 -z-10" aria-hidden />
             <SidebarProvider>

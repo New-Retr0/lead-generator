@@ -99,15 +99,24 @@ async function resolveFrameSource(
   return null;
 }
 
-async function loadBundledFrames(baseUrl: string): Promise<string[] | null> {
+async function loadBundledFrames(
+  baseUrl: string,
+  timeoutMs = 4_000,
+): Promise<string[] | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${baseUrl}/frames.json`);
+    const response = await fetch(`${baseUrl}/frames.json`, {
+      signal: controller.signal,
+    });
     if (!response.ok) return null;
     const data = (await response.json()) as unknown;
     if (!Array.isArray(data) || data.length === 0) return null;
     return data.map((frame) => String(frame));
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -247,32 +256,31 @@ export default function ASCIIAnimation({
       }
       resolvedSource.current = source;
 
-      // Prefer one bundled payload; fall back to first .txt for instant paint.
-      const bundled = await loadBundledFrames(source.baseUrl);
-      if (bundled && bundled.length > 0) {
-        if (prefersReducedMotion()) {
-          setFrames([bundled[0]]);
-          fullLoadTriggered.current = true;
-          setIsLoading(false);
-          return;
-        }
-        setFrames(bundled.slice(0, frameCount));
-        currentFrameRef.current = 0;
-        fullLoadTriggered.current = true;
-        setIsLoading(false);
-        return;
-      }
-
+      // Paint the first .txt immediately so the hero never sits on a spinner
+      // while multi‑MB frames.json downloads (Safari + Portless are sensitive).
       try {
         const response = await fetch(`${source.baseUrl}/${frameFiles[0]}`);
-        const firstFrame = await response.text();
-        setFrames([firstFrame]);
-        currentFrameRef.current = 0;
+        if (response.ok) {
+          const firstFrame = await response.text();
+          setFrames([firstFrame]);
+          currentFrameRef.current = 0;
+          setIsLoading(false);
+        }
       } catch {
-        // preview failed
+        // preview failed — keep trying bundled below
       }
 
       if (prefersReducedMotion()) {
+        setIsLoading(false);
+        fullLoadTriggered.current = true;
+        return;
+      }
+
+      const bundled = await loadBundledFrames(source.baseUrl);
+      if (bundled && bundled.length > 0) {
+        setFrames(bundled.slice(0, frameCount));
+        currentFrameRef.current = 0;
+        fullLoadTriggered.current = true;
         setIsLoading(false);
         return;
       }

@@ -153,7 +153,7 @@ function PipelineNodeComponent({ data }: NodeProps<PipelineNodeType>) {
             <div className="flex items-center justify-between gap-1 text-[10px] text-muted-foreground">
               <span className="tabular-nums">
                 {eventCount} evt
-                {credits > 0 ? ` · ${credits.toLocaleString()} cr` : ""}
+                {credits > 0 ? ` · ${credits.toLocaleString("en-US")} cr` : ""}
               </span>
               <motion.span
                 layout

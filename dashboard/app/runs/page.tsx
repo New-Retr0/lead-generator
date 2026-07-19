@@ -2,7 +2,7 @@ import { RunsPageClient } from "@/components/runs/runs-page-client";
 import { getPipelineConfig } from "@/lib/config";
 import { listRuns } from "@/lib/db";
 import { listJobSummaries } from "@/lib/jobs";
-import { repairOrphanedRuns } from "@/lib/run-reconcile";
+import { repairOrphanedRunsThrottled } from "@/lib/run-reconcile";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +12,10 @@ export default async function RunsPage({
   searchParams?: Promise<{ job?: string }>;
 }) {
   const params = searchParams ? await searchParams : {};
-  await repairOrphanedRuns();
-  const [runs, jobs, config] = await Promise.all([
-    listRuns(),
+  // Limit listRuns for the table — full-history scans made tab switches feel stuck.
+  const [, runs, jobs, config] = await Promise.all([
+    repairOrphanedRunsThrottled(),
+    listRuns(80),
     listJobSummaries(20),
     getPipelineConfig(),
   ]);

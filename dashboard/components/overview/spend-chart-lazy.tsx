@@ -1,17 +1,9 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SpendChart } from "@/components/overview/spend-chart";
 import type { CostDayRow } from "@/lib/types";
 
-const SpendChart = dynamic(
-  () => import("@/components/overview/spend-chart").then((m) => m.SpendChart),
-  {
-    ssr: false,
-    loading: () => <Skeleton className="h-full w-full" />,
-  },
-);
-
+/** Direct import — dynamic() left this panel stuck on a grey skeleton when HMR chunks failed. */
 export function SpendChartLazy({ data }: { data: CostDayRow[] }) {
   return <SpendChart data={data} />;
 }

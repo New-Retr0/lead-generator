@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
 import { AnimatedNumber } from "@/components/animated";
 import { providerLabel } from "@/components/campaigns/estimate-breakdown";
 import {
@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import { formatCredits, formatUsd } from "@/lib/utils";
 
 export type StatDetailRow = { label: string; value: string };
@@ -39,7 +40,7 @@ export function StatDetailDialog({
   rows?: StatDetailRow[];
   providerRows?: ProviderSpendRow[];
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const max7d = providerRows?.reduce((m, r) => Math.max(m, r.usd7d), 0) ?? 0;
 
   return (

@@ -186,7 +186,8 @@ export function timelineBounds(
   runEndedAt: string | null,
 ): { start: number; end: number } {
   if (timeline.length === 0) {
-    const start = runStartedAt ? new Date(runStartedAt).getTime() : Date.now();
+    // Stable fallback — never Date.now() (SSR/client hydration mismatch).
+    const start = runStartedAt ? new Date(runStartedAt).getTime() : 0;
     const end = runEndedAt ? new Date(runEndedAt).getTime() : start + 60_000;
     return { start, end: Math.max(end, start + 1000) };
   }

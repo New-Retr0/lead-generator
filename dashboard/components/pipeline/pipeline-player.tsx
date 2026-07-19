@@ -1,11 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  AnimatePresence,
-  motion,
-  useReducedMotion,
-} from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { useSafeReducedMotion } from "@/hooks/use-hydrated";
 import {
   Flame,
   MapPin,
@@ -109,7 +106,7 @@ export function PipelinePlayer({
   runTimeline?: RunTimeline | null;
   liveNames?: Record<string, string>;
 }) {
-  const reduced = useReducedMotion();
+  const reduced = useSafeReducedMotion();
   const rafRef = useRef<number | null>(null);
   const lastTick = useRef<number | null>(null);
   const lastScrubPush = useRef(0);
@@ -184,11 +181,8 @@ export function PipelinePlayer({
     };
   }, [isLive, reduced, focusId]);
 
-  const displayProgress = isLive
-    ? reduced
-      ? 1
-      : liveRingProgress
-    : frame.segmentProgress;
+  // Keep live ring progress even when reduced-motion (don't jump 0→1 after hydrate).
+  const displayProgress = isLive ? liveRingProgress : frame.segmentProgress;
 
   const visibleCosts = useMemo(
     () => sliceCosts(costs, isLive ? null : playheadMs),

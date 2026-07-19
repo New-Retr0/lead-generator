@@ -455,7 +455,7 @@ export function RequestsBuilder({
                 <div className="flex justify-between">
                   <span>Request cap</span>
                   <span className="tabular-nums">
-                    {requestBudget.maxFirecrawlCredits.toLocaleString()} cr
+                    {requestBudget.maxFirecrawlCredits.toLocaleString("en-US")} cr
                   </span>
                 </div>
                 <div className="flex justify-between">

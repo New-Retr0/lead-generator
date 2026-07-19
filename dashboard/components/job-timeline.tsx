@@ -33,6 +33,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useJobStream } from "@/hooks/use-job-stream";
+import { useNow } from "@/hooks/use-now";
 import { nowLine } from "@/lib/job-activity";
 import { cn } from "@/lib/utils";
 import type { JobEvent } from "@/lib/types";
@@ -309,7 +310,7 @@ function JobTimelineStream({
   const [showRaw, setShowRaw] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
+  const now = useNow(30_000, status === "running" || status === "pending");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -317,12 +318,6 @@ function JobTimelineStream({
       bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }, [lines, events, paused, showRaw]);
-
-  useEffect(() => {
-    if (status !== "running" && status !== "pending") return;
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, [status]);
 
   const totals = useMemo(() => {
     let credits = 0;
