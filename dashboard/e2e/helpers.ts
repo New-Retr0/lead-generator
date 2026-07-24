@@ -13,7 +13,7 @@ const NAV: Record<string, string> = {
   Data: "/data",
   Runs: "/runs",
   Costs: "/costs",
-  Learn: "/learn",
+  Playbooks: "/learn",
   Settings: "/settings",
 };
 

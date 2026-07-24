@@ -13,8 +13,6 @@ cd "C:\Users\Austi\Documents\Projects\lead-generator"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-# add analysis extras (pandas/scikit-learn/scipy) if you run `pallares-leads insights`
-pip install -e ".[analysis]"
 copy .env.example .env
 # Fill in .env — see .env.example (Places, Firecrawl, Supabase)
 supabase link   # once
@@ -92,24 +90,22 @@ These run automatically inside a single `run` — not as a separate enrichment s
 ## Project layout
 
 ```
-config/              markets, categories, campaign, jurisdictions, licensing, pricing, search_templates, learned_score
+config/              markets, categories, campaign, jurisdictions, licensing, pricing, search_templates, decision_roles
 src/pallares_leads/
-  discover/          Places (grid tiling), Overpass, county filter, mgmt directory harvest
-  enrich/            Firecrawl, owner chain, registries
+  discover/          Places (grid tiling), county filter, mgmt directory harvest
+  enrich/            Firecrawl, owner chain, registries, playbooks
   request/           NL planner + deterministic fulfiller
-  resolve/           contact hierarchy, verification, lead_score (heuristic + learned blend)
+  resolve/           contact hierarchy, verification, heuristic lead_score
   pipeline/          run orchestration (single-pass discover + enrich), campaigns, dedupe
   db/                LeadStore (Supabase Postgres via psycopg) + local SQLite caches
-  intelligence/      lead_features snapshots + insights analysis
   eval/              stage-traced eval replay
 supabase/            canonical schema (migrations) + partner-api Edge Function
 dashboard/           local Next.js developer/operator/observer console
 data/                local-only runtime (canonical data lives in Supabase)
   local_cache.db     page_cache / domain_cache / extraction_cache
-  raw_archive.db     compressed raw API payloads for feature replay + eval
+  raw_archive.db     compressed raw API payloads for eval replay
   runs/{run_id}/     manifest.json, raw jsonl, export.csv per run
   exports/           request deliverables
-  insights/          insight reports from `pallares-leads insights`
 ```
 
 Per-category rules (`min_contact_bar`, `allow_owner_chain`, etc.) live in `config/categories.yaml`.

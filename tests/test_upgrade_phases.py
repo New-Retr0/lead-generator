@@ -56,13 +56,13 @@ def test_sales_status_requires_verification():
     lead.best_contact_phone = "(559) 638-1111"
     lead.best_contact_role = "Facilities Manager"
     lead.verification_level = "unverified"
-    assert lead.sales_status() == "Needs research"
+    assert lead.sales_status() == "Unverified"
 
     lead.verification_level = "partial"
-    assert lead.sales_status() == "Needs research"
+    assert lead.sales_status() == "Unverified"
 
     lead.verification_level = "verified"
-    assert lead.sales_status() == "Ready to call"
+    assert lead.sales_status() == "Verified"
 
 
 def test_best_contact_prefers_verified_over_unverified():

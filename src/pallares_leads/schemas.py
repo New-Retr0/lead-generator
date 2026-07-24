@@ -133,16 +133,16 @@ class EnrichedLead(RawLead):
     why_now: str = ""
 
     def sales_status(self) -> str:
-        """Ready to call = verified named decision-maker with a local dialable phone."""
+        """Verified = named decision-maker with a grounded local phone; else Unverified."""
         # Lazy import avoids the schemas ↔ contact_requirements cycle at import time.
         from pallares_leads.enrich.contact_requirements import (
             has_verified_named_decision_maker,
         )
 
         return (
-            "Ready to call"
+            "Verified"
             if has_verified_named_decision_maker(self)
-            else "Needs research"
+            else "Unverified"
         )
 
     def _callable_contacts(self) -> list[SiteContact]:

@@ -80,7 +80,7 @@ export function isLocalCallablePhone(value: string | null | undefined): boolean 
 function isNamedPerson(value: string | null | undefined): boolean {
   const normalized = value?.trim().toLowerCase().replace(/\s+/g, " ") ?? "";
   if (!normalized || PLACEHOLDER_NAMES.has(normalized)) return false;
-  // Partner contract: first + last (at least two tokens).
+  // Verified contract: first + last (at least two tokens).
   return normalized.split(" ").length >= 2;
 }
 
@@ -128,6 +128,6 @@ export function isVerifiedDecisionMaker(data: LeadReadinessInput): boolean {
   return primaryCallablePhone(data) != null;
 }
 
-export function leadReadinessStatus(data: LeadReadinessInput): "Ready to call" | "Needs research" {
-  return isVerifiedDecisionMaker(data) ? "Ready to call" : "Needs research";
+export function leadReadinessStatus(data: LeadReadinessInput): "Verified" | "Unverified" {
+  return isVerifiedDecisionMaker(data) ? "Verified" : "Unverified";
 }

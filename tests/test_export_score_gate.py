@@ -3,7 +3,7 @@ from datetime import date
 from pallares_leads.resolve.lead_score import compute_lead_score
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus
 
-# The single export gate is lead_score >= 25 in the partner_leads_v1 SQL view
+# The single export gate is lead_score >= 25 in the verified_leads_v1 SQL view
 # (there is no Python min_export_score setting — it was removed as dead code).
 PARTNER_SCORE_FLOOR = 25
 

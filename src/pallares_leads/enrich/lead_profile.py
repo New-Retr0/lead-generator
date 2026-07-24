@@ -8,7 +8,9 @@ from urllib.parse import urlparse
 from pallares_leads.enrich.contact_requirements import (
     EnrichmentRules,
     enriched_meets_bar,
+    has_atomic_named_decision_maker,
     is_callable_phone,
+    requires_named_decision_maker,
 )
 from pallares_leads.enrich.google_gaps import is_corporate_locator_url
 from pallares_leads.schemas import NOT_FOUND, EnrichedLead, RawLead
@@ -385,9 +387,21 @@ def learn_playbook_from_outcome(
         playbook.winning_tier = tier
     playbook.website_domain = registrable_domain(enriched.website or raw.website)
 
-    if met and phone_from_places and profile.is_franchise_pattern:
+    # Cheap franchise phone-only path: only for non-DM-required types, and never
+    # teach skip_firecrawl when the lead still lacks an atomic named DM.
+    if (
+        met
+        and phone_from_places
+        and profile.is_franchise_pattern
+        and not requires_named_decision_maker(enriched.property_type)
+        and (
+            has_atomic_named_decision_maker(enriched)
+            or firecrawl_skipped
+        )
+    ):
         playbook.trust_google_phone = True
-        playbook.skip_firecrawl = firecrawl_skipped
+        # Skip only when this run actually skipped Firecrawl successfully.
+        playbook.skip_firecrawl = bool(firecrawl_skipped)
         playbook.typical_source_tool = enriched.source_tool
         if enriched.best_contact_role not in ("", NOT_FOUND):
             playbook.contact_role_label = enriched.best_contact_role

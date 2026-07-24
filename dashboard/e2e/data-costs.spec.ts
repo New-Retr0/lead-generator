@@ -6,9 +6,9 @@ test.describe("Data + Costs", () => {
     await page.goto("/data");
     await waitForMain(page);
     await expectPageTitle(page, "Lead Data");
-    await expect(page.getByRole("button", { name: "Ready DMs" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Partial phone" })).toBeVisible();
-    await expect(page.getByText(/Default view is Ready DMs/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verified" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Unverified" })).toBeVisible();
+    await expect(page.getByText(/Default view is Verified leads/i)).toBeVisible();
     const table = page.locator("table").first();
     await expect(table.getByRole("columnheader", { name: "Phone" })).toBeVisible();
     await expect(table.getByRole("columnheader", { name: "Decision maker" })).toBeVisible();

@@ -145,7 +145,7 @@ def is_decision_maker_role(role: str) -> bool:
 
 
 def is_named_person(name: str | None) -> bool:
-    """First+last person name, not a placeholder — shared Partner/pipeline contract."""
+    """First+last person name, not a placeholder — shared verified-lead contract."""
     cleaned = (name or "").strip()
     if not cleaned or cleaned == NOT_FOUND:
         return False
@@ -160,7 +160,7 @@ def has_atomic_named_decision_maker(enriched: EnrichedLead) -> bool:
     A **named decision-maker (DM)** is a real person (first+last, not a placeholder)
     with a facilities/maintenance/owner/PM-style role and a local callable phone.
     Email is desirable but not required for this minimum — many CRE pages list
-    phone only. Partner Ready = this plus ``verification_level == "verified"``.
+    phone only. Verified = this plus ``verification_level == "verified"``.
     """
     best_name = enriched.best_contact_name
     if best_name == NOT_FOUND:
@@ -184,7 +184,7 @@ def has_atomic_named_decision_maker(enriched: EnrichedLead) -> bool:
 
 
 def has_verified_named_decision_maker(enriched: EnrichedLead) -> bool:
-    """Partner Ready: grounded named DM + local phone (email optional)."""
+    """Verified: grounded named DM + local phone (email optional)."""
     if (enriched.verification_level or "") != "verified":
         return False
     return has_atomic_named_decision_maker(enriched)
@@ -289,7 +289,7 @@ def contact_package_complete(enriched: EnrichedLead) -> bool:
     - an outreach email on a DM, or
     - two distinct named DMs (primary + backup).
 
-    Does **not** require email for Partner Ready — that stays
+    Does **not** require email for Verified — that stays
     ``has_verified_named_decision_maker``. This only controls whether we keep
     spending on cheap tiers (Tier-2 / leasing / BBB / checklist) to fill the package.
     """
@@ -535,7 +535,7 @@ def has_property_manager_clue(result: LeadInvestigationResult | None) -> bool:
 
 
 def has_named_decision_maker_contact(result: LeadInvestigationResult | None) -> bool:
-    """True when investigation has first+last DM + local phone (Partner-aligned)."""
+    """True when investigation has first+last DM + local phone (Verified-aligned)."""
     if result is None:
         return False
 
@@ -625,7 +625,7 @@ def enriched_meets_bar(
             return False, "missing property manager / ownership clue"
 
     if requires_named_decision_maker(enriched.property_type):
-        # Same predicate as Partner Ready (minus verification_level): first+last DM.
+        # Same predicate as Verified (minus verification_level): first+last DM.
         if google_only or not has_atomic_named_decision_maker(enriched):
             return False, "needs named decision-maker with local phone (Google main line insufficient)"
 

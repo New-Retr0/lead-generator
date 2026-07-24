@@ -11,7 +11,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 const titles: Record<string, string> = {
   "/": "Command Center",
   "/launch": "Launch",
-  "/learn": "Learn",
+  "/learn": "Playbooks",
   "/campaigns": "Launch",
   "/runs": "Runs",
   "/requests": "Launch",

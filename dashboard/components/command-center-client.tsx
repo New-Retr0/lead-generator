@@ -161,14 +161,14 @@ export function CommandCenterClient({
           <StatCard
             label="Leads"
             value={stats?.totalLeads ?? 0}
-            sub={`${stats?.enrichedLeads ?? 0} researched`}
+            sub={`${stats?.enrichedLeads ?? 0} worked`}
             icon={Database}
             onClick={() => setDialog("leads")}
           />
           <StatCard
-            label="Verified DMs"
+            label="Verified"
             value={stats?.readyToCall ?? 0}
-            sub={`${formatPct(stats?.readyToCallRate ?? 0)} of researched`}
+            sub={`${formatPct(stats?.readyToCallRate ?? 0)} of worked`}
             icon={PhoneCall}
             tone="success"
             onClick={() => setDialog("callable")}
@@ -243,7 +243,7 @@ export function CommandCenterClient({
         title="Lead database"
         value={stats?.totalLeads ?? 0}
         rows={[
-          { label: "Researched", value: String(stats?.enrichedLeads ?? 0) },
+          { label: "Worked leads", value: String(stats?.enrichedLeads ?? 0) },
           {
             label: "Discovered only",
             value: String((stats?.totalLeads ?? 0) - (stats?.enrichedLeads ?? 0)),
@@ -253,15 +253,15 @@ export function CommandCenterClient({
       <StatDetailDialog
         open={dialog === "callable"}
         onOpenChange={(o) => setDialog(o ? "callable" : null)}
-        title="Verified decision-makers"
+        title="Verified leads"
         value={stats?.readyToCall ?? 0}
-        description="One grounded name, decision-making role, and local callable phone from the same contact. Credits/DM prefers Firecrawl units attributed to verified-DM place_ids this month."
+        description="Named decision-maker + grounded local phone. Unverified leads can still be tried. Credits/lead prefers Firecrawl units attributed to verified place_ids this month."
         rows={[
-          { label: "Verified DM rate", value: formatPct(stats?.readyToCallRate ?? 0) },
+          { label: "Verified rate", value: formatPct(stats?.readyToCallRate ?? 0) },
           { label: "Verified this month", value: String(stats?.verifiedThisMonth ?? 0) },
-          { label: "Partial inventory", value: String(stats?.partialInventory ?? 0) },
+          { label: "Unverified (phone)", value: String(stats?.partialInventory ?? 0) },
           {
-            label: "Credits / verified DM",
+            label: "Credits / verified",
             value:
               stats?.creditsPerVerifiedDm != null
                 ? formatCredits(stats.creditsPerVerifiedDm)
@@ -271,12 +271,12 @@ export function CommandCenterClient({
             ? [{ label: "Credits caveat", value: stats.creditsPerVerifiedDmCaveat }]
             : []),
           {
-            label: "USD / verified DM",
+            label: "USD / verified",
             value:
               stats?.usdPerVerifiedDm != null ? formatUsd(stats.usdPerVerifiedDm) : "—",
           },
           {
-            label: "Time / verified DM",
+            label: "Time / verified",
             value:
               stats?.minutesPerVerifiedDm != null
                 ? `${stats.minutesPerVerifiedDm.toFixed(1)} min`

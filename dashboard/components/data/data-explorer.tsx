@@ -41,6 +41,10 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiFetch } from "@/lib/api-client";
+import {
+  inventoryModeLabel,
+  parseInventoryMode as parseInventoryModeShared,
+} from "@/lib/lead-labels";
 import type { InventoryMode, LeadRow, PipelineConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -138,8 +142,7 @@ function TableShellRows({ count }: { count: number }) {
 }
 
 function parseInventoryMode(raw: string | null): InventoryMode {
-  if (raw === "partial" || raw === "all_quality" || raw === "dud") return raw;
-  return "ready";
+  return parseInventoryModeShared(raw);
 }
 
 function parseDataTab(raw: string | null): DataTab {
@@ -154,7 +157,7 @@ function parseMarketKey(raw: string | null, markets: PipelineConfig["markets"]):
 export function DataExplorer({
   initialLeads,
   config,
-  initialInventoryMode = "ready",
+  initialInventoryMode = "verified",
 }: {
   initialLeads: LeadRow[];
   config: PipelineConfig;
@@ -189,8 +192,8 @@ export function DataExplorer({
     urlTab === "vendors" ? "vendor" : "all",
   );
 
-  /** Status/verification are implied by Ready/Partial inventory — keep selects out. */
-  const showQualityFilters = inventoryMode === "all_quality";
+  /** Status/verification are implied by Verified/Unverified inventory — keep selects out. */
+  const showQualityFilters = inventoryMode === "all";
 
   const categoryLabelMap = useMemo(
     () => new Map(config.categories.map((c) => [c.key, c.label])),
@@ -223,14 +226,14 @@ export function DataExplorer({
     (mode: InventoryMode) => {
       startTransition(() => {
         setInventoryMode(mode);
-        // Ready/Partial already encode readiness — clear dead client filters.
-        if (mode !== "all_quality") {
+        // Verified/Unverified already encode readiness — clear dead client filters.
+        if (mode !== "all") {
           setStatus(ALL);
           setVerification(ALL);
         }
       });
       replaceParams((params) => {
-        if (mode === "ready") params.delete("inventory");
+        if (mode === "verified") params.delete("inventory");
         else params.set("inventory", mode);
       });
     },
@@ -255,7 +258,7 @@ export function DataExplorer({
       setInventoryMode(urlInventory);
       setMarket(urlMarket);
       setDetailId(urlPlace);
-      if (urlInventory !== "all_quality") {
+      if (urlInventory !== "all") {
         setStatus(ALL);
         setVerification(ALL);
       }
@@ -348,8 +351,8 @@ export function DataExplorer({
     <div className="space-y-6">
       <SectionHeading index="01" title="Lead Data Explorer" />
       <p className="font-mono text-xs tracking-[0.08em] text-muted-foreground">
-        Default view is Ready DMs. Partial phone and all-quality modes are opt-in. Researched
-        misses stay hidden (skip_known).
+        Default view is Verified leads. Unverified and All leads are opt-in — unverified can
+        still be tried. Researched misses stay hidden (skip_known).
       </p>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -365,13 +368,8 @@ export function DataExplorer({
         </Tabs>
         <div className="flex flex-wrap gap-1.5">
           {(
-            [
-              ["ready", "Ready DMs"],
-              ["partial", "Partial phone"],
-              ["all_quality", "All quality"],
-              ["dud", "Duds"],
-            ] as const
-          ).map(([mode, label]) => (
+            ["verified", "unverified", "all", "dud"] as const
+          ).map((mode) => (
             <button
               key={mode}
               type="button"
@@ -383,7 +381,7 @@ export function DataExplorer({
                   : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground",
               )}
             >
-              {label}
+              {inventoryModeLabel(mode)}
             </button>
           ))}
         </div>
@@ -455,15 +453,15 @@ export function DataExplorer({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={ALL}>All statuses</SelectItem>
-                    <SelectItem value="Ready to call">Ready to call</SelectItem>
-                    <SelectItem value="Needs research">Needs research</SelectItem>
+                    <SelectItem value="Verified">Verified</SelectItem>
+                    <SelectItem value="Unverified">Unverified</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-1.5">
                 <Label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                  Verification
+                  Level
                 </Label>
                 <Select value={verification} onValueChange={setVerification}>
                   <SelectTrigger className="w-36">
@@ -472,7 +470,8 @@ export function DataExplorer({
                   <SelectContent>
                     <SelectItem value={ALL}>All levels</SelectItem>
                     <SelectItem value="verified">Verified</SelectItem>
-                    <SelectItem value="partial">Partial</SelectItem>
+                    <SelectItem value="partial">Unverified (phone)</SelectItem>
+                    <SelectItem value="unverified">Unverified</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

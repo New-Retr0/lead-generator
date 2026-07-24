@@ -252,7 +252,8 @@ export type YieldSummary = {
   verifiedDm: number;
 };
 
-export type InventoryMode = "ready" | "partial" | "all_quality" | "dud";
+export type { InventoryMode } from "@/lib/lead-labels";
+// Re-export for existing imports; canonical definition lives in lead-labels.
 
 export type OverviewStats = {
   totalLeads: number;
@@ -571,15 +572,6 @@ export type LeadTouch = {
   source: string;
   notes: string | null;
   occurred_at: string;
-};
-
-export type InsightReport = {
-  id: number;
-  created_at: string;
-  sample_size: number;
-  labeled_count: number;
-  report_json: Record<string, unknown>;
-  model_metrics: Record<string, unknown> | null;
 };
 
 export type LeadOutcomeInput = {

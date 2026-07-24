@@ -1,33 +1,22 @@
-import { LearnPageClient } from "@/components/learn/learn-page-client";
-import {
-  getFeatureOutcomeStats,
-  getLatestInsightReport,
-} from "@/lib/db";
+import { LearnPageClient, type PlaybookRow } from "@/components/learn/learn-page-client";
+import { getEnrichmentPlaybooks } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-const LEARNED_SCORE_MIN_LABELS = 150;
-
 export default async function LearnPage() {
-  const [report, stats] = await Promise.all([
-    getLatestInsightReport(),
-    getFeatureOutcomeStats(),
-  ]);
+  const rows = await getEnrichmentPlaybooks(80);
+  const playbooks: PlaybookRow[] = rows.map((row) => ({
+    profile_key: row.profile_key,
+    property_type: row.property_type,
+    site_kind: row.site_kind,
+    brand: row.brand,
+    success_count: row.success_count,
+    skip_firecrawl: row.skip_firecrawl,
+    trust_google_phone: row.trust_google_phone,
+    winning_tier: row.winning_tier,
+    contact_role_label: row.contact_role_label,
+    last_used_at: row.last_used_at,
+  }));
 
-  const labeledCount = Math.max(
-    report?.labeled_count ?? 0,
-    ...stats.winRateByCategory.map((row) => row.total),
-    ...stats.winRateByMarket.map((row) => row.total),
-    0,
-  );
-
-  return (
-    <LearnPageClient
-      report={report}
-      winRateByCategory={stats.winRateByCategory}
-      winRateByMarket={stats.winRateByMarket}
-      labeledCount={labeledCount}
-      labelThreshold={LEARNED_SCORE_MIN_LABELS}
-    />
-  );
+  return <LearnPageClient playbooks={playbooks} />;
 }

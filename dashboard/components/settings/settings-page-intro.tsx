@@ -25,8 +25,8 @@ export function SettingsPageIntro() {
       <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
         Two layers, one console: Connections and Run behavior write to{" "}
         <code className="text-foreground">.env</code>; YAML configs edit markets, categories, and
-        pricing under <code className="text-foreground">config/</code>. Partner-ready means a
-        verified named decision-maker — not a score threshold.
+        pricing under <code className="text-foreground">config/</code>. Verified means a
+        named decision-maker with a grounded local phone — not a score threshold.
       </p>
       <ol className="grid max-w-3xl gap-2 text-sm text-muted-foreground sm:grid-cols-3">
         <li className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">

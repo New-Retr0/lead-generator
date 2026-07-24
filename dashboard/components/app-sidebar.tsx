@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "motion/react";
 import {
-  Brain,
+  BookOpen,
   Database,
   Droplets,
   LayoutDashboard,
@@ -67,9 +67,9 @@ const groups = [
       },
       {
         href: "/learn",
-        label: "Learn",
-        icon: Brain,
-        tooltip: "Insights loop",
+        label: "Playbooks",
+        icon: BookOpen,
+        tooltip: "Enrichment fast paths",
       },
     ],
   },

@@ -718,14 +718,6 @@ export function SettingsClient({
                       {configFiles.find((f) => f.name === selectedFile)?.description}
                     </CardDescription>
                   ) : null}
-                  {selectedFile &&
-                  configFiles.find((f) => f.name === selectedFile)?.warnManualEdit ? (
-                    <p className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                      Normally written by <code>insights --fit-score</code>. Manual edits may be
-                      overwritten.
-                    </p>
-                  ) : null}
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <Button

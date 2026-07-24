@@ -1,13 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listLeads } from "@/lib/db";
-import type { InventoryMode } from "@/lib/types";
+import { parseInventoryMode } from "@/lib/lead-labels";
 
 export const dynamic = "force-dynamic";
-
-function parseInventoryMode(raw: string | null): InventoryMode {
-  if (raw === "partial" || raw === "all_quality" || raw === "dud") return raw;
-  return "ready";
-}
 
 export async function GET(req: NextRequest) {
   try {
@@ -24,7 +19,6 @@ export async function GET(req: NextRequest) {
         : undefined,
       limit: params.has("limit") ? Number(params.get("limit")) : 500,
     });
-    // Filter option queries were unused by the Data explorer client.
     return NextResponse.json({ leads });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load leads";

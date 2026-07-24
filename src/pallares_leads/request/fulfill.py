@@ -111,7 +111,7 @@ def _lead_matches_spec(
         return False
     if spec.require_decision_maker and not is_decision_maker_contact(lead):
         return False
-    if spec.require_decision_maker and lead.sales_status() != "Ready to call":
+    if spec.require_decision_maker and lead.sales_status() != "Verified":
         return False
     if spec.recurring_only:
         rules = get_enrichment_rules(lead.property_type, config_dir)

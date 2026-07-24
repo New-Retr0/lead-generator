@@ -1,29 +1,30 @@
 openapi: 3.1.0
 info:
-  title: Pallares Partner Lead API
+  title: Pallares Lead API
   version: v1
   description: |
-    Cursor-sync Partner API for Pallares.us lead ingestion and structured feedback.
+    Cursor-sync Lead API for Pallares.us verified-lead ingestion and structured feedback.
+    Auth keys remain `ppl_...` partner keys.
 
     **Primary auth:** `x-api-key: ppl_...`  
     **Also accepted:** `Authorization: Bearer ppl_...`
 
-    Leads are served exclusively from the `partner_leads_v1` view. A lead is eligible only when:
-    - `enrichment_status = enriched` and `enriched_json` is present
+    List/detail serve **Verified** leads only (`verified_leads_v1`). A lead is eligible when:
+    - a worked lead payload is present (`enrichment_status = enriched` + `enriched_json`)
     - `confidence` is not `Low`
-    - `lead_score >= 25` (current `min_export_score`)
-    - `is_verified_decision_maker(...)` is true — requires `verification_level = verified`
+    - `lead_score >= 25`
+    - `is_verified_decision_maker(...)` is true — `verification_level = verified`
       plus a grounded, non-placeholder name + decision-maker role + local non-toll-free phone
 
-    Partial verification and Google mainline-only phones are **not** partner-eligible.
-    `primary_phone` is a locally callable `best_contact_phone` only (placeholders
-    such as `Not found` are null; never coalesced from Google `main_phone`).
+    Unverified / phone-only leads are **not** API-eligible (operators can still try them
+    in the dashboard). `primary_phone` is a locally callable `best_contact_phone` only
+    (placeholders such as `Not found` are null; never coalesced from Google `main_phone`).
     Path `place_id` values may contain slashes (e.g. `places/ChIJ...`); URL-encode them
     (`places%2FChIJ...`) or pass the unencoded multi-segment path — both are accepted.
 
     **Idempotency:** POST `/leads/{place_id}/outcome`, `/leads/{place_id}/touches`, and
     `/feedback/batch` accept an optional `Idempotency-Key` header. Successful responses
-    are stored per partner key and returned on replay.
+    are stored per API key and returned on replay.
 
     ## Roadmap
 
@@ -141,8 +142,8 @@ paths:
     get:
       summary: Eligibility debug for a place_id (requires leads:read)
       description: |
-        Explains why a lead is or is not present in `partner_leads_v1`.
-        Does not reintroduce partial/mainline eligibility into list/detail.
+        Explains why a lead is or is not present in `verified_leads_v1`.
+        Does not reintroduce unverified/mainline eligibility into list/detail.
       parameters:
         - $ref: "#/components/parameters/PlaceId"
       responses:
@@ -366,16 +367,19 @@ components:
               type: string
             eligible:
               type: boolean
-            in_partner_leads_v1:
+            is_verified:
               type: boolean
+            status:
+              type: string
+              enum: [verified, unverified]
             gates:
               type: object
               properties:
-                enriched:
+                has_lead_payload:
                   type: boolean
-                confidence_not_low:
+                confidence_ok:
                   type: boolean
-                score_gte_min_export:
+                score_ok:
                   type: boolean
                 verified_decision_maker:
                   type: boolean
@@ -414,10 +418,19 @@ components:
             Atomic DM phone (`best_contact_phone` only when locally callable).
             Placeholder sentinels such as `Not found` are null. Never coalesced
             from Google `main_phone`.
+        status:
+          type: string
+          enum: [verified]
+          description: API list/detail only returns Verified leads
         verification_level:
           type: string
           enum: [verified]
-          description: Partner-eligible leads are verified only (partial excluded)
+          description: Verified leads only (unverified / phone-only excluded)
+        last_worked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the lead was last worked (pipeline pass)
         updated_at:
           type: string
           format: date-time

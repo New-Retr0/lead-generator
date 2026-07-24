@@ -1,7 +1,7 @@
-# Pallares Partner Lead API
+# Pallares Lead API
 
-Use this API to pull Pallares lead-generation data and post structured
-outcomes/touches. It uses a dedicated scoped partner key.
+Use this API to pull **Verified** leads and post structured outcomes/touches.
+Auth uses a dedicated scoped partner key (`ppl_...`).
 
 Machine-readable spec: [`partner-api.openapi.yaml`](./partner-api.openapi.yaml)
 
@@ -50,19 +50,19 @@ Common codes: `missing_api_key`, `invalid_api_key`, `expired_api_key`,
 
 Rate-limited responses include a `Retry-After` header (seconds).
 
-## Eligibility (`partner_leads_v1`)
+## Eligibility (`verified_leads_v1`)
 
-Only leads that pass Pallares verified-DM sales-quality gates appear in
-list/detail responses. A lead is excluded when any of the following fail:
+Only **Verified** leads appear in list/detail responses. A lead is excluded when
+any of the following fail:
 
 | Rule | Requirement |
 |------|-------------|
-| Enriched | `enrichment_status = 'enriched'` and `enriched_json` present |
+| Worked lead | `enrichment_status = 'enriched'` and `enriched_json` present |
 | Confidence | not `Low` |
-| Score | `lead_score >= 25` (the current `min_export_score`) |
-| Verified DM | `verification_level = verified` **and** one grounded, non-placeholder name + decision role + local non-toll-free phone |
+| Score | `lead_score >= 25` |
+| Verified | `verification_level = verified` **and** one grounded, non-placeholder name + decision role + local non-toll-free phone |
 
-Partial verification and Google mainline-only phones are **not** partner-eligible.
+Unverified / phone-only leads are **not** API-eligible (dashboard can still try them).
 
 `primary_phone` is `best_contact_phone` only when that value is a local callable
 phone. Placeholder sentinels such as `Not found` are returned as `null`. It never
@@ -106,7 +106,7 @@ POST /feedback/batch
 Outcomes are **scoped per partner API key** (`partner_lead_outcomes`). One partner
 cannot overwrite another partner's outcome for the same place. Learning
 aggregation in `lead_labels` still collapses CRM/auto + partner signals into one
-label per place for insights.
+label per place for operator feedback.
 
 Outcome body:
 

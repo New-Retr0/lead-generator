@@ -1,5 +1,9 @@
 import { LiveDot } from "@/components/animated";
 import { Badge } from "@/components/ui/badge";
+import {
+  displayLeadStatus,
+  displayVerificationLevel,
+} from "@/lib/lead-labels";
 
 export function ScoreBadge({ score }: { score: number | null }) {
   if (score === null || score === undefined) {
@@ -14,9 +18,10 @@ export function ScoreBadge({ score }: { score: number | null }) {
 }
 
 export function SalesStatusBadge({ status }: { status: string }) {
+  const label = displayLeadStatus(status);
   return (
-    <Badge variant={status === "Ready to call" ? "success" : "secondary"}>
-      {status}
+    <Badge variant={label === "Verified" ? "success" : "secondary"}>
+      {label}
     </Badge>
   );
 }
@@ -112,39 +117,20 @@ export function ConfidenceBadge({ confidence }: { confidence: string | null }) {
   return <Badge variant={variant}>{confidence}</Badge>;
 }
 
-const VERIFICATION_HINTS: Record<string, string> = {
-  verified: "Callable verified phone and at least one verified person name.",
-  partial: "Callable phone on file — no atomic named decision-maker yet.",
-  unverified: "No grounded callable contact — we do not guess names.",
-};
-
 export function VerificationBadge({
   level,
 }: {
   level: string | null | undefined;
 }) {
-  const normalized =
-    level === "verified" || level === "partial" || level === "unverified"
-      ? level
-      : level === "High"
-        ? "verified"
-        : level === "Medium"
-          ? "partial"
-          : "unverified";
+  const { label, hint } = displayVerificationLevel(level);
   const variant =
-    normalized === "verified"
+    label === "Verified" && (level === "verified" || level === "High")
       ? "success"
-      : normalized === "partial"
+      : level === "partial" || level === "Medium"
         ? "warning"
         : "secondary";
-  const label =
-    normalized === "verified"
-      ? "Verified"
-      : normalized === "partial"
-        ? "Partial"
-        : "Unverified";
   return (
-    <Badge variant={variant} title={VERIFICATION_HINTS[normalized]}>
+    <Badge variant={variant} title={hint}>
       {label}
     </Badge>
   );

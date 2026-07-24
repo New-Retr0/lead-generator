@@ -16,7 +16,7 @@ Operator + Partner surface for **pallares-leads**. Product north star: verified 
 | Doc | When to use it |
 |---|---|
 | [api-first-architecture.md](./api-first-architecture.md) | Partner API as sellable surface; dashboard as local console |
-| [lead-intelligence.md](./lead-intelligence.md) | Features, outcomes, insights / learned score flywheel |
+| [deferred-outcome-ml.md](./deferred-outcome-ml.md) | Outcome ML / learned score — deferred until real closes |
 
 ## Env
 

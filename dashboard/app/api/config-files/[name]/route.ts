@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import YAML from "yaml";
 import {
   CONFIG_FILE_DESCRIPTIONS,
-  LEARNED_SCORE_WARNING,
   readConfigFile,
   writeConfigFile,
 } from "@/lib/config-files";
@@ -28,8 +27,8 @@ export async function GET(_request: Request, { params }: RouteParams) {
       name,
       content,
       description: CONFIG_FILE_DESCRIPTIONS[name] ?? "Pipeline configuration",
-      warnManualEdit: name === "learned_score.yaml",
-      warning: name === "learned_score.yaml" ? LEARNED_SCORE_WARNING : null,
+      warnManualEdit: false,
+      warning: null,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to read config file";
@@ -51,7 +50,7 @@ export async function PUT(request: Request, { params }: RouteParams) {
     } catch (err) {
       const parsed = yamlParseError(body.content, err);
       return NextResponse.json(
-        { error: "YAML validation failed", ...parsed },
+        { error: "Invalid YAML", line: parsed.line, message: parsed.message },
         { status: 422 },
       );
     }
@@ -60,8 +59,7 @@ export async function PUT(request: Request, { params }: RouteParams) {
     return NextResponse.json({ ok: true, name });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to write config file";
-    const status =
-      message.includes("Invalid") ? 400 : message.includes("not found") ? 404 : 500;
+    const status = message.includes("Invalid") || message.includes("not found") ? 404 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

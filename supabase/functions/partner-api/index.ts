@@ -80,8 +80,10 @@ type PartnerLeadRow = {
   lead_score: number | null;
   confidence: string | null;
   verification_level: string | null;
+  status?: string | null;
   why_now: string | null;
   last_enriched_at: string | null;
+  last_worked_at?: string | null;
   updated_at: string;
   site_contacts: unknown;
   evidence_urls: unknown;
@@ -353,9 +355,10 @@ function toListLead(row: PartnerLeadRow) {
     },
     lead_score: row.lead_score,
     confidence: row.confidence,
+    status: "verified",
     verification_level: row.verification_level,
     why_now: row.why_now,
-    last_enriched_at: row.last_enriched_at,
+    last_worked_at: row.last_worked_at ?? row.last_enriched_at,
     updated_at: row.updated_at,
   };
 }
@@ -401,7 +404,7 @@ function decodeCursor(cursor: string): { updated_at: string; place_id: string } 
 
 async function handleMetadata() {
   const { data, error: queryError } = await supabase
-    .from("partner_leads_v1")
+    .from("verified_leads_v1")
     .select("lead_type, category_key, market_key");
   if (queryError) return error("metadata_query_failed", queryError.message, 500);
 
@@ -419,7 +422,7 @@ async function handleMetadata() {
 
   return json({
     api_version: API_VERSION,
-    schema_version: "partner-leads-v1",
+    schema_version: "verified-leads-v1",
     lead_types: ["client", "vendor", "all"],
     max_limit: MAX_LIMIT,
     cursor: {
@@ -448,7 +451,7 @@ async function handleList(url: URL, key: PartnerKey) {
   if (limited) return limited;
 
   let query = supabase
-    .from("partner_leads_v1")
+    .from("verified_leads_v1")
     .select("*")
     .order("updated_at", { ascending: true })
     .order("place_id", { ascending: true })
@@ -491,13 +494,13 @@ async function handleDetail(placeId: string, key: PartnerKey) {
   if (limited) return limited;
 
   const { data, error: queryError } = await supabase
-    .from("partner_leads_v1")
+    .from("verified_leads_v1")
     .select("*")
     .eq("place_id", placeId)
     .maybeSingle();
 
   if (queryError) return error("lead_query_failed", queryError.message, 500);
-  if (!data) return error("not_found", "Lead not found or not eligible for partner sync.", 404);
+  if (!data) return error("not_found", "Lead not found or not verified.", 404);
 
   return json({
     data: toDetailLead(data as PartnerLeadRow),
@@ -595,19 +598,19 @@ async function handleEligibility(placeId: string, key: PartnerKey) {
   if (dmError) return error("eligibility_query_failed", dmError.message, 500);
 
   const { data: partnerRow, error: partnerError } = await supabase
-    .from("partner_leads_v1")
+    .from("verified_leads_v1")
     .select("place_id")
     .eq("place_id", placeId)
     .maybeSingle();
   if (partnerError) return error("eligibility_query_failed", partnerError.message, 500);
 
   const gates = {
-    enriched:
+    has_lead_payload:
       lead.enrichment_status === "enriched" &&
       lead.enriched_json != null &&
       typeof lead.enriched_json === "object",
-    confidence_not_low: String(lead.confidence ?? "") !== "Low",
-    score_gte_min_export: Number(lead.lead_score ?? 0) >= MIN_EXPORT_SCORE,
+    confidence_ok: String(lead.confidence ?? "") !== "Low",
+    score_ok: Number(lead.lead_score ?? 0) >= MIN_EXPORT_SCORE,
     verified_decision_maker: Boolean(verifiedDm),
   };
   const failures = Object.entries(gates)
@@ -618,12 +621,13 @@ async function handleEligibility(placeId: string, key: PartnerKey) {
     data: {
       place_id: placeId,
       eligible: Boolean(partnerRow),
-      in_partner_leads_v1: Boolean(partnerRow),
+      is_verified: Boolean(partnerRow),
+      status: partnerRow ? "verified" : "unverified",
       gates,
       failures,
       notes: [
-        "Eligibility requires verified named decision-maker (not partial, not Google mainline alone).",
-        `Score gate uses min_export_score=${MIN_EXPORT_SCORE}.`,
+        "Eligible leads are Verified only: named decision-maker + grounded local phone (not Google mainline alone).",
+        `Score gate uses lead_score >= ${MIN_EXPORT_SCORE}.`,
       ],
     },
     meta: {
@@ -745,7 +749,7 @@ async function handlePostOutcome(placeId: string, key: PartnerKey, body: Record<
     .single();
   if (upsertError) return error("outcome_write_failed", upsertError.message, 500);
 
-  // Mirror into lead_outcomes for dashboard/insights when empty or auto-only.
+  // Mirror into lead_outcomes for dashboard/operator feedback when empty or auto-only.
   // Never clobber an operator CRM/dashboard row.
   const { data: existingOutcome } = await supabase
     .from("lead_outcomes")

@@ -144,23 +144,6 @@ class Settings(BaseSettings):
         default=24,
         json_schema_extra=_meta("Caching & Archive", help="Website domain validation cache TTL"),
     )
-    learned_score_weight: float = Field(
-        default=0.0,
-        json_schema_extra=_meta(
-            "Quality",
-            title="Learned score weight",
-            help="Blend weight for learned score (0 = heuristic only; enable after --fit-score). "
-            "Partner eligibility uses verified named DM, not this weight.",
-        ),
-    )
-    learned_score_min_labels: int = Field(
-        default=150,
-        json_schema_extra=_meta(
-            "Quality",
-            title="Min labels for fit-score",
-            help="Minimum labeled outcomes before insights --fit-score is allowed to run",
-        ),
-    )
     researched_miss_reopen_days: int = Field(
         default=90,
         json_schema_extra=_meta(
@@ -182,10 +165,9 @@ class Settings(BaseSettings):
         ),
     )
 
-    # NOTE: the single export/eligibility gate lives in the partner_leads_v1 SQL view
-    # (enrichment_status='enriched' AND confidence <> 'Low' AND lead_score >= 25 AND
-    # is_verified_decision_maker(...)). There is no Python-side min-score knob — a
-    # dead `min_export_score` setting was removed 2026-07-20 to avoid a false affordance.
+    # NOTE: the single export/eligibility gate lives in the verified_leads_v1 SQL view
+    # (worked lead payload + confidence <> 'Low' AND lead_score >= 25 AND
+    # is_verified_decision_maker(...)). There is no Python-side min-score knob.
     # Discovery radius comes from config/markets.yaml `search_radius_m` (not a Settings
     # field). Places page size is the API max (20) in discover/places.py.
 

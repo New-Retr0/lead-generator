@@ -6,7 +6,7 @@
 
 **What we do not sell:** The local `dashboard/`. It is a developer/operator/observer console for running and diagnosing the generator, not a CRM or partner application.
 
-Durable value sits in the backend: Places/Overpass discovery, Firecrawl web intelligence, grounding verification, owner-chain research, evidence provenance, and the compounding dataset of features + labeled outcomes. Every partner posting structured feedback (`leads:feedback`) improves extraction, scoring, and targeting.
+Durable value sits in the backend: Places discovery, Firecrawl research, grounding verification, owner-chain research, evidence provenance, and enrichment playbooks. Partner feedback (`leads:feedback`) stays as the outcome substrate; auto-ML scoring is deferred until closes exist.
 
 ## Parity principle
 

@@ -48,7 +48,7 @@ def load_enriched_from_csv(csv_path: Path) -> list[EnrichedLead]:
             status_raw = row.get("status", "")
             inv_status = (
                 InvestigationStatus.ENRICHED
-                if status_raw == "Ready to call"
+                if status_raw in ("Verified", "Ready to call")
                 else InvestigationStatus.NEEDS_MANUAL
             )
 

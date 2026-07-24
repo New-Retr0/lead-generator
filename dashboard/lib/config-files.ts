@@ -12,11 +12,7 @@ export const CONFIG_FILE_DESCRIPTIONS: Record<string, string> = {
   "jurisdictions.yaml": "County recorder and portal URLs",
   "sources.yaml": "Automatic source checklist tiers per lead",
   "decision_roles.yaml": "Canonical decision-maker roles (sync to Python/SQL/TS)",
-  "learned_score.yaml": "Learned score coefficients (written by insights --fit-score)",
 };
-
-export const LEARNED_SCORE_WARNING =
-  "This file is normally written by pallares-leads insights --fit-score. Manual edits may be overwritten.";
 
 const CONFIG_NAME_RE = /^[a-z0-9_]+\.yaml$/i;
 
@@ -64,7 +60,7 @@ export function listConfigFiles(): ConfigFileSummary[] {
         size: stat.size,
         mtime: stat.mtime.toISOString(),
         description: CONFIG_FILE_DESCRIPTIONS[name] ?? "Pipeline configuration",
-        warnManualEdit: name === "learned_score.yaml",
+        warnManualEdit: false,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));

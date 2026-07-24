@@ -21,14 +21,13 @@ const TONE_VALUE: Record<AttentionItem["tone"], string> = {
 
 function iconFor(key: string) {
   if (key === "running") return PlayCircle;
-  if (key === "ready") return PhoneCall;
+  if (key === "verified") return PhoneCall;
   return Radio;
 }
 
 /**
- * Ops pulse for the solo operator: what’s running, what’s ready to call,
- * and what’s still only partial. Not an “alarm” strip — verified DMs are
- * inventory health, not something that needs triage.
+ * Ops pulse for the solo operator: what’s running, what’s verified,
+ * and what’s still unverified (still tryable).
  */
 export function AttentionStrip({ items }: { items: AttentionItem[] }) {
   const running = items.find((item) => item.key === "running");

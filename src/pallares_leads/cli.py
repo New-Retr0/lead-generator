@@ -649,16 +649,6 @@ def cmd_db_archive_stats(_args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_insights(args: argparse.Namespace) -> int:
-    from pallares_leads.intelligence.analyze import run_insights
-
-    settings = get_settings()
-    with LeadStore() as store:
-        report = run_insights(store, settings, fit_score=args.fit_score)
-    print(json.dumps(report, indent=2, default=str))
-    return 0
-
-
 def cmd_db_prune(args: argparse.Namespace) -> int:
     settings = get_settings()
     with LeadStore() as store:
@@ -971,17 +961,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report what would be deleted without removing files or rows",
     )
     db_prune.set_defaults(func=cmd_db_prune)
-
-    insights = sub.add_parser(
-        "insights",
-        help="Correlate lead features with outcomes; write report to data/insights/",
-    )
-    insights.add_argument(
-        "--fit-score",
-        action="store_true",
-        help="Fit learned score coefficients to config/learned_score.yaml (requires >=150 labels)",
-    )
-    insights.set_defaults(func=cmd_insights)
 
     eval_replay = sub.add_parser(
         "eval-replay",

@@ -93,7 +93,6 @@ from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.enrich.socials import social_facts_from_pages
 from pallares_leads.enrich.source_checklist import run_source_checklist
 from pallares_leads.enrich.verify import Rejection
-from pallares_leads.intelligence.features import FEATURE_VERSION, build_feature_snapshot
 from pallares_leads.pipeline.dedupe import dedupe_leads
 from pallares_leads.pipeline.export_csv import export_csv
 from pallares_leads.progress import bind_progress
@@ -2178,7 +2177,7 @@ def _run_market_category_body(
 
     enriched: list[EnrichedLead] = []
 
-    def _persist_lead(lead: EnrichedLead, *, client: FirecrawlClient | None = None) -> None:
+    def _persist_lead(lead: EnrichedLead) -> None:
         if discover_only:
             return
         profile_key = classify_lead(RawLead.model_validate(lead.model_dump())).key
@@ -2212,54 +2211,6 @@ def _run_market_category_body(
                         city=lead.city,
                         run_id=run_id,
                     )
-        owner = store.get_owner_record(lead.place_id) or {}
-        principals = owner.get("principals_json") or []
-        if isinstance(principals, str):
-            try:
-                principals = json.loads(principals)
-            except json.JSONDecodeError:
-                principals = []
-        bbb_facts = [
-            f
-            for f in lead.facts
-            if getattr(f, "fact_kind", "") == "registry_rating"
-            or (isinstance(f, dict) and f.get("fact_kind") == "registry_rating")
-        ]
-        bbb_rating = ""
-        bbb_years = None
-        if bbb_facts:
-            val = getattr(bbb_facts[0], "value", None) or bbb_facts[0].get("value", {})
-            if isinstance(val, dict):
-                bbb_rating = str(val.get("rating") or val.get("bbb_rating") or "")
-                years_raw = val.get("years_in_business")
-                if years_raw is not None:
-                    try:
-                        bbb_years = int(years_raw)
-                    except (TypeError, ValueError):
-                        bbb_years = None
-        features = build_feature_snapshot(
-            lead,
-            run_id=run_id,
-            category_key=category_key,
-            profile_key=profile_key,
-            owner_record_present=bool(owner),
-            owner_kind=str(owner.get("owner_kind") or ""),
-            principals_count=len(principals) if isinstance(principals, list) else 0,
-            bbb_rating=bbb_rating,
-            bbb_years_in_business=bbb_years,
-            grounding_rejections_count=len(client.session_rejections) if client else 0,
-            model="",
-            cost_summary={
-                "credits_total": store.lead_run_credits(run_id, lead.place_id),
-                "usd_total": store.lead_cost_usd(run_id, lead.place_id),
-            },
-        )
-        store.upsert_lead_features(
-            lead.place_id,
-            run_id,
-            features,
-            feature_version=FEATURE_VERSION,
-        )
 
     def _do_enrich(
         raw: RawLead,
@@ -2506,7 +2457,7 @@ def _run_market_category_body(
                             result = future.result()
                             if result.notes != "__claim_skip__":
                                 enriched.append(result)
-                                _persist_lead(result, client=firecrawl)
+                                _persist_lead(result)
                             completed_n += 1
                             _bump_live_counters()
                             with inflight_lock:
@@ -2596,7 +2547,7 @@ def _run_market_category_body(
                     one.shutdown(wait=False, cancel_futures=True)
                 if result.notes != "__claim_skip__":
                     enriched.append(result)
-                    _persist_lead(result, client=firecrawl)
+                    _persist_lead(result)
                 _bump_live_counters()
                 with inflight_lock:
                     inflight_state["done"] = i

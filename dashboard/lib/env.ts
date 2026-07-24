@@ -80,8 +80,6 @@ const CLI_ENV_ALLOWLIST = [
   "DUD_REOPEN_DAYS",
   "OWNER_CHAIN_MAX_PER_RUN",
   "SOURCE_CHECKLIST_MAX_PAGES",
-  "LEARNED_SCORE_WEIGHT",
-  "LEARNED_SCORE_MIN_LABELS",
 ] as const;
 
 function pickAllowed(source: Record<string, string | undefined>): Record<string, string> {

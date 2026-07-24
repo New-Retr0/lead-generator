@@ -17,7 +17,6 @@ import type {
   LeadCostByProvider,
   LeadCostEvent,
   LeadCosts,
-  InsightReport,
   LeadDetail,
   LeadFact,
   LeadOutcome,
@@ -456,14 +455,19 @@ export const listLeads = cache(async function listLeads(filters?: {
   crmStatus?: string;
   type?: string;
   minScore?: number;
-  /** Default ready = verified DMs only. */
+  /** Default verified = named DM + local phone only. */
   inventoryMode?: InventoryMode;
   limit?: number;
 }): Promise<LeadRow[]> {
   if (!dbAvailable()) return [];
   const sql = getSql();
   const limit = filters?.limit ?? 500;
-  const inventoryMode: InventoryMode = filters?.inventoryMode ?? "ready";
+  const inventoryMode: InventoryMode = filters?.inventoryMode ?? "verified";
+  const statusFilter = filters?.status;
+  const wantVerified =
+    statusFilter === "Verified" || statusFilter === "Ready to call";
+  const wantUnverified =
+    statusFilter === "Unverified" || statusFilter === "Needs research";
 
   const rows = await sql`
     SELECT leads.place_id, leads.business_name, leads.market_key, leads.category_key, leads.city,
@@ -481,14 +485,17 @@ export const listLeads = cache(async function listLeads(filters?: {
         'skipped', 'needs_manual', 'enriching', 'dud'
       )
       ${
-        inventoryMode === "ready"
+        inventoryMode === "verified"
           ? sql`AND public.is_verified_decision_maker(
               leads.enriched_json,
               leads.enriched_json ->> 'verification_level'
             )`
-          : inventoryMode === "partial"
-            ? sql`AND COALESCE(leads.enriched_json->>'verification_level', 'unverified') = 'partial'`
-            : sql`AND COALESCE(leads.enriched_json->>'verification_level', 'unverified') IN ('verified', 'partial')`
+          : inventoryMode === "unverified"
+            ? sql`AND NOT public.is_verified_decision_maker(
+                leads.enriched_json,
+                leads.enriched_json ->> 'verification_level'
+              )`
+            : sql``
       }`
     }
     ${filters?.market ? sql`AND leads.market_key = ${filters.market}` : sql``}
@@ -501,12 +508,12 @@ export const listLeads = cache(async function listLeads(filters?: {
           : sql``
     }
     ${
-      filters?.status === "Ready to call"
+      wantVerified
         ? sql`AND public.is_verified_decision_maker(
             leads.enriched_json,
             leads.enriched_json ->> 'verification_level'
           )`
-        : filters?.status === "Needs research"
+        : wantUnverified
           ? sql`AND NOT public.is_verified_decision_maker(
               leads.enriched_json,
               leads.enriched_json ->> 'verification_level'
@@ -525,10 +532,15 @@ export const listLeads = cache(async function listLeads(filters?: {
   const leads: LeadRow[] = [];
   for (const row of rows) {
     const data = parseEnrichedJson(row.enriched_json);
-    // Belt-and-suspenders: SQL already gates ready / status / type before LIMIT.
-    if (inventoryMode === "ready" && !isVerifiedDecisionMaker(data)) continue;
+    // Belt-and-suspenders: SQL already gates verified / status / type before LIMIT.
+    if (inventoryMode === "verified" && !isVerifiedDecisionMaker(data)) continue;
+    if (inventoryMode === "unverified" && isVerifiedDecisionMaker(data)) continue;
     const status = salesStatus(data);
-    if (filters?.status && status !== filters.status) continue;
+    if (wantVerified && status !== "Verified") continue;
+    if (wantUnverified && status !== "Unverified") continue;
+    if (statusFilter && !wantVerified && !wantUnverified && status !== statusFilter) {
+      continue;
+    }
     const crmStatus = String(row.crm_status ?? "New");
     if (filters?.crmStatus && crmStatus !== filters.crmStatus) continue;
     const leadType: LeadType = (row.category_key as string | null)?.startsWith("vendor_")
@@ -1759,84 +1771,52 @@ export async function listLeadTouches(placeId: string, limit = 50): Promise<Lead
   }));
 }
 
-export const getLatestInsightReport = cache(async function getLatestInsightReport(): Promise<InsightReport | null> {
-  if (!dbAvailable()) return null;
+export type EnrichmentPlaybookRow = {
+  profile_key: string;
+  property_type: string;
+  site_kind: string;
+  brand: string;
+  success_count: number;
+  skip_firecrawl: boolean;
+  trust_google_phone: boolean;
+  winning_tier: string;
+  contact_role_label: string;
+  last_used_at: string | null;
+};
+
+export const getEnrichmentPlaybooks = cache(async function getEnrichmentPlaybooks(
+  limit = 80,
+): Promise<EnrichmentPlaybookRow[]> {
+  if (!dbAvailable()) return [];
   const sql = getSql();
   let rows;
   try {
     rows = await sql`
-      SELECT id, created_at, sample_size, labeled_count, report_json, model_metrics
-      FROM insight_reports
-      ORDER BY created_at DESC
-      LIMIT 1
+      SELECT profile_key, property_type, site_kind, brand, success_count,
+             playbook_json, last_used_at
+      FROM enrichment_profiles
+      ORDER BY success_count DESC NULLS LAST, last_used_at DESC NULLS LAST
+      LIMIT ${limit}
     `;
   } catch {
-    return null;
+    return [];
   }
-  const row = rows[0];
-  if (!row) return null;
-  return {
-    id: Number(row.id),
-    created_at: toIso(row.created_at),
-    sample_size: Number(row.sample_size),
-    labeled_count: Number(row.labeled_count),
-    report_json:
-      row.report_json && typeof row.report_json === "object"
-        ? (row.report_json as Record<string, unknown>)
-        : {},
-    model_metrics:
-      row.model_metrics && typeof row.model_metrics === "object"
-        ? (row.model_metrics as Record<string, unknown>)
-        : null,
-  };
+  return rows.map((row) => {
+    const playbook =
+      row.playbook_json && typeof row.playbook_json === "object"
+        ? (row.playbook_json as Record<string, unknown>)
+        : {};
+    return {
+      profile_key: String(row.profile_key),
+      property_type: String(row.property_type ?? ""),
+      site_kind: String(row.site_kind ?? ""),
+      brand: String(row.brand ?? ""),
+      success_count: Number(row.success_count ?? 0),
+      skip_firecrawl: Boolean(playbook.skip_firecrawl),
+      trust_google_phone: Boolean(playbook.trust_google_phone),
+      winning_tier: String(playbook.winning_tier ?? ""),
+      contact_role_label: String(playbook.contact_role_label ?? ""),
+      last_used_at: row.last_used_at != null ? toIso(row.last_used_at) : null,
+    };
+  });
 });
-
-export async function getFeatureOutcomeStats(): Promise<{
-  winRateByCategory: { bucket: string; wins: number; total: number; smoothed_win_rate: number }[];
-  winRateByMarket: { bucket: string; wins: number; total: number; smoothed_win_rate: number }[];
-}> {
-  if (!dbAvailable()) return { winRateByCategory: [], winRateByMarket: [] };
-  const sql = getSql();
-  let categoryRows;
-  let marketRows;
-  try {
-    categoryRows = await sql`
-      SELECT COALESCE(features->>'category_key', 'unknown') AS bucket,
-             SUM(CASE WHEN label_good = 1 THEN 1 ELSE 0 END)::int AS wins,
-             COUNT(*) FILTER (WHERE label_good IS NOT NULL)::int AS total
-      FROM feature_outcomes
-      GROUP BY 1
-      HAVING COUNT(*) FILTER (WHERE label_good IS NOT NULL) > 0
-      ORDER BY total DESC
-      LIMIT 20
-    `;
-    marketRows = await sql`
-      SELECT COALESCE(features->>'market_key', 'unknown') AS bucket,
-             SUM(CASE WHEN label_good = 1 THEN 1 ELSE 0 END)::int AS wins,
-             COUNT(*) FILTER (WHERE label_good IS NOT NULL)::int AS total
-      FROM feature_outcomes
-      GROUP BY 1
-      HAVING COUNT(*) FILTER (WHERE label_good IS NOT NULL) > 0
-      ORDER BY total DESC
-      LIMIT 20
-    `;
-  } catch {
-    return { winRateByCategory: [], winRateByMarket: [] };
-  }
-  const alpha = 2;
-  const smooth = (wins: number, total: number) => (wins + alpha) / (total + 2 * alpha);
-  return {
-    winRateByCategory: categoryRows.map((row) => ({
-      bucket: String(row.bucket),
-      wins: Number(row.wins),
-      total: Number(row.total),
-      smoothed_win_rate: smooth(Number(row.wins), Number(row.total)),
-    })),
-    winRateByMarket: marketRows.map((row) => ({
-      bucket: String(row.bucket),
-      wins: Number(row.wins),
-      total: Number(row.total),
-      smoothed_win_rate: smooth(Number(row.wins), Number(row.total)),
-    })),
-  };
-}

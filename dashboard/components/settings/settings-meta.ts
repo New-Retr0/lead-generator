@@ -71,7 +71,7 @@ export const GROUP_META: GroupMeta[] = [
     title: "Quality & reopen",
     short: "Quality",
     description:
-      "Partner eligibility is verified named DM (first+last + role + local phone) — not score weight. These knobs control learned-score blending and when misses/duds are tried again.",
+      "Verified = named DM (first+last + role + local phone) — not a score. These knobs control when researched misses and time-boxed duds are tried again.",
   },
   {
     id: "Caching & Archive",
@@ -140,7 +140,7 @@ export const FIRECRAWL_SECTIONS: FirecrawlSection[] = [
     id: "advanced",
     title: "Advanced / opt-in",
     description:
-      "Circuit breakers and optional Ready-page monitors (recurring scrape credits — off by default).",
+      "Circuit breakers and optional Verified-page monitors (recurring scrape credits — off by default).",
     collapsedByDefault: true,
     fields: [
       "firecrawl_grounding_storm_limit",
@@ -154,12 +154,7 @@ export const FIRECRAWL_SECTIONS: FirecrawlSection[] = [
 /** Preferred field order within non-Firecrawl groups (unknown fields append alphabetically). */
 export const GROUP_FIELD_ORDER: Partial<Record<SettingsGroupId, readonly string[]>> = {
   Enrichment: ["enrichment_lead_timeout_s", "source_checklist_max_pages"],
-  Quality: [
-    "learned_score_weight",
-    "learned_score_min_labels",
-    "researched_miss_reopen_days",
-    "dud_reopen_days",
-  ],
+  Quality: ["researched_miss_reopen_days", "dud_reopen_days"],
   "Caching & Archive": [
     "page_cache_ttl_days",
     "domain_cache_ttl_hours",
@@ -231,10 +226,10 @@ export const YAML_CATEGORIES: YamlCategory[] = [
     files: ["decision_roles.yaml"],
   },
   {
-    id: "learn",
-    title: "Costs & learning",
-    description: "Provider pricing estimates and optional learned score coefficients",
-    files: ["pricing.yaml", "learned_score.yaml"],
+    id: "costs",
+    title: "Costs",
+    description: "Provider pricing estimates for the cost ledger",
+    files: ["pricing.yaml"],
   },
 ];
 

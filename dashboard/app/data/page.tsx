@@ -3,15 +3,10 @@ import { DataExplorer } from "@/components/data/data-explorer";
 import { DataPageFallback } from "@/components/data/data-page-fallback";
 import { getPipelineConfig } from "@/lib/config";
 import { listLeads } from "@/lib/db";
+import { parseInventoryMode } from "@/lib/lead-labels";
 import type { InventoryMode } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
-
-function parseInventoryMode(raw: string | string[] | undefined): InventoryMode {
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (value === "partial" || value === "all_quality" || value === "dud") return value;
-  return "ready";
-}
 
 function firstParam(raw: string | string[] | undefined): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw;
@@ -27,7 +22,7 @@ export default async function DataPage({
   }>;
 }) {
   const params = await searchParams;
-  const inventoryMode = parseInventoryMode(params.inventory);
+  const inventoryMode: InventoryMode = parseInventoryMode(firstParam(params.inventory));
   const tabRaw = firstParam(params.tab);
   const market = firstParam(params.market);
   const [leads, config] = await Promise.all([
