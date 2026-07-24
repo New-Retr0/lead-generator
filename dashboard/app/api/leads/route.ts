@@ -5,7 +5,7 @@ import type { InventoryMode } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 function parseInventoryMode(raw: string | null): InventoryMode {
-  if (raw === "partial" || raw === "all_quality") return raw;
+  if (raw === "partial" || raw === "all_quality" || raw === "dud") return raw;
   return "ready";
 }
 

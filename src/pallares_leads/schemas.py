@@ -177,6 +177,11 @@ class SalesExportRow(BaseModel):
     website: str
     maps: str
     notes: str
+    # Provenance so the deliverable itself carries the grounding moat: the buyer can
+    # re-open the source and read the quote behind the primary contact.
+    verification: str = ""
+    evidence_url: str = ""
+    evidence_quote: str = ""
     place_id: str = Field(serialization_alias="_place_id")
 
     @classmethod
@@ -186,6 +191,23 @@ class SalesExportRow(BaseModel):
         from pallares_leads.resolve.lead_score import compute_lead_score
 
         score = lead.lead_score if lead.lead_score is not None else compute_lead_score(lead)
+
+        # Provenance for the primary contact: prefer the site_contact backing the
+        # exported phone (its source_url + verbatim quote), else the lead-level source.
+        best_phone = (lead.best_contact_phone or "").strip()
+        evidence_url = ""
+        evidence_quote = ""
+        for contact in lead.site_contacts:
+            if best_phone and (contact.phone or "").strip() == best_phone:
+                evidence_url = contact.source_url or ""
+                evidence_quote = contact.quote or ""
+                break
+        if not evidence_url:
+            csu = lead.contact_source_url or ""
+            if csu and csu != NOT_FOUND:
+                evidence_url = csu
+            elif lead.evidence_urls:
+                evidence_url = lead.evidence_urls[0]
 
         return cls(
             confidence=lead.confidence.value,
@@ -201,6 +223,9 @@ class SalesExportRow(BaseModel):
             website=website_link_url(lead),
             maps=lead.google_maps_url or "",
             notes=lead.notes,
+            verification=lead.verification_level or "",
+            evidence_url=evidence_url,
+            evidence_quote=evidence_quote,
             place_id=lead.place_id,
         )
 
@@ -221,5 +246,8 @@ class SalesExportRow(BaseModel):
             "website",
             "maps",
             "notes",
+            "verification",
+            "evidence_url",
+            "evidence_quote",
             "_place_id",
         ]

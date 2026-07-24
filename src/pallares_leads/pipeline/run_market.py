@@ -8,8 +8,10 @@ import time
 from concurrent.futures import (
     FIRST_COMPLETED,
     ThreadPoolExecutor,
-    TimeoutError as FuturesTimeoutError,
     wait,
+)
+from concurrent.futures import (
+    TimeoutError as FuturesTimeoutError,
 )
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,7 +20,6 @@ from typing import TYPE_CHECKING
 from pallares_leads.config_loader import CategoryConfig, MarketConfig, load_markets
 from pallares_leads.db.store import LeadStore
 from pallares_leads.discover.county_filter import filter_excluded_counties
-from pallares_leads.discover.overpass import OverpassClient
 from pallares_leads.discover.places import PlacesClient
 from pallares_leads.enrich.apply import (
     _ROLE_PRIORITY,
@@ -92,6 +93,7 @@ from pallares_leads.pipeline.dedupe import dedupe_leads
 from pallares_leads.pipeline.export_csv import export_csv
 from pallares_leads.progress import bind_progress
 from pallares_leads.progress import emit as progress_emit
+from pallares_leads.resolve.dud_gate import discovery_dud_reason, terminal_dud_reason
 from pallares_leads.resolve.lead_score import compute_lead_score
 from pallares_leads.resolve.verification import (
     compute_verification_level,
@@ -129,15 +131,6 @@ def _discover_category(
     store: LeadStore | None = None,
     run_id: str | None = None,
 ) -> list[RawLead]:
-    source = category.get("source", "places")
-    if source == "overpass":
-        client = OverpassClient(settings)
-        return client.discover_category(
-            market_key=market_key,
-            market=market,
-            category=category,
-            limit=limit,
-        )
     places = PlacesClient(settings, store=store, run_id=run_id)
     return places.discover_category(
         market_key=market_key,
@@ -1732,27 +1725,14 @@ def run_market_category(
     campaign_key: str | None = None,
 ) -> Path | None:
     if dry_run:
-        source = category.get("source", "places")
-        if source == "overpass":
-            logger.info(
-                "[dry-run] Overpass query filter=%s area=%s-%s m² in %s, %s",
-                category.get("overpass_filter"),
-                category.get("area_min_m2"),
-                category.get("area_max_m2"),
-                market["city"],
-                market["state"],
-            )
-        else:
-            for q in category.get("queries") or []:
-                logger.info(
-                    "[dry-run] Text search: %r in %s, %s", q, market["city"], market["state"]
-                )
-            nearby = category.get("nearby_types")
-            if nearby:
-                logger.info("[dry-run] Nearby search types: %s", nearby)
-            included = category.get("included_type")
-            if included:
-                logger.info("[dry-run] Text search includedType: %s", included)
+        for q in category.get("queries") or []:
+            logger.info("[dry-run] Text search: %r in %s, %s", q, market["city"], market["state"])
+        nearby = category.get("nearby_types")
+        if nearby:
+            logger.info("[dry-run] Nearby search types: %s", nearby)
+        included = category.get("included_type")
+        if included:
+            logger.info("[dry-run] Text search includedType: %s", included)
         if limit:
             logger.info("[dry-run] Would cap at %d leads after dedupe", limit)
         return None
@@ -1955,6 +1935,32 @@ def _run_market_category_body(
             "Skipped %d known lead(s) already in configured database",
             skipped_known,
         )
+    # Discovery dud gate: cancel out-of-green places (e.g. temporarily closed) BEFORE
+    # any paid enrichment and store them with a reason so they are never re-scraped.
+    kept_leads: list[RawLead] = []
+    discovery_duds = 0
+    for raw in raw_leads:
+        dud_reason = discovery_dud_reason(raw)
+        if dud_reason:
+            store.mark_dud(
+                raw.place_id,
+                reason=dud_reason,
+                business_name=raw.business_name,
+                market_key=market_key,
+                category_key=category_key,
+                city=raw.city,
+                run_id=run_id,
+            )
+            discovery_duds += 1
+        else:
+            kept_leads.append(raw)
+    raw_leads = kept_leads
+    if discovery_duds:
+        logger.info(
+            "Discovery dud gate cancelled %d out-of-green lead(s) before enrichment",
+            discovery_duds,
+        )
+
     store.update_run_counters(
         run_id,
         discovered_count=len(discovered),
@@ -2074,6 +2080,22 @@ def _run_market_category_body(
                 lead_score=lead.lead_score,
             )
             store.commit_cost_events()
+            # Phase B dud gate: a terminal researched miss that is also unreachable
+            # (no callable phone anywhere and no live website) is a dud — stamp the
+            # reason so it is never re-scraped. Runs after upsert_enriched, and
+            # mark_dud only flips status + reason, so enriched_json is preserved.
+            if lead.investigation_status == InvestigationStatus.SKIPPED:
+                dud_reason = terminal_dud_reason(lead, website_alive=bool(lead.website))
+                if dud_reason:
+                    store.mark_dud(
+                        lead.place_id,
+                        reason=dud_reason,
+                        business_name=lead.business_name,
+                        market_key=market_key,
+                        category_key=category_key,
+                        city=lead.city,
+                        run_id=run_id,
+                    )
         owner = store.get_owner_record(lead.place_id) or {}
         principals = owner.get("principals_json") or []
         if isinstance(principals, str):

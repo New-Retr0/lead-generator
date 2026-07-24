@@ -74,9 +74,12 @@ firecrawl:
         agent: 1000
 
 google_places:
-  # Enterprise + Atmosphere SKU (reviews, parkingOptions, paymentOptions, editorialSummary)
-  text_search_usd: 0.040
-  nearby_search_usd: 0.040
+  # Enterprise (Contact) SKU — phone/website hold Enterprise; no Atmosphere fields.
+  # Verified 2026-07-20: Text Search / Nearby Search Enterprise = $35 / 1,000 requests
+  # (developers.google.com/maps/billing-and-pricing/pricing). Enterprise + Atmosphere
+  # would be $40/1k — keep discover/places.py _PLACE_FIELDS free of Atmosphere fields.
+  text_search_usd: 0.035
+  nearby_search_usd: 0.035
   health_check_usd: 0.0
 
 browser_use:

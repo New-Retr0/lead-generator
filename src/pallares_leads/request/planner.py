@@ -54,7 +54,7 @@ def _fallback_spec(prompt: str, settings: Settings) -> LeadRequestSpec:
     synonym_map = {
         "strip mall": "strip_mall",
         "shopping center": "shopping_center",
-        "parking": "parking_small",
+        "parking": "parking",
         "hotel": "hotel",
         "thrift": "thrift_store",
         "public works": "public_agency",

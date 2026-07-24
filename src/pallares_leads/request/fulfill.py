@@ -12,14 +12,14 @@ import httpx
 
 from pallares_leads.config_loader import CategoryConfig, MarketConfig, load_categories, load_markets
 from pallares_leads.db.store import LeadStore
-from pallares_leads.discover.overpass import OverpassClient
 from pallares_leads.discover.places import PlacesClient
 from pallares_leads.enrich.contact_requirements import get_enrichment_rules, is_callable_phone
 from pallares_leads.enrich.firecrawl_client import FirecrawlClient
 from pallares_leads.pipeline.dedupe import dedupe_leads
 from pallares_leads.pipeline.export_csv import export_csv
 from pallares_leads.pipeline.run_market import enrich_lead
-from pallares_leads.progress import bind_progress, emit as progress_emit
+from pallares_leads.progress import bind_progress
+from pallares_leads.progress import emit as progress_emit
 from pallares_leads.request.spec import LeadRequestSpec
 from pallares_leads.resolve.lead_score import compute_lead_score, is_decision_maker_contact
 from pallares_leads.schemas import EnrichedLead, RawLead
@@ -159,23 +159,13 @@ def _discover_batch(
     store: LeadStore,
     run_id: str,
 ) -> list[RawLead]:
-    source = category.get("source", "places")
-    if source == "overpass":
-        client = OverpassClient(settings)
-        discovered = client.discover_category(
-            market_key=market_key,
-            market=market,
-            category=category,
-            limit=batch_size,
-        )
-    else:
-        places = PlacesClient(settings, store=store, run_id=run_id)
-        discovered = places.discover_category(
-            market_key=market_key,
-            market=market,
-            category=category,
-            limit=batch_size,
-        )
+    places = PlacesClient(settings, store=store, run_id=run_id)
+    discovered = places.discover_category(
+        market_key=market_key,
+        market=market,
+        category=category,
+        limit=batch_size,
+    )
     discovered, _ = dedupe_leads(discovered)
     return discovered[:batch_size]
 

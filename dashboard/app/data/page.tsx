@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 function parseInventoryMode(raw: string | string[] | undefined): InventoryMode {
   const value = Array.isArray(raw) ? raw[0] : raw;
-  if (value === "partial" || value === "all_quality") return value;
+  if (value === "partial" || value === "all_quality" || value === "dud") return value;
   return "ready";
 }
 

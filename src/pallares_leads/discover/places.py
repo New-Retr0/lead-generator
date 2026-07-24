@@ -21,16 +21,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Enterprise + Atmosphere fields — phone/website require Enterprise SKU.
+# Enterprise (Contact) SKU only — phone/website hold us at Enterprise ($0.035/req,
+# verified 2026-07-20 at developers.google.com/maps/billing-and-pricing/pricing).
+# No Atmosphere fields (reviews/rating/priceLevel/priceRange/editorialSummary/
+# parkingOptions/paymentOptions) — they would force the Enterprise + Atmosphere SKU
+# ($0.040) and feed nothing but the (out-of-scope) learning snapshot. Keep this mask
+# free of Atmosphere fields; test_places_mask_sku guards it against the priced SKU.
 _PLACE_FIELDS = (
     "places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,"
-    "places.addressComponents,places.plusCode,places.location,places.viewport,"
-    "places.types,places.primaryType,places.primaryTypeDisplayName,"
+    "places.location,places.types,places.primaryType,places.primaryTypeDisplayName,"
     "places.googleMapsUri,places.businessStatus,places.pureServiceAreaBusiness,"
-    "places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,"
-    "places.rating,places.userRatingCount,places.priceLevel,places.priceRange,"
-    "places.regularOpeningHours,places.utcOffsetMinutes,"
-    "places.editorialSummary,places.parkingOptions,places.paymentOptions,places.reviews"
+    "places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri"
+)
+
+# Atmosphere-tier fields that must never re-enter _PLACE_FIELDS without also bumping
+# the priced SKU in config/pricing.yaml (guarded by test_places_mask_sku).
+ATMOSPHERE_FIELDS = frozenset(
+    {
+        "places.reviews",
+        "places.rating",
+        "places.userRatingCount",
+        "places.priceLevel",
+        "places.priceRange",
+        "places.editorialSummary",
+        "places.parkingOptions",
+        "places.paymentOptions",
+    }
 )
 
 SEARCH_FIELD_MASK = f"{_PLACE_FIELDS},nextPageToken"
@@ -262,8 +278,19 @@ class PlacesClient:
 
     @staticmethod
     def _skip_place(place: dict[str, Any]) -> bool:
-        status = place.get("businessStatus")
-        return status == "CLOSED_PERMANENTLY"
+        """Unconditional discovery drops (never become a lead row).
+
+        CLOSED_PERMANENTLY and pure service-area businesses (no physical premise to
+        clean) can never yield a callable on-site decision-maker for exterior work.
+        CLOSED_TEMPORARILY is *not* dropped here — Google's temporary-closed flag is
+        often stale/false-positive on live storefronts, so it is routed to a soft dud
+        with a reopen window in resolve/dud_gate.py instead of a silent permanent drop.
+        """
+        if place.get("businessStatus") == "CLOSED_PERMANENTLY":
+            return True
+        if place.get("pureServiceAreaBusiness") is True:
+            return True
+        return False
 
     @staticmethod
     def _review_stats(reviews: list[Any] | None) -> dict[str, int | float] | None:

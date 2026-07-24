@@ -30,8 +30,9 @@ _DEFAULT_PRICING: dict[str, Any] = {
         "plans": _DEFAULT_FIRECRAWL_PLANS,
     },
     "google_places": {
-        "text_search_usd": 0.032,
-        "nearby_search_usd": 0.032,
+        # Enterprise (Contact) SKU — matches discover/places.py _PLACE_FIELDS (no Atmosphere).
+        "text_search_usd": 0.035,
+        "nearby_search_usd": 0.035,
         "health_check_usd": 0.0,
     },
 }

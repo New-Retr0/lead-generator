@@ -23,8 +23,6 @@ _expansion_categories: &expansion_categories
   - dollar_store
   - restaurant
   - parking
-  - parking_small
-  - parking_large_private
   - hotel
   - thrift_store
   - community_facility
@@ -48,7 +46,7 @@ campaigns:
       - property_manager
       - strip_mall
       - shopping_center
-      - parking_large_private
+      - parking
       - industrial
       - hotel
       - medical_plaza

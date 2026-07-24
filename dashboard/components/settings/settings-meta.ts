@@ -45,7 +45,7 @@ export const GROUP_META: GroupMeta[] = [
     title: "Discovery (Google Places)",
     short: "Discovery",
     description:
-      "How wide and deep each Places search goes. Larger radius / page size finds more businesses but costs ~$0.04 per request.",
+      "How wide and deep each Places search goes. Larger radius / page size finds more businesses but costs ~$0.035 per request.",
   },
   {
     id: "Firecrawl",

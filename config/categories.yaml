@@ -251,33 +251,6 @@ categories:
     enrichment:
       allow_owner_chain: true
 
-  parking_small:
-    label: Small Parking Lot
-    property_type: parking_small
-    source: overpass
-    queries: []
-    overpass_filter: '["amenity"="parking"]["parking"="surface"]'
-    area_min_m2: 500
-    area_max_m2: 4000
-    enrichment:
-      min_contact_bar: phone
-      allow_owner_chain: true
-
-  parking_large_private:
-    label: Large Private Parking Lot
-    property_type: parking_large_private
-    source: overpass
-    queries: []
-    overpass_filter: '["amenity"="parking"]["parking"="surface"]'
-    area_min_m2: 8000
-    prefer_private_access: true
-    enrichment:
-      min_contact_bar: labeled_phone
-      allow_owner_chain: true
-      registry_lookup:
-        - bbb
-        - state_license
-
   hotel:
     label: Hotel / Motel
     property_type: hotel

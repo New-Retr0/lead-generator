@@ -18,7 +18,10 @@ from pallares_leads.utils.http_retry import OutOfCreditsError, request_with_retr
 def test_search_web_tracks_search_credits():
     payload = {"success": True, "data": []}
     assert FirecrawlClient._credits_from_payload(payload, operation="search") == 2
-    assert FirecrawlClient._credits_from_payload(payload, operation="scrape") == 0
+    # A *successful* scrape is billed its 1-credit estimate even with empty data
+    # (Firecrawl charges per scrape); only success is False returns 0.
+    assert FirecrawlClient._credits_from_payload(payload, operation="scrape") == 1
+    assert FirecrawlClient._credits_from_payload({"success": False}, operation="scrape") == 0
 
 
 def test_http_retry_raises_out_of_credits_on_402():

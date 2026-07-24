@@ -16,6 +16,7 @@ import psycopg
 from pallares_leads.db.local_cache import LocalCache
 from pallares_leads.db.pg import PgAdapter, connect, parse_json_field
 from pallares_leads.enrich.contact_requirements import has_verified_named_decision_maker
+from pallares_leads.resolve.dud_gate import PERMANENT_DUD_REASONS
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead
 from pallares_leads.settings import get_settings
 from pallares_leads.utils.normalize import normalize_entity_name
@@ -137,6 +138,26 @@ class LeadStore:
         return ""
 
     @staticmethod
+    def _row_dud_still_active(row: Any, reopen_days: int) -> bool:
+        """True when a stored dud must still be skipped (never re-scrape it).
+
+        Permanent reasons never reopen. Time-boxed reasons reopen after
+        ``reopen_days`` so a temporarily-closed / site-less place is reconsidered.
+        Keyed on dud_at so discovery-time duds (no last_enriched_at) are covered.
+        """
+        keys = row.keys() if hasattr(row, "keys") else ()
+        dud_at = row["dud_at"] if "dud_at" in keys else None
+        if not dud_at:
+            return False
+        reason = str((row["dud_reason"] if "dud_reason" in keys else "") or "").lower()
+        if reason in PERMANENT_DUD_REASONS:
+            return True
+        marked = LeadStore._parse_enriched_ts(dud_at)
+        if marked is None:
+            return True  # unparseable timestamp — keep skipping rather than re-spend
+        return marked >= (_utc_now() - timedelta(days=reopen_days))
+
+    @staticmethod
     def _row_is_researched_miss(row: Any) -> bool:
         """True when enrichment finished without a verified DM (do not re-spend)."""
         status = str(row["enrichment_status"] or "").lower()
@@ -170,6 +191,9 @@ class LeadStore:
     def _researched_miss_reopen_days(self) -> int:
         return int(get_settings().researched_miss_reopen_days)
 
+    def _dud_reopen_days(self) -> int:
+        return int(get_settings().dud_reopen_days)
+
     def should_skip(
         self,
         place_id: str,
@@ -183,12 +207,18 @@ class LeadStore:
 
         row = self._conn.execute(
             """
-            SELECT last_enriched_at, enrichment_status, enriched_json
+            SELECT last_enriched_at, enrichment_status, enriched_json, dud_reason, dud_at
             FROM leads WHERE place_id = ?
             """,
             (place_id,),
         ).fetchone()
-        if row is None or not row["last_enriched_at"]:
+        if row is None:
+            return False
+        # Stored duds skip until their reopen window — independent of last_enriched_at,
+        # so discovery-time duds (never enriched) are not re-admitted every run.
+        if self._row_dud_still_active(row, self._dud_reopen_days()):
+            return True
+        if not row["last_enriched_at"]:
             return False
 
         last_enriched = self._parse_enriched_ts(row["last_enriched_at"])
@@ -234,7 +264,8 @@ class LeadStore:
         with self._lock:
             rows = self._conn.execute(
                 f"""
-                SELECT place_id, last_enriched_at, enrichment_status, enriched_json
+                SELECT place_id, last_enriched_at, enrichment_status, enriched_json,
+                       dud_reason, dud_at
                 FROM leads WHERE place_id IN ({placeholders})
                 """,
                 ids,
@@ -243,8 +274,14 @@ class LeadStore:
 
         kept: list[RawLead] = []
         skipped = 0
+        dud_reopen_days = self._dud_reopen_days()
         for lead in leads:
             row = known.get(lead.place_id)
+            # Skip stored duds first — they may have no last_enriched_at (discovery-time
+            # duds) and must not be re-admitted until their reopen window elapses.
+            if row is not None and self._row_dud_still_active(row, dud_reopen_days):
+                skipped += 1
+                continue
             if row is None or not row["last_enriched_at"]:
                 kept.append(lead)
                 continue
@@ -293,6 +330,58 @@ class LeadStore:
                     now,
                     run_id,
                     InvestigationStatus.DISCOVERED.value,
+                ),
+            )
+            self._conn.commit()
+
+    def mark_dud(
+        self,
+        place_id: str,
+        *,
+        reason: str,
+        business_name: str,
+        market_key: str | None = None,
+        category_key: str | None = None,
+        city: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        """Record a lead as a dud with a reason so it is never re-scraped.
+
+        Sets enrichment_status='dud' and stamps dud_at (which drives skip-until-reopen
+        in filter_new_leads / should_skip, covering discovery-time duds that have no
+        last_enriched_at). Upserts so it works whether or not the row exists yet.
+        """
+        now = _iso(_utc_now())
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO leads (
+                    place_id, business_name, market_key, category_key, city,
+                    first_seen_at, last_seen_at, last_run_id,
+                    enrichment_status, dud_reason, dud_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'dud', ?, ?)
+                ON CONFLICT(place_id) DO UPDATE SET
+                    business_name = excluded.business_name,
+                    market_key = COALESCE(excluded.market_key, leads.market_key),
+                    category_key = COALESCE(excluded.category_key, leads.category_key),
+                    city = COALESCE(excluded.city, leads.city),
+                    last_seen_at = excluded.last_seen_at,
+                    last_run_id = COALESCE(excluded.last_run_id, leads.last_run_id),
+                    enrichment_status = 'dud',
+                    dud_reason = excluded.dud_reason,
+                    dud_at = excluded.dud_at
+                """,
+                (
+                    place_id,
+                    business_name,
+                    market_key,
+                    category_key,
+                    city,
+                    now,
+                    now,
+                    run_id,
+                    reason,
+                    now,
                 ),
             )
             self._conn.commit()
@@ -1669,6 +1758,28 @@ class LeadStore:
         data = dict(row)
         data["principals_json"] = parse_json_field(data.get("principals_json")) or []
         data["broker_json"] = parse_json_field(data.get("broker_json")) or []
+        return data
+
+    def get_owner_portfolio(self, place_id: str) -> dict[str, Any] | None:
+        """Owner-graph footprint for a lead: how many sites its owner controls.
+
+        Reads lead_owner_portfolio_v1 so callers can rank multi-site owners ("owns N
+        sites") — one owner controlling many parcels is a single portfolio deal.
+        Returns None when the lead has no resolved owner record.
+        """
+        row = self._conn.execute(
+            """
+            SELECT owner_name, owner_kind, portfolio_size, market_count, sibling_place_ids
+            FROM lead_owner_portfolio_v1 WHERE place_id = ?
+            """,
+            (place_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        siblings = data.get("sibling_place_ids")
+        if isinstance(siblings, str):
+            data["sibling_place_ids"] = parse_json_field(siblings) or []
         return data
 
     def get_owner_record_by_name(self, owner_name: str) -> dict[str, Any] | None:

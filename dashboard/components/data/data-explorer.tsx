@@ -138,7 +138,7 @@ function TableShellRows({ count }: { count: number }) {
 }
 
 function parseInventoryMode(raw: string | null): InventoryMode {
-  if (raw === "partial" || raw === "all_quality") return raw;
+  if (raw === "partial" || raw === "all_quality" || raw === "dud") return raw;
   return "ready";
 }
 
@@ -369,6 +369,7 @@ export function DataExplorer({
               ["ready", "Ready DMs"],
               ["partial", "Partial phone"],
               ["all_quality", "All quality"],
+              ["dud", "Duds"],
             ] as const
           ).map(([mode, label]) => (
             <button

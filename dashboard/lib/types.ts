@@ -28,6 +28,8 @@ export type LeadRow = {
   phone: string | null;
   best_contact_name: string | null;
   best_contact_role: string | null;
+  /** Populated only in the "dud" inventory view — why the lead was rejected. */
+  dud_reason?: string | null;
 };
 
 export type SiteContact = {
@@ -250,7 +252,7 @@ export type YieldSummary = {
   verifiedDm: number;
 };
 
-export type InventoryMode = "ready" | "partial" | "all_quality";
+export type InventoryMode = "ready" | "partial" | "all_quality" | "dud";
 
 export type OverviewStats = {
   totalLeads: number;

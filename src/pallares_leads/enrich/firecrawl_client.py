@@ -55,9 +55,23 @@ CONTACT_URL_HINTS = (
     "portfolio",
     "properties",
 )
-BROKER_PDF_HINTS = ("showcase", "loopnet", "pearson", "cbre", "costar", "crexi", "flyer")
+# Broker-PDF selection hints — broker-OWN-domain / generic flyer patterns only.
+# The listing aggregators (loopnet/costar/crexi/showcase) are intentionally excluded:
+# their ToS bar automated access and they Cloudflare-403 scrapes (CFAA exposure), and
+# their offering memoranda usually name a metro investment broker, not the local
+# facilities decision-maker. They are hard-blocked at the fetch chokepoints below.
+BROKER_PDF_HINTS = ("pearson", "cbre", "flyer")
 PDF_SNIPPET_MAX_CHARS = 3000
 SKIP_URL_HINTS = ("maps.google.com", "google.com/maps", "mapquest.com", "goo.gl/maps")
+
+# Hosts we must never fetch — commercial-listing aggregators whose Terms bar automated
+# access. Enforced at every Firecrawl fetch entry point (scrape/scrape_json/pdf).
+PROHIBITED_FETCH_HOSTS = ("loopnet.com", "costar.com", "crexi.com", "showcase.com")
+
+
+def is_prohibited_fetch_host(url: str | None) -> bool:
+    lower = (url or "").lower()
+    return any(host in lower for host in PROHIBITED_FETCH_HOSTS)
 
 EXCLUDE_SEARCH_DOMAINS = [
     "facebook.com",
@@ -711,6 +725,9 @@ class FirecrawlClient:
         return None
 
     def scrape_url(self, url: str, *, formats: list[str] | None = None) -> str | None:
+        if is_prohibited_fetch_host(url):
+            logger.info("Skipping prohibited fetch host: %s", url)
+            return None
         scrape_formats = formats or ["markdown"]
         if self._store and scrape_formats == ["markdown"]:
             cached = self._store.get_page_cache(
@@ -756,6 +773,9 @@ class FirecrawlClient:
 
     def scrape_pdf_snippet(self, url: str, *, max_pages: int = 15) -> str | None:
         """Extract markdown from a remote broker PDF via scrape+parsers."""
+        if is_prohibited_fetch_host(url):
+            logger.info("Skipping prohibited fetch host (pdf): %s", url)
+            return None
         if self._store:
             cached = self._store.get_page_cache(
                 url,
@@ -1098,6 +1118,9 @@ class FirecrawlClient:
 
     def _scrape_json(self, url: str, raw: RawLead) -> LeadInvestigationResult | None:
         """Tier-1 structured extraction via Firecrawl scrape+JSON."""
+        if is_prohibited_fetch_host(url):
+            logger.info("Skipping prohibited fetch host (json): %s", url)
+            return None
         cache_key_content = "json_grounded"
         if self._store:
             cached = self._store.get_page_cache(
@@ -1396,6 +1419,14 @@ class FirecrawlClient:
         if not batch_pages:
             return None
 
+        # COST NOTE (deferred optimization): the search above already scraped markdown
+        # for these candidates via scrape_options, and _scrape_json re-fetches each one
+        # for server-side JSON extraction (+5 cr) — a double fetch. Collapsing it needs
+        # either JsonFormat inside /search scrape_options (UNVERIFIED — Firecrawl docs
+        # only confirm 'question'/'highlights' there, not 'json') or dropping recall via
+        # a lower search limit (hurts DM discovery). Both require a live-credit A/B before
+        # shipping, so we keep the correctness-preserving double fetch for now. The early
+        # return on first match below already caps most leads at a single _scrape_json.
         logger.info(
             "  Tier 2 scrape+JSON: %d candidate page(s)",
             len(batch_pages),

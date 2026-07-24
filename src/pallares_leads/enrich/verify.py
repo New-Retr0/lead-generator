@@ -57,6 +57,15 @@ class GroundingResult:
     result: LeadInvestigationResult
     rejections: list[Rejection] = field(default_factory=list)
     grounded_quotes: dict[str, str] = field(default_factory=dict)  # value -> source snippet
+    # Contacts whose phone/email grounded but far from the person's name, so we
+    # unbound the reachable value from the person (association, not just presence).
+    pairing_downgrades: int = 0
+
+
+# Max distance (chars, in whitespace-collapsed source) between a person's name and a
+# phone/email for us to treat them as the same contact. Mirrors the deterministic
+# extractor's PAIRING_WINDOW_CHARS so both paths use one notion of "near".
+PAIRING_WINDOW_CHARS = 250
 
 
 def _squash(text: str) -> str:
@@ -90,6 +99,50 @@ def ground_name(name: str, page_text: str) -> bool:
     if len(cleaned.split()) < 2:
         return False
     return cleaned in _squash(page_text)
+
+
+def _occurrences(value: str, squashed_page: str, *, is_phone: bool) -> list[int]:
+    """Character indices where ``value`` appears in the whitespace-collapsed page."""
+    idxs: list[int] = []
+    if is_phone:
+        digits = phone_digits(value)
+        if len(digits) != 10:
+            return idxs
+        for match in re.finditer(r"[\d()\.\-\s+]{10,20}", squashed_page):
+            if digits in re.sub(r"\D", "", match.group()):
+                idxs.append(match.start())
+        return idxs
+    needle = _squash(value)
+    if not needle:
+        return idxs
+    low = squashed_page.casefold()
+    start = 0
+    while True:
+        found = low.find(needle, start)
+        if found < 0:
+            break
+        idxs.append(found)
+        start = found + 1
+    return idxs
+
+
+def _confidently_apart(
+    name: str, value: str, page_text: str, *, is_phone: bool, window: int = PAIRING_WINDOW_CHARS
+) -> bool:
+    """True only when name and value both occur but never within ``window`` chars.
+
+    Detects a phone/email that grounded independently of the person it was attached
+    to (e.g. a footer number while the manager is named in a different section).
+    Returns False whenever either value cannot be located, so we never unbind on
+    doubt — presence-grounded contacts that we simply cannot position stay verified.
+    """
+    squashed = " ".join(page_text.split())
+    name_idx = _occurrences(name, squashed, is_phone=False)
+    value_idx = _occurrences(value, squashed, is_phone=is_phone)
+    if not name_idx or not value_idx:
+        return False
+    closest = min(abs(a - b) for a in name_idx for b in value_idx)
+    return closest > window
 
 
 def _quote_around(value: str, page_text: str, *, window: int = 120) -> str:
@@ -173,6 +226,8 @@ def ground_investigation(
         rejections.append(Rejection(kind="name", value=name, context=context, reason=reason))
         return ""
 
+    pairing_downgrades = 0
+
     grounded_contacts = []
     for contact in result.site_contacts:
         name = check_name(contact.name, contact.label)
@@ -180,10 +235,33 @@ def ground_investigation(
         email = check_email(contact.email, contact.label)
         if not (name or phone or email):
             continue  # nothing grounded — drop the contact entirely
+
+        # Association guard: only assert "this person is reachable at this number"
+        # when the name and the phone/email co-occur in the source. A reachable value
+        # that grounded far from the name may belong to someone else on the page, so
+        # unbind it from the person (business reachability is still carried by the
+        # Google main_phone / other contacts) and mark the contact corroborated.
+        unpaired = False
+        if name and phone and _confidently_apart(name, phone, page_text, is_phone=True):
+            phone = ""
+            unpaired = True
+        if name and email and _confidently_apart(name, email, page_text, is_phone=False):
+            email = ""
+            unpaired = True
+        if not (name or phone or email):
+            continue
+        if unpaired:
+            pairing_downgrades += 1
+
         quote = quotes.get(name) or quotes.get(phone) or quotes.get(email) or ""
-        # Literal grounding = source-backed verified; multi-source upgrades to corroborated elsewhere.
+        # Literal grounding = source-backed verified; multi-source upgrades corroborated elsewhere.
         prior = (contact.verification or "").strip()
-        stamped = prior if prior in {"verified", "corroborated"} else "verified"
+        if prior in {"verified", "corroborated"}:
+            stamped = prior
+        elif unpaired:
+            stamped = "corroborated"
+        else:
+            stamped = "verified"
         updated = contact.model_copy(
             update={
                 "name": name,
@@ -196,12 +274,24 @@ def ground_investigation(
         )
         grounded_contacts.append(updated)
 
+    top_name = check_name(result.contact_name, result.contact_role)
+    top_phone = check_phone(result.contact_phone, result.contact_role)
+    top_email = check_email(result.contact_email, result.contact_role)
+    if top_name and top_phone and _confidently_apart(top_name, top_phone, page_text, is_phone=True):
+        top_phone = ""
+        pairing_downgrades += 1
+    if top_name and top_email and _confidently_apart(
+        top_name, top_email, page_text, is_phone=False
+    ):
+        top_email = ""
+        pairing_downgrades += 1
+
     cleaned = result.model_copy(
         update={
             "site_contacts": grounded_contacts,
-            "contact_name": check_name(result.contact_name, result.contact_role),
-            "contact_phone": check_phone(result.contact_phone, result.contact_role),
-            "contact_email": check_email(result.contact_email, result.contact_role),
+            "contact_name": top_name,
+            "contact_phone": top_phone,
+            "contact_email": top_email,
         }
     )
     if not cleaned.contact_name and result.contact_name:
@@ -218,5 +308,18 @@ def ground_investigation(
             rejection.reason,
             f" [{rejection.context}]" if rejection.context else "",
         )
+    if pairing_downgrades:
+        logger.info(
+            "Association grounding unbound %d contact(s): phone/email grounded but "
+            "not within %d chars of the person's name%s",
+            pairing_downgrades,
+            PAIRING_WINDOW_CHARS,
+            f" [{source_label}]" if source_label else "",
+        )
 
-    return GroundingResult(result=cleaned, rejections=rejections, grounded_quotes=quotes)
+    return GroundingResult(
+        result=cleaned,
+        rejections=rejections,
+        grounded_quotes=quotes,
+        pairing_downgrades=pairing_downgrades,
+    )

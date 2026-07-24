@@ -42,11 +42,12 @@ def test_best_json_target_prefers_contact_page() -> None:
 
 
 def test_pick_broker_pdf_url_prefers_broker_domains() -> None:
+    # Broker-OWN-domain flyers are preferred; listing aggregators are no longer hints.
     urls = [
         "https://example.com/menu.pdf",
-        "https://images1.showcase.com/brochure.pdf",
+        "https://pearsonrealty.com/brochure.pdf",
     ]
-    assert FirecrawlClient.pick_broker_pdf_url(urls) == "https://images1.showcase.com/brochure.pdf"
+    assert FirecrawlClient.pick_broker_pdf_url(urls) == "https://pearsonrealty.com/brochure.pdf"
 
 
 def test_map_cache_reuses_results() -> None:
@@ -256,9 +257,20 @@ def test_scrape_pdf_snippet_uses_pdf_parser(mock_client_cls: MagicMock) -> None:
     client.post.return_value = response
 
     fc = FirecrawlClient(settings)
-    snippet = fc.scrape_pdf_snippet("https://images1.showcase.com/brochure.pdf")
+    snippet = fc.scrape_pdf_snippet("https://pearsonrealty.com/brochure.pdf")
 
     assert snippet is not None
     assert "631 parking" in snippet
     body = client.post.call_args.kwargs["json"]
     assert body["parsers"] == [{"type": "pdf", "mode": "auto", "maxPages": 15}]
+
+
+@patch("pallares_leads.enrich.firecrawl_client.httpx.Client")
+def test_scrape_pdf_snippet_blocks_listing_aggregators(mock_client_cls: MagicMock) -> None:
+    # LoopNet/CoStar/Crexi/Showcase are never fetched (ToS-barred) — no HTTP call at all.
+    settings = Settings(firecrawl_api_key="test-key")
+    client = mock_client_cls.return_value.__enter__.return_value
+    fc = FirecrawlClient(settings)
+    assert fc.scrape_pdf_snippet("https://images1.showcase.com/brochure.pdf") is None
+    assert fc.scrape_pdf_snippet("https://www.loopnet.com/a/flyer.pdf") is None
+    client.post.assert_not_called()

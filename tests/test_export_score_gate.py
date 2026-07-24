@@ -3,13 +3,17 @@ from datetime import date
 from pallares_leads.resolve.lead_score import compute_lead_score
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus
 
+# The single export gate is lead_score >= 25 in the partner_leads_v1 SQL view
+# (there is no Python min_export_score setting — it was removed as dead code).
+PARTNER_SCORE_FLOOR = 25
+
 
 def _passes_export_gate(lead: EnrichedLead, threshold: int) -> bool:
     score = lead.lead_score if lead.lead_score is not None else compute_lead_score(lead)
     return score >= threshold
 
 
-def test_min_export_score_gate() -> None:
+def test_partner_view_score_floor() -> None:
     high = EnrichedLead(
         place_id="high",
         business_name="Good Lead",
@@ -34,7 +38,6 @@ def test_min_export_score_gate() -> None:
         date_found=date(2026, 6, 10),
         investigation_status=InvestigationStatus.DISCOVERED,
     )
-    threshold = 50
-    exportable = [lead for lead in (high, low) if _passes_export_gate(lead, threshold)]
+    exportable = [lead for lead in (high, low) if _passes_export_gate(lead, PARTNER_SCORE_FLOOR)]
     assert len(exportable) == 1
     assert exportable[0].place_id == "high"

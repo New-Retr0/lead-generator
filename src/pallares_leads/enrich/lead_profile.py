@@ -12,6 +12,7 @@ from pallares_leads.enrich.contact_requirements import (
 )
 from pallares_leads.enrich.google_gaps import is_corporate_locator_url
 from pallares_leads.schemas import NOT_FOUND, EnrichedLead, RawLead
+from pallares_leads.utils.nanp import is_phone_out_of_state
 from pallares_leads.utils.normalize import slugify
 
 SiteKind = str  # corporate_locator | local_site | no_site
@@ -327,6 +328,11 @@ def should_use_profile_fast_path(
         return False, "category requires property manager clue"
     if not is_callable_phone(raw.main_phone):
         return False, "no callable Google Places phone"
+    if is_phone_out_of_state(raw.main_phone, raw.state):
+        # A franchise corporate-locator's Google phone with an out-of-state area code
+        # is almost always a call center, not the local store. Do not trust it
+        # blindly — force enrichment to look for a local on-site number.
+        return False, "Google phone area code is not local to the market"
     if not playbook.trust_google_phone or not playbook.skip_firecrawl:
         return False, "profile has not established franchise phone-only path"
 

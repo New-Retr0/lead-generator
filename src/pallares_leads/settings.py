@@ -166,10 +166,19 @@ class Settings(BaseSettings):
         default=150,
         json_schema_extra=_meta("Scoring", help="Minimum labeled outcomes before --fit-score runs"),
     )
-    min_export_score: int = Field(
-        default=25,
-        json_schema_extra=_meta("Scoring", help="Minimum lead_score for CSV export"),
+    dud_reopen_days: int = Field(
+        default=45,
+        json_schema_extra=_meta(
+            "Scoring",
+            help="Days before a time-boxed dud (temporarily closed, no website) is "
+            "re-discovered. Permanent duds (closed_permanently, opt_out) never reopen.",
+        ),
     )
+
+    # NOTE: the single export/eligibility gate lives in the partner_leads_v1 SQL view
+    # (enrichment_status='enriched' AND confidence <> 'Low' AND lead_score >= 25 AND
+    # is_verified_decision_maker(...)). There is no Python-side min-score knob — a
+    # dead `min_export_score` setting was removed 2026-07-20 to avoid a false affordance.
 
     places_search_radius_m: int = Field(
         default=25_000,

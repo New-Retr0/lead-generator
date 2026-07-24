@@ -309,7 +309,7 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
       SELECT COUNT(*)::int AS n
       FROM leads
       WHERE lower(COALESCE(enrichment_status, '')) NOT IN (
-          'skipped', 'needs_manual', 'enriching'
+          'skipped', 'needs_manual', 'enriching', 'dud'
         )
         AND public.is_verified_decision_maker(
           enriched_json,
@@ -321,7 +321,7 @@ export const getOverview = cache(async function getOverview(): Promise<OverviewS
       FROM leads
       WHERE enriched_json IS NOT NULL
         AND lower(COALESCE(enrichment_status, '')) NOT IN (
-          'skipped', 'needs_manual', 'enriching'
+          'skipped', 'needs_manual', 'enriching', 'dud'
         )
         AND COALESCE(enriched_json->>'verification_level', 'unverified') = 'partial'
     `,
@@ -468,13 +468,17 @@ export const listLeads = cache(async function listLeads(filters?: {
   const rows = await sql`
     SELECT leads.place_id, leads.business_name, leads.market_key, leads.category_key, leads.city,
            leads.last_enriched_at, leads.enrichment_status, leads.confidence,
-           leads.lead_score, leads.enriched_json,
+           leads.lead_score, leads.enriched_json, leads.dud_reason,
            COALESCE(sf.status, 'New') AS crm_status
     FROM leads
     LEFT JOIN sales_feedback sf ON sf.place_id = leads.place_id
-    WHERE leads.enriched_json IS NOT NULL
+    ${
+      inventoryMode === "dud"
+        ? // Duds inspection view: rejected leads only, newest first, with the reason.
+          sql`WHERE lower(COALESCE(leads.enrichment_status, '')) = 'dud'`
+        : sql`WHERE leads.enriched_json IS NOT NULL
       AND lower(COALESCE(leads.enrichment_status, '')) NOT IN (
-        'skipped', 'needs_manual', 'enriching'
+        'skipped', 'needs_manual', 'enriching', 'dud'
       )
       ${
         inventoryMode === "ready"
@@ -485,7 +489,8 @@ export const listLeads = cache(async function listLeads(filters?: {
           : inventoryMode === "partial"
             ? sql`AND COALESCE(leads.enriched_json->>'verification_level', 'unverified') = 'partial'`
             : sql`AND COALESCE(leads.enriched_json->>'verification_level', 'unverified') IN ('verified', 'partial')`
-      }
+      }`
+    }
     ${filters?.market ? sql`AND leads.market_key = ${filters.market}` : sql``}
     ${filters?.category ? sql`AND leads.category_key = ${filters.category}` : sql``}
     ${
@@ -548,6 +553,7 @@ export const listLeads = cache(async function listLeads(filters?: {
       phone: primaryPhone(data),
       best_contact_name: presentOrNull(data.best_contact_name),
       best_contact_role: presentOrNull(data.best_contact_role),
+      dud_reason: (row.dud_reason as string | null) ?? null,
     });
   }
   return leads;

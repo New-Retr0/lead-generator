@@ -90,6 +90,20 @@ def test_fast_path_skipped_without_phone(config_dir: Path) -> None:
     assert "phone" in reason.lower()
 
 
+def test_fast_path_skipped_when_google_phone_is_out_of_state(config_dir: Path) -> None:
+    # A Shell corporate-locator lead in a CA market carrying a NY (212) area code =
+    # a call-center number. The franchise fast path must refuse to trust it.
+    raw = _gas(phone="(212) 638-1234")
+    profile = classify_lead(raw)
+    rules = get_enrichment_rules("gas_station", config_dir)
+    playbook = merge_playbooks(
+        profile, static=static_playbook_for(profile), learned=None, mgmt=None, rules=rules
+    )
+    use, reason = should_use_profile_fast_path(raw, profile, playbook, rules)
+    assert use is False
+    assert "local" in reason.lower()
+
+
 def test_fast_path_skipped_for_strip_mall(config_dir: Path) -> None:
     raw = RawLead(
         place_id="places/mall",
