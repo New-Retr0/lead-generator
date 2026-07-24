@@ -1,13 +1,23 @@
 # Canonical decision-maker roles + junk patterns for Python, SQL, and dashboard TS.
 # After edits: `uv run python scripts/sync_decision_roles.py`
+# Then add/update a SQL migration for is_junk_contact_role / is_decision_maker_role.
 
+# Who can hire exterior cleaning / powerwashing — facilities, property, ops, ownership.
+# Do NOT use bare "director" (matches Communications Director) or rely on PR/media titles.
 decision_roles:
   - owner
   - property owner
   - property_owner
   - property manager
   - property_manager
+  - building manager
+  - building_manager
   - facilities
+  - facilities director
+  - facility director
+  - operations
+  - operations director
+  - ops director
   - leasing
   - portfolio
   - registered agent
@@ -16,12 +26,12 @@ decision_roles:
   - cre_broker
   - broker
   - principal
-  - director
   - general manager
   - maintenance
   - landlord
 
 # Substrings that count as facilities/ops (override junk).
+# No bare "director" — that would rescue Communications Director from junk.
 facilities_role_patterns:
   - facilit(y|ies)
   - property\s*manager
@@ -32,9 +42,12 @@ facilities_role_patterns:
   - owner
   - portfolio
   - general\s*manager
-  - director
+  - facilities\s*director
+  - facility\s*director
+  - operations\s*director
+  - ops\s*director
 
-# Roles that are never decision-makers (reception / patient / front desk).
+# Roles that are never decision-makers for this product.
 junk_role_patterns:
   - patient
   - appointment
@@ -55,3 +68,16 @@ junk_role_patterns:
   - concierge
   - reservations?
   - booking
+  # Press / marketing — public face, not facilities buyers
+  - media
+  - pr
+  - public\s*relations
+  - communications
+  - marketing
+  - spokesperson
+  - publicist
+  - public\s*affairs
+  - press\s*offic
+  - press\s*contact
+  - corporate\s*communications
+  - media\s*relations

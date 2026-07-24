@@ -12,6 +12,7 @@ from pallares_leads.enrich.contact_requirements import (
     get_enrichment_rules,
     has_atomic_named_decision_maker,
     investigation_meets_bar,
+    is_decision_maker_role,
     is_junk_role,
     needs_package_enrichment,
     tier2_gap_reason,
@@ -167,6 +168,31 @@ def test_junk_role_rejected_outside_medical(config_dir: Path) -> None:
     assert is_junk_role("Front Desk")
     assert is_junk_role("Reception")
     assert not is_junk_role("Facilities Manager")
+
+
+def test_media_pr_roles_are_not_decision_makers(config_dir: Path) -> None:
+    """Powerwash buyers are facilities/ops — not press contacts."""
+    del config_dir
+    for role in (
+        "Media/PR Manager",
+        "Media/PR Specialist",
+        "Communications Director",
+        "Marketing Manager",
+        "Spokesperson",
+    ):
+        assert is_junk_role(role), role
+        assert not is_decision_maker_role(role), role
+
+    for role in (
+        "Facilities Manager",
+        "Property Manager",
+        "Store Manager",
+        "Operations Director",
+        "Facilities Director",
+        "Maintenance Supervisor",
+    ):
+        assert not is_junk_role(role), role
+        assert is_decision_maker_role(role), role
 
 
 def test_named_dm_requires_first_and_last() -> None:

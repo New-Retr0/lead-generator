@@ -7,7 +7,14 @@ export const DECISION_ROLES = [
   "property_owner",
   "property manager",
   "property_manager",
+  "building manager",
+  "building_manager",
   "facilities",
+  "facilities director",
+  "facility director",
+  "operations",
+  "operations director",
+  "ops director",
   "leasing",
   "portfolio",
   "registered agent",
@@ -16,12 +23,11 @@ export const DECISION_ROLES = [
   "cre_broker",
   "broker",
   "principal",
-  "director",
   "general manager",
   "maintenance",
   "landlord"
 ] as const;
 
-export const FACILITIES_ROLE_PATTERN = "facilit(y|ies)|property\\s*manager|building\\s*manager|maintenance|operations|leasing|owner|portfolio|general\\s*manager|director";
+export const FACILITIES_ROLE_PATTERN = "facilit(y|ies)|property\\s*manager|building\\s*manager|maintenance|operations|leasing|owner|portfolio|general\\s*manager|facilities\\s*director|facility\\s*director|operations\\s*director|ops\\s*director";
 
-export const JUNK_ROLE_PATTERN = "patient|appointment|scheduling|nurse|physician|doctor|clinical|urgent\\s*care|reception|receptionist|front\\s*desk|medical\\s*records|billing|customer\\s*service|support\\s*desk|info\\s*desk|concierge|reservations?|booking";
+export const JUNK_ROLE_PATTERN = "patient|appointment|scheduling|nurse|physician|doctor|clinical|urgent\\s*care|reception|receptionist|front\\s*desk|medical\\s*records|billing|customer\\s*service|support\\s*desk|info\\s*desk|concierge|reservations?|booking|media|pr|public\\s*relations|communications|marketing|spokesperson|publicist|public\\s*affairs|press\\s*offic|press\\s*contact|corporate\\s*communications|media\\s*relations";

@@ -92,6 +92,7 @@ function isJunkRole(value: string): boolean {
 
 function isDecisionMakerRole(value: string | null | undefined): boolean {
   const normalized = value?.trim().toLowerCase() ?? "";
+  // "manager" catch-all keeps store/restaurant GMs; junk rejects media/PR first.
   return Boolean(
     normalized &&
       !isJunkRole(normalized) &&

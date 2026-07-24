@@ -52,7 +52,14 @@ _DEFAULT_DECISION_ROLES = (
     "property_owner",
     "property manager",
     "property_manager",
+    "building manager",
+    "building_manager",
     "facilities",
+    "facilities director",
+    "facility director",
+    "operations",
+    "operations director",
+    "ops director",
     "leasing",
     "portfolio",
     "registered agent",
@@ -61,19 +68,22 @@ _DEFAULT_DECISION_ROLES = (
     "cre_broker",
     "broker",
     "principal",
-    "director",
     "general manager",
     "maintenance",
     "landlord",
 )
 _DEFAULT_FACILITIES = (
     r"facilit(y|ies)|property\s*manager|building\s*manager|maintenance|operations|"
-    r"leasing|owner|portfolio|general\s*manager|director"
+    r"leasing|owner|portfolio|general\s*manager|facilities\s*director|"
+    r"facility\s*director|operations\s*director|ops\s*director"
 )
 _DEFAULT_JUNK = (
     r"patient|appointment|scheduling|nurse|physician|doctor|clinical|urgent\s*care|"
     r"reception|receptionist|front\s*desk|medical\s*records|billing|customer\s*service|"
-    r"support\s*desk|info\s*desk|concierge|reservations?|booking"
+    r"support\s*desk|info\s*desk|concierge|reservations?|booking|"
+    r"media|pr|public\s*relations|communications|marketing|spokesperson|"
+    r"publicist|public\s*affairs|press\s*offic|press\s*contact|"
+    r"corporate\s*communications|media\s*relations"
 )
 
 
