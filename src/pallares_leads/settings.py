@@ -144,33 +144,40 @@ class Settings(BaseSettings):
         default=24,
         json_schema_extra=_meta("Caching & Archive", help="Website domain validation cache TTL"),
     )
-    researched_miss_reopen_days: int = Field(
-        default=90,
-        json_schema_extra=_meta(
-            "Caching & Archive",
-            help=(
-                "Re-enrich researched misses (unverified / skipped) after this many days "
-                "under skip_known; until then they forever-skip"
-            ),
-        ),
-    )
-
     learned_score_weight: float = Field(
         default=0.0,
         json_schema_extra=_meta(
-            "Scoring",
-            help="Blend weight for learned score (0 = heuristic only; enable after --fit-score)",
+            "Quality",
+            title="Learned score weight",
+            help="Blend weight for learned score (0 = heuristic only; enable after --fit-score). "
+            "Partner eligibility uses verified named DM, not this weight.",
         ),
     )
     learned_score_min_labels: int = Field(
         default=150,
-        json_schema_extra=_meta("Scoring", help="Minimum labeled outcomes before --fit-score runs"),
+        json_schema_extra=_meta(
+            "Quality",
+            title="Min labels for fit-score",
+            help="Minimum labeled outcomes before insights --fit-score is allowed to run",
+        ),
+    )
+    researched_miss_reopen_days: int = Field(
+        default=90,
+        json_schema_extra=_meta(
+            "Quality",
+            title="Researched-miss reopen (days)",
+            help=(
+                "Re-enrich researched misses (no named DM / skipped) after this many days "
+                "under skip_known; until then they forever-skip"
+            ),
+        ),
     )
     dud_reopen_days: int = Field(
         default=45,
         json_schema_extra=_meta(
-            "Scoring",
-            help="Days before a time-boxed dud (temporarily closed, no website) is "
+            "Quality",
+            title="Dud reopen (days)",
+            help="Days before a time-boxed dud (temporarily closed, dead site) is "
             "re-discovered. Permanent duds (closed_permanently, opt_out) never reopen.",
         ),
     )
@@ -184,12 +191,18 @@ class Settings(BaseSettings):
 
     firecrawl_timeout_ms: int = Field(
         default=30_000,
-        json_schema_extra=_meta("Firecrawl", help="Scrape/map/search timeout in milliseconds"),
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Request timeout (ms)",
+            help="Scrape/map/search timeout in milliseconds",
+        ),
     )
     firecrawl_scrape_max_age_ms: int = Field(
         default=172_800_000,
         json_schema_extra=_meta(
-            "Firecrawl", help="Use Firecrawl cache when younger than this (ms)"
+            "Firecrawl",
+            title="Scrape cache max age (ms)",
+            help="Reuse Firecrawl cached page content when younger than this (default ~48h)",
         ),
     )
     firecrawl_scrape_proxy: str = Field(
@@ -228,7 +241,11 @@ class Settings(BaseSettings):
     )
     firecrawl_agent_model: str = Field(
         default="spark-1-mini",
-        json_schema_extra=_meta("Firecrawl", help="Model for capped Firecrawl agent"),
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Agent model",
+            help="Model for capped Firecrawl /agent (contact-gap + owner-chain)",
+        ),
     )
     firecrawl_agent_timeout_s: int = Field(
         default=180,
@@ -294,13 +311,14 @@ class Settings(BaseSettings):
             "Enrichment",
             title="Per-lead timeout (seconds)",
             help="Abandon a single place enrichment after this wall-clock budget so "
-            "parallel workers cannot pin a cell at N-2/N forever.",
+            "parallel workers cannot pin a cell forever.",
         ),
     )
     firecrawl_grounding_storm_limit: int = Field(
         default=12,
         json_schema_extra=_meta(
             "Firecrawl",
+            title="Grounding storm limit",
             help="Pause expensive Firecrawl stages after N grounding rejections in a lead",
         ),
     )
@@ -308,26 +326,33 @@ class Settings(BaseSettings):
         default=60.0,
         json_schema_extra=_meta(
             "Firecrawl",
-            help="Cooldown breaker cooldown (seconds) after repeated Firecrawl 429s",
+            title="429 circuit cooldown (seconds)",
+            help="Cooldown after repeated Firecrawl 429s before retrying",
         ),
     )
     firecrawl_search_recency: str = Field(
         default="",
         json_schema_extra=_meta(
             "Firecrawl",
-            help="Optional Firecrawl search tbs recency filter (e.g. qdr:w); empty = off",
+            title="Search recency (tbs)",
+            help='Optional Firecrawl search tbs filter (e.g. "qdr:w"); empty = off',
         ),
     )
     owner_chain_max_per_run: int = Field(
         default=10,
         json_schema_extra=_meta(
             "Owner Chain",
-            help="Max Firecrawl agent owner-chain lookups per run",
+            title="Max owner-chain lookups / run",
+            help="Cap expensive SOS/recorder agent lookups per market run",
         ),
     )
     source_checklist_max_pages: int = Field(
         default=6,
-        json_schema_extra=_meta("Owner Chain", help="Max registry pages per source checklist"),
+        json_schema_extra=_meta(
+            "Enrichment",
+            title="Source checklist max pages",
+            help="Max registry/checklist pages scraped per lead when the contact package is thin",
+        ),
     )
 
 def get_settings() -> Settings:

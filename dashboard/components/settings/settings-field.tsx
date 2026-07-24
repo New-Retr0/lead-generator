@@ -115,7 +115,14 @@ export function SettingsField({
   const type = resolvedType(prop);
   const hasLocalEdit = edits[name] !== undefined;
   const willClear = cleared.has(name);
-  const dirty = hasLocalEdit || willClear;
+  const booleanChanged =
+    type === "boolean" &&
+    hasLocalEdit &&
+    (edits[name] === "true") !==
+      ("value" in meta ? Boolean(meta.value) : Boolean(prop?.default));
+  const dirty =
+    willClear ||
+    (type === "boolean" ? booleanChanged : hasLocalEdit && edits[name]?.trim() !== "");
   const envOverride = meta.modified && !willClear;
 
   const shellClass = emphasize

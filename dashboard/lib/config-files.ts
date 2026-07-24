@@ -4,13 +4,14 @@ import { projectRoot } from "./paths";
 
 export const CONFIG_FILE_DESCRIPTIONS: Record<string, string> = {
   "campaign.yaml": "Market × category matrix for run-campaign and smoke-sample",
-  "markets.yaml": "Geography definitions (cities, bbox, counties)",
+  "markets.yaml": "Geography (cities, bbox, counties) and Places search_radius_m",
   "categories.yaml": "Per-category discovery and research behavior",
   "pricing.yaml": "USD estimates for cost tracking by provider",
   "search_templates.yaml": "Firecrawl search query templates by category",
   "licensing.yaml": "State licensing/registry lookup configuration",
   "jurisdictions.yaml": "County recorder and portal URLs",
   "sources.yaml": "Automatic source checklist tiers per lead",
+  "decision_roles.yaml": "Canonical decision-maker roles (sync to Python/SQL/TS)",
   "learned_score.yaml": "Learned score coefficients (written by insights --fit-score)",
 };
 

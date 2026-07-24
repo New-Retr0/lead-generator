@@ -23,11 +23,12 @@ import {
 } from "@/components/settings/settings-field";
 import {
   CONNECTION_STATUS_FIELDS,
-  FIRECRAWL_SPEND_FIELDS,
+  FIRECRAWL_SECTIONS,
   GROUP_META,
   TAB_META,
   YAML_CATEGORIES,
   groupAnchorId,
+  orderGroupFields,
   parseSettingsTab,
   type SettingsGroupId,
   type SettingsTab,
@@ -139,6 +140,7 @@ export function SettingsClient({
   const [yamlError, setYamlError] = useState<{ line: number; message: string } | null>(null);
   const [pendingFileSwitch, setPendingFileSwitch] = useState<string | null>(null);
   const [pathsOpen, setPathsOpen] = useState(false);
+  const [firecrawlAdvancedOpen, setFirecrawlAdvancedOpen] = useState(false);
 
   const setTab = useCallback(
     (next: SettingsTab) => {
@@ -200,22 +202,23 @@ export function SettingsClient({
       groups.set(group, list);
     }
 
-    const ordered: { group: SettingsGroupId | string; fields: string[]; meta?: (typeof GROUP_META)[number] }[] = [];
+    const ordered: {
+      group: SettingsGroupId | string;
+      fields: string[];
+      meta?: (typeof GROUP_META)[number];
+    }[] = [];
     for (const meta of GROUP_META) {
       const fields = groups.get(meta.id);
       if (!fields?.length) continue;
-      const sorted =
-        meta.id === "Firecrawl"
-          ? [
-              ...FIRECRAWL_SPEND_FIELDS.filter((f) => fields.includes(f)),
-              ...fields.filter((f) => !(FIRECRAWL_SPEND_FIELDS as readonly string[]).includes(f)).sort(),
-            ]
-          : [...fields].sort();
-      ordered.push({ group: meta.id, fields: sorted, meta });
+      ordered.push({
+        group: meta.id,
+        fields: orderGroupFields(meta.id, fields),
+        meta,
+      });
       groups.delete(meta.id);
     }
     for (const [group, fields] of groups) {
-      ordered.push({ group, fields: [...fields].sort() });
+      ordered.push({ group, fields: orderGroupFields(group, fields) });
     }
     return ordered;
   }, [payload, query]);
@@ -237,9 +240,14 @@ export function SettingsClient({
     const dirty = new Set<string>(cleared);
     for (const [name, value] of Object.entries(edits)) {
       const prop = payload?.schema.properties?.[name] as SchemaProperty | undefined;
+      const meta = payload?.values[name] as FieldValue | undefined;
       const type = resolvedType(prop);
       if (type === "boolean") {
-        dirty.add(name);
+        const baseline =
+          meta && "value" in meta ? Boolean(meta.value) : Boolean(prop?.default);
+        if ((value === "true") !== baseline) {
+          dirty.add(name);
+        }
         continue;
       }
       // Blank text/secret edits mean "keep current" — not unsaved.
@@ -608,14 +616,30 @@ export function SettingsClient({
               </div>
             ))}
           </div>
-          {renderSections(sectionsForTab, highlightedSection, renderField, pathsOpen, setPathsOpen)}
+          {renderSections(
+            sectionsForTab,
+            highlightedSection,
+            renderField,
+            pathsOpen,
+            setPathsOpen,
+            firecrawlAdvancedOpen,
+            setFirecrawlAdvancedOpen,
+          )}
           {sectionsForTab.length === 0 && query ? (
             <p className="text-sm text-muted-foreground">No settings match “{query}”.</p>
           ) : null}
         </TabsContent>
 
         <TabsContent value="runtime" className="space-y-4">
-          {renderSections(sectionsForTab, highlightedSection, renderField, pathsOpen, setPathsOpen)}
+          {renderSections(
+            sectionsForTab,
+            highlightedSection,
+            renderField,
+            pathsOpen,
+            setPathsOpen,
+            firecrawlAdvancedOpen,
+            setFirecrawlAdvancedOpen,
+          )}
           {sectionsForTab.length === 0 && query ? (
             <p className="text-sm text-muted-foreground">No settings match “{query}”.</p>
           ) : null}
@@ -833,6 +857,85 @@ export function SettingsClient({
   );
 }
 
+function renderFirecrawlBody(
+  fields: string[],
+  renderField: (name: string, emphasize?: boolean) => ReactNode,
+  advancedOpen: boolean,
+  setAdvancedOpen: (open: boolean) => void,
+) {
+  const fieldSet = new Set(fields);
+  const used = new Set<string>();
+  const blocks: ReactNode[] = [];
+
+  for (const section of FIRECRAWL_SECTIONS) {
+    const sectionFields = section.fields.filter((f) => fieldSet.has(f));
+    if (sectionFields.length === 0) continue;
+    for (const f of sectionFields) used.add(f);
+
+    const inner = (
+      <div className="grid gap-3">
+        {sectionFields.map((f) => renderField(f, Boolean(section.emphasize)))}
+      </div>
+    );
+
+    if (section.collapsedByDefault) {
+      blocks.push(
+        <Collapsible
+          key={section.id}
+          open={advancedOpen}
+          onOpenChange={setAdvancedOpen}
+          className="rounded-lg border border-border/60"
+        >
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">{section.title}</p>
+              <p className="text-xs text-muted-foreground">{section.description}</p>
+            </div>
+            <CollapsibleTrigger asChild>
+              <Button variant="outline" size="sm" className="shrink-0">
+                {advancedOpen ? "Hide" : "Show"}
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+          <CollapsibleContent>
+            <div className="border-t border-border/50 px-4 py-3">{inner}</div>
+          </CollapsibleContent>
+        </Collapsible>,
+      );
+      continue;
+    }
+
+    blocks.push(
+      <div
+        key={section.id}
+        className={cn(
+          "space-y-3 rounded-lg p-4",
+          section.emphasize
+            ? "border border-primary/20 bg-primary/[0.04]"
+            : "border border-border/50 bg-muted/10",
+        )}
+      >
+        <div>
+          <p className="text-sm font-medium text-foreground">{section.title}</p>
+          <p className="text-xs text-muted-foreground">{section.description}</p>
+        </div>
+        {inner}
+      </div>,
+    );
+  }
+
+  const leftovers = fields.filter((f) => !used.has(f));
+  if (leftovers.length > 0) {
+    blocks.push(
+      <div key="other" className="grid gap-3">
+        {leftovers.map((f) => renderField(f))}
+      </div>,
+    );
+  }
+
+  return <div className="space-y-4">{blocks}</div>;
+}
+
 function renderSections(
   sections: {
     group: string;
@@ -843,6 +946,8 @@ function renderSections(
   renderField: (name: string, emphasize?: boolean) => ReactNode,
   pathsOpen: boolean,
   setPathsOpen: (open: boolean) => void,
+  firecrawlAdvancedOpen: boolean,
+  setFirecrawlAdvancedOpen: (open: boolean) => void,
 ) {
   if (sections.length === 0) {
     return null;
@@ -886,32 +991,18 @@ function renderSections(
           const title = (meta?.title ?? group).toUpperCase();
           const description = meta?.description ?? "";
           const isPaths = group === "Paths";
-          const spendFields = fields.filter((f) =>
-            (FIRECRAWL_SPEND_FIELDS as readonly string[]).includes(f),
-          );
-          const otherFields = fields.filter(
-            (f) => !(FIRECRAWL_SPEND_FIELDS as readonly string[]).includes(f),
-          );
 
-          const body = (
-            <>
-              {group === "Firecrawl" && spendFields.length > 0 ? (
-                <div className="mb-4 space-y-3 rounded-lg border border-primary/20 bg-primary/[0.04] p-4">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">Cost brakes</p>
-                    <p className="text-xs text-muted-foreground">
-                      Set these before long campaigns. <code>0</code> usually means unlimited / off
-                      — check each field help.
-                    </p>
-                  </div>
-                  <div className="grid gap-3">{spendFields.map((f) => renderField(f, true))}</div>
-                </div>
-              ) : null}
-              <div className="grid gap-3">
-                {(group === "Firecrawl" ? otherFields : fields).map((f) => renderField(f))}
-              </div>
-            </>
-          );
+          const body =
+            group === "Firecrawl" ? (
+              renderFirecrawlBody(
+                fields,
+                renderField,
+                firecrawlAdvancedOpen,
+                setFirecrawlAdvancedOpen,
+              )
+            ) : (
+              <div className="grid gap-3">{fields.map((f) => renderField(f))}</div>
+            );
 
           if (isPaths) {
             return (

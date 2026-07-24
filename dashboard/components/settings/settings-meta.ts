@@ -3,11 +3,11 @@ export type SettingsTab = "connections" | "runtime" | "yaml";
 export type SettingsGroupId =
   | "Credentials"
   | "Supabase"
-  | "Discovery"
   | "Firecrawl"
+  | "Enrichment"
   | "Owner Chain"
+  | "Quality"
   | "Caching & Archive"
-  | "Scoring"
   | "Paths";
 
 export type GroupMeta = {
@@ -40,21 +40,21 @@ export const GROUP_META: GroupMeta[] = [
       "Where leads, runs, and costs are stored. Changing the database URL requires restarting the dashboard.",
   },
   {
-    id: "Discovery",
-    tab: "runtime",
-    title: "Discovery (Google Places)",
-    short: "Discovery",
-    description:
-      "How wide and deep each Places search goes. Larger radius / page size finds more businesses but costs ~$0.035 per request.",
-  },
-  {
     id: "Firecrawl",
     tab: "runtime",
     title: "Firecrawl research",
     short: "Firecrawl",
     description:
-      "Scraping and research engine for the single-pass pipeline. Concurrency and place-parallelism follow your Firecrawl plan; runs stop when live team credits hit zero.",
+      "Scraping and contact research for the single-pass pipeline. Prefer cheap scrape tiers; agent/Interact only fill named-DM gaps. Runs stop when live team credits hit zero.",
     costCritical: true,
+  },
+  {
+    id: "Enrichment",
+    tab: "runtime",
+    title: "Enrichment budgets",
+    short: "Enrichment",
+    description:
+      "Per-lead wall-clock and checklist page caps so parallel workers cannot pin a market cell forever.",
   },
   {
     id: "Owner Chain",
@@ -62,8 +62,16 @@ export const GROUP_META: GroupMeta[] = [
     title: "Owner chain",
     short: "Owner chain",
     description:
-      "Deep owner lookups via Firecrawl agent (SOS, recorder, parcel). Most expensive per-lead step.",
+      "Deep SOS/recorder agent lookups after cheaper tiers. Most expensive per-lead step — keep the run cap low.",
     costCritical: true,
+  },
+  {
+    id: "Quality",
+    tab: "runtime",
+    title: "Quality & reopen",
+    short: "Quality",
+    description:
+      "Partner eligibility is verified named DM (first+last + role + local phone) — not score weight. These knobs control learned-score blending and when misses/duds are tried again.",
   },
   {
     id: "Caching & Archive",
@@ -72,14 +80,6 @@ export const GROUP_META: GroupMeta[] = [
     short: "Cache",
     description:
       "Local SQLite caches avoid re-paying for pages and payloads you already fetched.",
-  },
-  {
-    id: "Scoring",
-    tab: "runtime",
-    title: "Scoring & export",
-    short: "Scoring",
-    description:
-      "How leads are ranked and which scores make it into exports. Learned score stays at weight 0 until validated.",
   },
   {
     id: "Paths",
@@ -91,8 +91,85 @@ export const GROUP_META: GroupMeta[] = [
   },
 ];
 
-/** Firecrawl credit-related fields shown first in the Firecrawl group callout. */
-export const FIRECRAWL_SPEND_FIELDS = ["firecrawl_agent_max_credits"] as const;
+/** Ordered subsections inside the Firecrawl group. */
+export type FirecrawlSection = {
+  id: string;
+  title: string;
+  description: string;
+  fields: readonly string[];
+  emphasize?: boolean;
+  collapsedByDefault?: boolean;
+};
+
+export const FIRECRAWL_SECTIONS: FirecrawlSection[] = [
+  {
+    id: "cost",
+    title: "Cost brakes",
+    description:
+      "Hard caps before long campaigns. Agent max credits 0 disables capped /agent (contact-gap + owner-chain).",
+    emphasize: true,
+    fields: ["firecrawl_agent_max_credits"],
+  },
+  {
+    id: "scrape",
+    title: "Scrape & cache",
+    description:
+      'Primary fetch path. Prefer proxy "basic" (1 credit); escalate to auto only on dead-end pages.',
+    fields: [
+      "firecrawl_scrape_proxy",
+      "firecrawl_proxy_escalate",
+      "firecrawl_timeout_ms",
+      "firecrawl_scrape_max_age_ms",
+      "firecrawl_search_recency",
+    ],
+  },
+  {
+    id: "escalate",
+    title: "Contact escalation",
+    description:
+      "When Tier-1/2 still lack a named DM: Interact (cheap UI expand) before capped agent. Search feedback may refund junk Tier-2 queries.",
+    fields: [
+      "firecrawl_interact_enabled",
+      "firecrawl_interact_timeout_s",
+      "firecrawl_search_feedback",
+      "firecrawl_agent_model",
+      "firecrawl_agent_timeout_s",
+    ],
+  },
+  {
+    id: "advanced",
+    title: "Advanced / opt-in",
+    description:
+      "Circuit breakers and optional Ready-page monitors (recurring scrape credits — off by default).",
+    collapsedByDefault: true,
+    fields: [
+      "firecrawl_grounding_storm_limit",
+      "firecrawl_429_circuit_cooldown_s",
+      "firecrawl_monitor_ready_pages",
+      "firecrawl_monitor_cron",
+    ],
+  },
+];
+
+/** Preferred field order within non-Firecrawl groups (unknown fields append alphabetically). */
+export const GROUP_FIELD_ORDER: Partial<Record<SettingsGroupId, readonly string[]>> = {
+  Enrichment: ["enrichment_lead_timeout_s", "source_checklist_max_pages"],
+  Quality: [
+    "learned_score_weight",
+    "learned_score_min_labels",
+    "researched_miss_reopen_days",
+    "dud_reopen_days",
+  ],
+  "Caching & Archive": [
+    "page_cache_ttl_days",
+    "domain_cache_ttl_hours",
+    "raw_capture_enabled",
+    "raw_capture_max_bytes",
+    "local_cache_path",
+    "raw_archive_path",
+  ],
+  "Owner Chain": ["owner_chain_max_per_run"],
+};
 
 export const FIELD_TITLE_OVERRIDES: Record<string, string> = {
   firecrawl_agent_max_credits: "Agent max credits",
@@ -132,7 +209,7 @@ export const YAML_CATEGORIES: YamlCategory[] = [
   {
     id: "geo",
     title: "Geography & campaigns",
-    description: "Where to run and which category matrix to use",
+    description: "Where to run — search radius lives in markets.yaml, not .env",
     files: ["campaign.yaml", "markets.yaml"],
   },
   {
@@ -146,6 +223,12 @@ export const YAML_CATEGORIES: YamlCategory[] = [
       "licensing.yaml",
       "jurisdictions.yaml",
     ],
+  },
+  {
+    id: "roles",
+    title: "Decision-maker roles",
+    description: "Canonical DM roles shared by Python, SQL, and the dashboard",
+    files: ["decision_roles.yaml"],
   },
   {
     id: "learn",
@@ -167,17 +250,58 @@ export const TAB_META: Record<
   runtime: {
     label: "Run behavior",
     title: "Spend & research knobs",
-    blurb: "Runtime limits and scoring. Saved to .env — apply before launching runs.",
+    blurb:
+      "Credit caps, scrape/proxy, named-DM escalation, and reopen windows. Saved to .env — apply before launching runs. Discovery radius is in markets.yaml.",
   },
   yaml: {
     label: "YAML configs",
     title: "Markets, categories, pricing",
-    blurb: "Structured playbooks in config/*.yaml. Validate before save; backups go to config/.backups.",
+    blurb:
+      "Structured playbooks in config/*.yaml (markets, categories, decision roles, pricing). Validate before save; backups go to config/.backups.",
   },
 };
 
 export function groupAnchorId(group: string): string {
   return `settings-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+export function orderGroupFields(
+  group: string,
+  fields: string[],
+): string[] {
+  if (group === "Firecrawl") {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const section of FIRECRAWL_SECTIONS) {
+      for (const name of section.fields) {
+        if (fields.includes(name) && !seen.has(name)) {
+          ordered.push(name);
+          seen.add(name);
+        }
+      }
+    }
+    for (const name of [...fields].sort()) {
+      if (!seen.has(name)) ordered.push(name);
+    }
+    return ordered;
+  }
+
+  const preferred = GROUP_FIELD_ORDER[group as SettingsGroupId];
+  if (!preferred) {
+    return [...fields].sort();
+  }
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const name of preferred) {
+    if (fields.includes(name)) {
+      ordered.push(name);
+      seen.add(name);
+    }
+  }
+  for (const name of [...fields].sort()) {
+    if (!seen.has(name)) ordered.push(name);
+  }
+  return ordered;
 }
 
 export function parseSettingsTab(value: string | null | undefined): SettingsTab {
