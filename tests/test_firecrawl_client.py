@@ -66,29 +66,33 @@ def test_map_cache_reuses_results() -> None:
 
 
 @patch.object(FirecrawlClient, "_scrape_json")
-@patch.object(FirecrawlClient, "_sdk_call_with_retry")
-def test_scrape_lead_uses_homepage_then_json(mock_sdk, mock_scrape_json) -> None:
-    settings = Settings(firecrawl_api_key="test-key")
-    raw = _raw_lead()
-
-    homepage = MagicMock()
-    homepage.markdown = "Call us at (559) 638-3333."
-    homepage.links = ["https://example.com/contact", "https://example.com/menu"]
-
+@patch.object(FirecrawlClient, "_scrape_homepage_bundle")
+def test_scrape_lead_prefers_contact_page_after_homepage_bundle(
+    mock_bundle, mock_scrape_json
+) -> None:
+    """When the bundle finds a /contact link, JSON that page (not stop on homepage)."""
     from pallares_leads.enrich.schema import LeadInvestigationResult
 
+    settings = Settings(firecrawl_api_key="test-key")
+    raw = _raw_lead()
+    mock_bundle.return_value = (
+        LeadInvestigationResult(contact_phone="(559) 638-1111"),
+        ["https://example.com/contact", "https://example.com/menu"],
+    )
     mock_scrape_json.return_value = LeadInvestigationResult(
         contact_phone="(559) 638-3333",
         exterior_signals="parking lot",
     )
-    mock_sdk.return_value = homepage
 
     fc = FirecrawlClient(settings)
+    _SHARED_MAP_CACHE.clear()
     result = fc.scrape_lead(raw)
 
     assert result is not None
     assert result.contact_phone == "(559) 638-3333"
-    mock_scrape_json.assert_called_once()
+    mock_bundle.assert_called_once()
+    mock_scrape_json.assert_called()
+    _SHARED_MAP_CACHE.clear()
 
 
 def test_scrape_site_runs_markdown_scrapes_in_parallel() -> None:
@@ -285,29 +289,72 @@ def test_scrape_kwargs_pins_basic_proxy() -> None:
     assert fc._scrape_kwargs(proxy="auto")["proxy"] == "auto"
 
 
-@patch.object(FirecrawlClient, "_scrape_json")
 @patch.object(FirecrawlClient, "map_contact_urls")
-@patch.object(FirecrawlClient, "_sdk_call_with_retry")
-def test_scrape_lead_tries_homepage_json_before_map(
-    mock_sdk, mock_map, mock_scrape_json
-) -> None:
+def test_scrape_lead_homepage_target_is_single_sdk_call(mock_map) -> None:
+    """When JSON target is the homepage, one scrape with markdown+links+html+json."""
+    from firecrawl.v2.types import JsonFormat
+
     from pallares_leads.enrich.schema import LeadInvestigationResult
 
     settings = Settings(firecrawl_api_key="test-key")
     raw = _raw_lead()
-    homepage = MagicMock()
-    homepage.markdown = "Welcome to our store."
-    homepage.links = ["https://example.com/menu"]  # no contact hints
-    mock_sdk.return_value = homepage
-    mock_scrape_json.return_value = LeadInvestigationResult(contact_phone="(559) 638-3333")
+    doc = MagicMock()
+    doc.markdown = "Call us at (559) 638-3333."
+    doc.html = "<p>Call (559) 638-3333</p>"
+    doc.links = ["https://example.com/menu"]  # no contact-hint URLs
+    doc.json = {
+        "contact_phone": "(559) 638-3333",
+        "contact_name": "Pat Rivera",
+        "contact_role": "Facilities Manager",
+    }
 
     fc = FirecrawlClient(settings)
     _SHARED_MAP_CACHE.clear()
-    result = fc.scrape_lead(raw)
+    grounded = LeadInvestigationResult(
+        contact_phone="(559) 638-3333",
+        contact_name="Pat Rivera",
+        contact_role="Facilities Manager",
+    )
+
+    def _run(fn, **_kwargs):
+        return fn()
+
+    with (
+        patch.object(fc, "_sdk_call_with_retry", side_effect=_run),
+        patch.object(fc._sdk, "scrape", return_value=doc) as mock_scrape,
+        patch.object(fc, "_ground_and_record", return_value=grounded),
+    ):
+        result = fc.scrape_lead(raw)
 
     assert result is not None
-    mock_scrape_json.assert_called_once_with("https://example.com", raw)
+    assert result.contact_phone == "(559) 638-3333"
+    assert mock_scrape.call_count == 1
+    formats = mock_scrape.call_args.kwargs["formats"]
+    assert "markdown" in formats
+    assert "links" in formats
+    assert "html" in formats
+    assert any(isinstance(item, JsonFormat) for item in formats)
     mock_map.assert_not_called()
+    _SHARED_MAP_CACHE.clear()
+
+
+@patch.object(FirecrawlClient, "_scrape_json")
+def test_scrape_lead_cached_contact_page_skips_homepage_bundle(mock_scrape_json) -> None:
+    from pallares_leads.enrich.schema import LeadInvestigationResult
+
+    settings = Settings(firecrawl_api_key="test-key")
+    raw = _raw_lead()
+    mock_scrape_json.return_value = LeadInvestigationResult(contact_phone="(559) 638-3333")
+    _SHARED_MAP_CACHE.clear()
+    _SHARED_MAP_CACHE["https://example.com"] = ["https://example.com/contact"]
+
+    fc = FirecrawlClient(settings)
+    with patch.object(fc, "_scrape_homepage_bundle") as mock_bundle:
+        result = fc.scrape_lead(raw)
+
+    assert result is not None
+    mock_bundle.assert_not_called()
+    mock_scrape_json.assert_called_once_with("https://example.com/contact", raw)
     _SHARED_MAP_CACHE.clear()
 
 

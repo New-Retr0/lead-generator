@@ -1101,10 +1101,11 @@ class FirecrawlClient:
         return _norm(a) == _norm(b)
 
     def scrape_lead(self, raw: RawLead) -> LeadInvestigationResult | None:
-        """Tier-1: homepage links when available, else map; then scrape+JSON extract.
+        """Tier-1: resolve contact URLs, then scrape+JSON.
 
-        Avoids paying for map when homepage links are enough, and tries homepage JSON
-        before map when no contact-hint URLs exist (saves a map credit on small sites).
+        When the JSON target is the homepage, uses one SDK call with
+        markdown + links + html + JsonFormat (no links-scrape then re-JSON).
+        Dedicated contact pages still get a separate JSON scrape.
         """
         if not raw.website:
             return None
@@ -1113,10 +1114,9 @@ class FirecrawlClient:
 
         self.set_cost_context(stage="map")
         mapped: list[str] = []
-        homepage_doc = None
+        cache_key = self._site_cache_key(raw.website)
 
         # Reuse in-process / DB map cache before spending a homepage scrape.
-        cache_key = self._site_cache_key(raw.website)
         with _MAP_CACHE_LOCK:
             cached_links = list(_SHARED_MAP_CACHE.get(cache_key, []))
         if cached_links:
@@ -1133,73 +1133,65 @@ class FirecrawlClient:
                     )
                 )
 
-        if not mapped:
-            try:
-                homepage_doc = self._sdk_call_with_retry(
-                    lambda: self._sdk.scrape(
-                        raw.website,
-                        formats=["markdown", "links"],
-                        **self._scrape_kwargs(),
-                    ),
-                    label="Firecrawl homepage scrape",
-                    operation="scrape",
-                )
-            except OutOfCreditsError:
-                raise
-            except Exception as exc:
-                logger.warning("Homepage scrape failed for %s: %s", raw.website, exc)
-
-            if homepage_doc:
-                link_urls = [str(u) for u in (homepage_doc.links or []) if u]
-                contact_links = self._filter_contact_links(link_urls)
-                if contact_links:
-                    mapped = contact_links
-                    with _MAP_CACHE_LOCK:
-                        _SHARED_MAP_CACHE[cache_key] = link_urls
-                    self._set_stage_meta(
-                        FirecrawlStageMeta(
-                            stage="map",
-                            website=raw.website,
-                            cached=True,
-                            urls=contact_links,
-                            credits_est=0,
-                        )
-                    )
-                if isinstance(homepage_doc.markdown, str) and homepage_doc.markdown:
-                    self.session_markdown[raw.website] = homepage_doc.markdown
-
         self.set_cost_context(stage="scrape")
-        # No contact-hint URLs yet: try homepage JSON before spending a map credit.
+
+        # Cached contact URLs pointing off-homepage: one JSON scrape on the best page.
+        if mapped:
+            target = self._best_json_target(raw.website, mapped)
+            if not self._urls_equivalent(target, raw.website):
+                return self._scrape_json_with_fallbacks(raw, target, mapped)
+
+        # Homepage is the target (or we have no contact links yet): single bundled call.
+        self.last_scrape_target = raw.website
+        logger.info("  Tier 1 homepage bundle (markdown+links+json): %s", raw.website)
+        homepage_result, link_urls = self._scrape_homepage_bundle(raw)
+        if link_urls:
+            with _MAP_CACHE_LOCK:
+                _SHARED_MAP_CACHE[cache_key] = link_urls
+            contact_links = self._filter_contact_links(link_urls)
+            if contact_links:
+                mapped = contact_links
+                self._set_stage_meta(
+                    FirecrawlStageMeta(
+                        stage="map",
+                        website=raw.website,
+                        cached=True,
+                        urls=contact_links,
+                        credits_est=0,
+                    )
+                )
+
+        if mapped:
+            target = self._best_json_target(raw.website, mapped)
+            if not self._urls_equivalent(target, raw.website):
+                # Prefer the dedicated contact page over homepage JSON.
+                return self._scrape_json_with_fallbacks(raw, target, mapped)
+
+        if homepage_result is not None:
+            return homepage_result
+
+        # Last resort: Firecrawl map, then JSON on the best URL.
+        mapped = self.map_contact_urls(raw.website, limit=8)
         if not mapped:
-            self.last_scrape_target = raw.website
-            logger.info("  Tier 1 scrape+JSON (homepage, pre-map): %s", raw.website)
-            result = self._scrape_json(raw.website, raw)
-            if result is not None:
-                return result
-            mapped = self.map_contact_urls(raw.website, limit=8)
-
-        target = self._best_json_target(raw.website, mapped)
-        # Already attempted homepage JSON above when mapped was empty.
-        if self._urls_equivalent(target, raw.website) and not self._filter_contact_links(mapped):
-            for alt_url in mapped:
-                if self._urls_equivalent(alt_url, raw.website):
-                    continue
-                lower = alt_url.lower()
-                if not any(hint in lower for hint in CONTACT_URL_HINTS):
-                    continue
-                logger.info("  Tier 1 scrape+JSON retry: %s", alt_url)
-                self.last_scrape_target = alt_url
-                result = self._scrape_json(alt_url, raw)
-                if result is not None:
-                    return result
             return None
+        target = self._best_json_target(raw.website, mapped)
+        if self._urls_equivalent(target, raw.website):
+            # Map only echoed the homepage — don't pay for a second homepage JSON.
+            return None
+        return self._scrape_json_with_fallbacks(raw, target, mapped)
 
+    def _scrape_json_with_fallbacks(
+        self,
+        raw: RawLead,
+        target: str,
+        mapped: list[str],
+    ) -> LeadInvestigationResult | None:
+        """Scrape+JSON on ``target``, then other contact-hint URLs from ``mapped``."""
         self.last_scrape_target = target
         logger.info("  Tier 1 scrape+JSON: %s", target)
         result = self._scrape_json(target, raw)
         if result is not None:
             return result
-
         for alt_url in mapped:
             if self._urls_equivalent(alt_url, target):
                 continue
@@ -1261,80 +1253,48 @@ class FirecrawlClient:
             return cleaned if (cleaned.exterior_signals or cleaned.property_manager) else None
         return cleaned
 
-    def _scrape_json(self, url: str, raw: RawLead) -> LeadInvestigationResult | None:
-        """Tier-1 structured extraction via Firecrawl scrape+JSON."""
-        if is_prohibited_fetch_host(url):
-            logger.info("Skipping prohibited fetch host (json): %s", url)
-            return None
-        cache_key_content = "json_grounded"
-        if self._store:
-            cached = self._store.get_page_cache(
-                url,
-                content_type=cache_key_content,
-                ttl_days=self._settings.page_cache_ttl_days,
-            )
-            if cached and cached.get("content"):
-                self.last_credits_used = 0
-                try:
-                    parsed = json.loads(str(cached["content"]))
-                    if isinstance(parsed, dict):
-                        result = LeadInvestigationResult.from_api_payload(parsed)
-                        if result:
-                            return result
-                except json.JSONDecodeError:
-                    pass
-
-        formats: list[Any] = [
-            "markdown",
-            "html",  # free alongside paid formats; enables DOM-block association grounding
+    def _json_scrape_formats(self, raw: RawLead, *, include_links: bool = False) -> list[Any]:
+        formats: list[Any] = ["markdown", "html"]
+        if include_links:
+            formats.append("links")
+        formats.append(
             JsonFormat(
                 type="json",
                 prompt=extract_prompt(raw),
                 schema=LEAD_CONTACT_SCHEMA,
-            ),
-        ]
-        try:
-            doc = self._sdk_call_with_retry(
-                lambda: self._sdk.scrape(url, formats=formats, **self._scrape_kwargs()),
-                label="Firecrawl scrape+JSON",
-                operation="scrape_json",
             )
-        except OutOfCreditsError:
-            raise
-        except Exception as exc:
-            logger.warning("Firecrawl scrape+JSON failed for %s: %s", url, exc)
-            return None
+        )
+        return formats
 
+    def _cached_json_result(self, url: str) -> LeadInvestigationResult | None:
+        if not self._store:
+            return None
+        cached = self._store.get_page_cache(
+            url,
+            content_type="json_grounded",
+            ttl_days=self._settings.page_cache_ttl_days,
+        )
+        if not cached or not cached.get("content"):
+            return None
+        self.last_credits_used = 0
+        try:
+            parsed = json.loads(str(cached["content"]))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return LeadInvestigationResult.from_api_payload(parsed)
+
+    def _result_from_json_doc(
+        self,
+        doc: Any,
+        *,
+        url: str,
+    ) -> LeadInvestigationResult | None:
+        """Ground JSON from a scrape document and cache markdown + grounded result."""
         if doc is None:
             return None
-
         page_text = getattr(doc, "markdown", None) or ""
-        # Dead-end / bot wall: one proxy=auto retry before giving up on this URL.
-        if (
-            isinstance(page_text, str)
-            and self.is_dead_end_markdown(page_text)
-            and self._settings.firecrawl_proxy_escalate
-            and self._primary_proxy() == "basic"
-        ):
-            logger.info("  Dead-end scrape+JSON — retrying with proxy=auto: %s", url)
-            try:
-                doc = self._sdk_call_with_retry(
-                    lambda: self._sdk.scrape(
-                        url, formats=formats, **self._scrape_kwargs(proxy="auto")
-                    ),
-                    label="Firecrawl scrape+JSON (proxy auto)",
-                    operation="scrape_json",
-                )
-                page_text = getattr(doc, "markdown", None) or "" if doc else ""
-            except OutOfCreditsError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "Firecrawl scrape+JSON proxy-auto retry failed for %s: %s",
-                    url,
-                    exc,
-                )
-
         if isinstance(page_text, str) and page_text.strip():
             self.session_markdown[url] = page_text
             if self._store and not self.is_dead_end_markdown(page_text):
@@ -1345,11 +1305,11 @@ class FirecrawlClient:
                     credits_used=0,
                 )
 
-        page_html = getattr(doc, "html", None) if doc else None
+        page_html = getattr(doc, "html", None)
         if not isinstance(page_html, str):
             page_html = None
 
-        json_blob = getattr(doc, "json", None) if doc else None
+        json_blob = getattr(doc, "json", None)
         if isinstance(json_blob, str):
             try:
                 json_blob = json.loads(json_blob)
@@ -1371,11 +1331,94 @@ class FirecrawlClient:
         if grounded and self._store:
             self._store.set_page_cache(
                 url,
-                content_type=cache_key_content,
+                content_type="json_grounded",
                 content=grounded.model_dump_json(),
                 credits_used=self.last_credits_used,
             )
         return grounded
+
+    def _sdk_scrape_json_doc(
+        self,
+        url: str,
+        formats: list[Any],
+        *,
+        label: str,
+    ) -> Any:
+        """Scrape with JSON formats; escalate proxy once on dead-end/captcha."""
+        try:
+            doc = self._sdk_call_with_retry(
+                lambda: self._sdk.scrape(url, formats=formats, **self._scrape_kwargs()),
+                label=label,
+                operation="scrape_json",
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("%s failed for %s: %s", label, url, exc)
+            return None
+        if doc is None:
+            return None
+
+        page_text = getattr(doc, "markdown", None) or ""
+        if (
+            isinstance(page_text, str)
+            and self.is_dead_end_markdown(page_text)
+            and self._settings.firecrawl_proxy_escalate
+            and self._primary_proxy() == "basic"
+        ):
+            logger.info("  Dead-end %s — retrying with proxy=auto: %s", label, url)
+            try:
+                doc = self._sdk_call_with_retry(
+                    lambda: self._sdk.scrape(
+                        url, formats=formats, **self._scrape_kwargs(proxy="auto")
+                    ),
+                    label=f"{label} (proxy auto)",
+                    operation="scrape_json",
+                )
+            except OutOfCreditsError:
+                raise
+            except Exception as exc:
+                logger.warning("%s proxy-auto retry failed for %s: %s", label, url, exc)
+        return doc
+
+    def _scrape_homepage_bundle(
+        self, raw: RawLead
+    ) -> tuple[LeadInvestigationResult | None, list[str]]:
+        """One SDK call: markdown + links + html + JsonFormat for the homepage."""
+        url = raw.website
+        if not url or is_prohibited_fetch_host(url):
+            return None, []
+
+        cached = self._cached_json_result(url)
+        formats = self._json_scrape_formats(raw, include_links=True)
+        # Still need links when JSON is cached — cheap path only if we already have map cache.
+        cache_key = self._site_cache_key(url)
+        with _MAP_CACHE_LOCK:
+            cached_links = list(_SHARED_MAP_CACHE.get(cache_key, []))
+        if cached is not None and cached_links:
+            return cached, cached_links
+
+        doc = self._sdk_scrape_json_doc(
+            url, formats, label="Firecrawl homepage bundle"
+        )
+        link_urls = [str(u) for u in (getattr(doc, "links", None) or []) if u] if doc else []
+        if cached is not None:
+            return cached, link_urls or cached_links
+        result = self._result_from_json_doc(doc, url=url)
+        return result, link_urls
+
+    def _scrape_json(self, url: str, raw: RawLead) -> LeadInvestigationResult | None:
+        """Tier-1 structured extraction via Firecrawl scrape+JSON."""
+        if is_prohibited_fetch_host(url):
+            logger.info("Skipping prohibited fetch host (json): %s", url)
+            return None
+        cached = self._cached_json_result(url)
+        if cached is not None:
+            return cached
+
+        formats = self._json_scrape_formats(raw, include_links=False)
+        doc = self._sdk_scrape_json_doc(url, formats, label="Firecrawl scrape+JSON")
+        return self._result_from_json_doc(doc, url=url)
 
     def _search_items(
         self,
@@ -1527,8 +1570,9 @@ class FirecrawlClient:
 
         location = f"{raw.city},{raw.state},United States"
         last_query = ""
-        # URL-only search (no scrape_options) — avoids paying for markdown that
-        # _scrape_json would re-fetch. Dead-ends are filtered after JSON scrape.
+        # Production choice (was live A/B vs JsonFormat-in-search scrape_options):
+        # URL-only search → _scrape_json top 3. Avoids paying for markdown that
+        # JSON would re-fetch. Dead-ends are filtered after JSON scrape.
         collected: list[str] = []
         seen: set[str] = set()
 
