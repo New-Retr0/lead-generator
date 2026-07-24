@@ -166,7 +166,8 @@ function personKey(name: string): string {
 
 function isNamedPerson(name: string | null | undefined): boolean {
   const normalized = personKey(name ?? "");
-  return Boolean(normalized) && !PLACEHOLDER_NAMES.has(normalized);
+  // Partner contract: first + last (two tokens), not a placeholder or title-only.
+  return Boolean(normalized) && normalized.split(" ").length >= 2 && !PLACEHOLDER_NAMES.has(normalized);
 }
 
 function socialPlatformKey(platform: string, url: string): string {

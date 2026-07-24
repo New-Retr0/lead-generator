@@ -43,3 +43,31 @@ def test_unlocatable_phone_does_not_downgrade() -> None:
     # would unbind, but the fail-safe keeps it verified when it cannot be judged apart.
     contact = grounded.result.site_contacts[0]
     assert contact.name == "John Manager Smith"
+
+
+def test_html_same_block_keeps_phone_despite_far_markdown() -> None:
+    # Squashed markdown can push a two-column team row past the proximity window;
+    # same <tr> in HTML should still associate name + phone.
+    filler = " ".join(["about our facilities and grounds services"] * 20)
+    page = f"John Manager Smith leads operations. {filler} Main office line: 559-638-1234."
+    html = (
+        "<table><tr><td>John Manager Smith</td>"
+        "<td>Facilities — 559-638-1234</td></tr></table>"
+        f"<footer>{filler} Other line</footer>"
+    )
+    result = _result(name="John Manager Smith", phone="(559) 638-1234", label="Facilities")
+    grounded = ground_investigation(result, page, page_html=html)
+    assert grounded.pairing_downgrades == 0
+    assert grounded.result.site_contacts[0].phone == "(559) 638-1234"
+
+
+def test_html_different_blocks_unbinds_phone() -> None:
+    page = "John Manager Smith. Call 559-638-1234."
+    html = (
+        "<div>John Manager Smith leads operations</div>"
+        "<footer>Main office line: 559-638-1234</footer>"
+    )
+    result = _result(name="John Manager Smith", phone="(559) 638-1234", label="Facilities")
+    grounded = ground_investigation(result, page, page_html=html)
+    assert grounded.pairing_downgrades == 1
+    assert grounded.result.site_contacts[0].phone == ""

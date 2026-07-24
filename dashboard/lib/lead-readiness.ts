@@ -79,7 +79,9 @@ export function isLocalCallablePhone(value: string | null | undefined): boolean 
 
 function isNamedPerson(value: string | null | undefined): boolean {
   const normalized = value?.trim().toLowerCase().replace(/\s+/g, " ") ?? "";
-  return Boolean(normalized) && !PLACEHOLDER_NAMES.has(normalized);
+  if (!normalized || PLACEHOLDER_NAMES.has(normalized)) return false;
+  // Partner contract: first + last (at least two tokens).
+  return normalized.split(" ").length >= 2;
 }
 
 function isJunkRole(value: string): boolean {

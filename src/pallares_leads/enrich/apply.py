@@ -6,10 +6,10 @@ from pallares_leads.enrich.contact_requirements import (
     is_callable_phone,
     is_decision_maker_role,
     is_local_callable_phone,
+    is_named_person,
 )
 from pallares_leads.enrich.domain_verify import pick_verified_website_url, verify_website_url
 from pallares_leads.enrich.schema import LeadInvestigationResult
-from pallares_leads.enrich.verify import is_placeholder_name
 from pallares_leads.schemas import (
     NOT_FOUND,
     EnrichedLead,
@@ -187,10 +187,10 @@ def _role_priority_rank(label: str, name: str) -> int:
 
 
 def _is_atomic_dm_contact(contact: SiteContact) -> bool:
+    """Partner-aligned atomic DM: first+last name + DM role + local phone."""
     return bool(
-        contact.name.strip()
-        and not is_placeholder_name(contact.name)
-        and is_decision_maker_role(contact.label)
+        is_named_person(contact.name)
+        and is_decision_maker_role(contact.label or contact.role)
         and is_local_callable_phone(contact.phone)
     )
 

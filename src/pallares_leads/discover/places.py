@@ -55,6 +55,8 @@ SEARCH_FIELD_MASK = f"{_PLACE_FIELDS},nextPageToken"
 NEARBY_FIELD_MASK = _PLACE_FIELDS
 
 MAX_PAGES = 3  # Text Search (New) caps at 60 results total (3 × 20)
+# Places API (New) max page size — not a Settings knob (API hard cap).
+PAGE_SIZE = 20
 PAGE_DELAY_S = 0.2
 
 
@@ -182,7 +184,7 @@ class PlacesClient:
         state = market["state"]
         body: dict[str, Any] = {
             "textQuery": f"{text_query} in {city}, {state}",
-            "pageSize": min(self._settings.max_places_per_query, 20),
+            "pageSize": PAGE_SIZE,
             "languageCode": "en",
             "regionCode": "US",
         }
@@ -240,7 +242,7 @@ class PlacesClient:
         )
         body: dict[str, Any] = {
             "includedTypes": included_types[:5],
-            "maxResultCount": 20,
+            "maxResultCount": PAGE_SIZE,
             "languageCode": "en",
             "regionCode": "US",
             "locationRestriction": {

@@ -153,12 +153,17 @@ def parse_lead_request(
     return _fallback_spec(prompt, settings)
 
 
+# Aligns with FirecrawlClient._estimated_credits_for_operation for a typical
+# Tier-1 + Tier-2 path: homepage/map (1) + scrape_json (5) + search_contact (2)
+# + one follow-up scrape_json contingency (5) ≈ 13. Not a Settings knob — the
+# live ladder already stops early when the contact bar is met.
+_PER_LEAD_ENRICH_CREDITS_EST = 1 + 5 + 2 + 5
+
+
 def estimate_request_cost(spec: LeadRequestSpec) -> dict[str, float | int]:
     """Rough cost estimate for dry-run display."""
-    # map 1 + scrape_json 5 + bbb 3 + search contingency 4 ≈ 13 credits/lead
-    per_lead_credits = 13
     discovery_credits = len(spec.categories) * len(spec.market_keys) * 2
-    enrich_credits = spec.count * per_lead_credits
+    enrich_credits = spec.count * _PER_LEAD_ENRICH_CREDITS_EST
     total_credits = discovery_credits + enrich_credits
     usd = total_credits * firecrawl_credit_usd(load_pricing())
     return {

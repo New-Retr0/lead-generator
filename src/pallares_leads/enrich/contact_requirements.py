@@ -10,7 +10,7 @@ import yaml
 
 from pallares_leads.enrich.schema import LeadInvestigationResult
 from pallares_leads.enrich.verify import is_placeholder_name
-from pallares_leads.schemas import NOT_FOUND, EnrichedLead, RawLead
+from pallares_leads.schemas import NOT_FOUND, EnrichedLead, RawLead, SiteContact
 from pallares_leads.utils.normalize import is_placeholder_phone, phone_digits
 
 if TYPE_CHECKING:
@@ -144,8 +144,24 @@ def is_decision_maker_role(role: str) -> bool:
     )
 
 
+def is_named_person(name: str | None) -> bool:
+    """First+last person name, not a placeholder — shared Partner/pipeline contract."""
+    cleaned = (name or "").strip()
+    if not cleaned or cleaned == NOT_FOUND:
+        return False
+    if is_placeholder_name(cleaned):
+        return False
+    return len(cleaned.split()) >= 2
+
+
 def has_atomic_named_decision_maker(enriched: EnrichedLead) -> bool:
-    """True for one atomic named DM + local phone — does not check verification_level."""
+    """True for one atomic named DM + local phone — does not check verification_level.
+
+    A **named decision-maker (DM)** is a real person (first+last, not a placeholder)
+    with a facilities/maintenance/owner/PM-style role and a local callable phone.
+    Email is desirable but not required for this minimum — many CRE pages list
+    phone only. Partner Ready = this plus ``verification_level == "verified"``.
+    """
     best_name = enriched.best_contact_name
     if best_name == NOT_FOUND:
         best_name = ""
@@ -153,16 +169,14 @@ def has_atomic_named_decision_maker(enriched: EnrichedLead) -> bool:
     if best_role == NOT_FOUND:
         best_role = ""
     if (
-        best_name.strip()
-        and not is_placeholder_name(best_name)
+        is_named_person(best_name)
         and is_decision_maker_role(best_role)
         and is_local_callable_phone(enriched.best_contact_phone)
     ):
         return True
 
     return any(
-        contact.name.strip()
-        and not is_placeholder_name(contact.name)
+        is_named_person(contact.name)
         and is_decision_maker_role(contact.label or contact.role)
         and is_local_callable_phone(contact.phone)
         for contact in enriched.site_contacts
@@ -170,10 +184,132 @@ def has_atomic_named_decision_maker(enriched: EnrichedLead) -> bool:
 
 
 def has_verified_named_decision_maker(enriched: EnrichedLead) -> bool:
-    """Ready bar: verification_level verified AND atomic named DM + local phone."""
+    """Partner Ready: grounded named DM + local phone (email optional)."""
     if (enriched.verification_level or "") != "verified":
         return False
     return has_atomic_named_decision_maker(enriched)
+
+
+# CRE wants a primary + backup DM when available; franchise is happy with one solid DM.
+_TARGET_NAMED_DM_CONTACTS_CRE = 2
+_TARGET_NAMED_DM_CONTACTS_DEFAULT = 1
+
+
+def target_named_dm_contacts(property_type: str) -> int:
+    if requires_named_decision_maker(property_type):
+        return _TARGET_NAMED_DM_CONTACTS_CRE
+    return _TARGET_NAMED_DM_CONTACTS_DEFAULT
+
+
+def named_decision_maker_contacts(enriched: EnrichedLead) -> list[SiteContact]:
+    """Distinct named DMs with local phones (deduped by phone digits)."""
+    out: list[SiteContact] = []
+    seen: set[str] = set()
+
+    def _consider(name: str, role: str, phone: str, email: str, *, label: str = "") -> None:
+        cleaned = name.strip()
+        if (
+            not is_named_person(cleaned)
+            or not is_decision_maker_role(role or label)
+            or not is_local_callable_phone(phone)
+        ):
+            return
+        digits = phone_digits(phone)
+        if digits in seen:
+            return
+        seen.add(digits)
+        out.append(
+            SiteContact(
+                label=(label or role).strip(),
+                name=cleaned,
+                phone=phone.strip(),
+                email=email.strip() if email and email != NOT_FOUND else "",
+            )
+        )
+
+    for contact in enriched.site_contacts:
+        _consider(
+            contact.name,
+            contact.label or contact.role,
+            contact.phone,
+            contact.email,
+            label=contact.label,
+        )
+
+    best_name = enriched.best_contact_name
+    if best_name == NOT_FOUND:
+        best_name = ""
+    best_role = enriched.best_contact_role
+    if best_role == NOT_FOUND:
+        best_role = ""
+    best_email = enriched.best_contact_email_or_form
+    if best_email == NOT_FOUND:
+        best_email = ""
+    _consider(best_name, best_role, enriched.best_contact_phone, best_email)
+    return out
+
+
+def has_outreach_email(enriched: EnrichedLead) -> bool:
+    """True when a real email exists on the best contact or any named DM contact."""
+    email = enriched.best_contact_email_or_form
+    if email and email != NOT_FOUND and "@" in email and "form" not in email.lower():
+        return True
+    return any(
+        c.email and "@" in c.email
+        for c in named_decision_maker_contacts(enriched)
+    )
+
+
+def contact_package_gaps(enriched: EnrichedLead) -> list[str]:
+    """What's still missing from an ideal outreach package (beyond minimum Ready).
+
+    Package is rich enough when we have ≥1 named DM with a local phone AND either
+    a DM email **or** a second distinct named DM phone. One phone-only DM is not
+    enough to stop cheap tiers — keep looking for email or a backup contact.
+    """
+    dms = named_decision_maker_contacts(enriched)
+    if not dms and not has_atomic_named_decision_maker(enriched):
+        return ["named decision-maker with local phone"]
+
+    count = len(dms) if dms else 1
+    has_email = has_outreach_email(enriched)
+    if has_email or count >= 2:
+        return []
+
+    gaps = ["DM email"]
+    if requires_named_decision_maker(enriched.property_type):
+        gaps.append(f"second named DM phone ({count}/2)")
+    return gaps
+
+
+def contact_package_complete(enriched: EnrichedLead) -> bool:
+    """True when cheap enrichment can stop — package is rich enough.
+
+    Complete when we have at least one named DM with local phone AND either:
+    - an outreach email on a DM, or
+    - two distinct named DMs (primary + backup).
+
+    Does **not** require email for Partner Ready — that stays
+    ``has_verified_named_decision_maker``. This only controls whether we keep
+    spending on cheap tiers (Tier-2 / leasing / BBB / checklist) to fill the package.
+    """
+    return not contact_package_gaps(enriched)
+
+
+def needs_package_enrichment(enriched: EnrichedLead, rules: EnrichmentRules) -> tuple[bool, str]:
+    """Continue cheap tiers when we already have a named DM but the package is thin.
+
+    Does not re-open the ladder just to find a first named DM — that stays on the
+    contact bar / CRE decision-maker rules. Once we have one named DM + local phone,
+    keep cheap tiers going for email or a backup contact.
+    """
+    met, _ = enriched_meets_bar(enriched, rules)
+    if not met or not has_atomic_named_decision_maker(enriched):
+        return False, ""
+    gaps = contact_package_gaps(enriched)
+    if not gaps:
+        return False, "contact package complete"
+    return True, "enrich package: " + ", ".join(gaps)
 
 
 def is_patient_facing_role(role: str, *, property_type: str) -> bool:
@@ -399,19 +535,23 @@ def has_property_manager_clue(result: LeadInvestigationResult | None) -> bool:
 
 
 def has_named_decision_maker_contact(result: LeadInvestigationResult | None) -> bool:
-    """True when investigation has a named non-junk contact with a local phone."""
+    """True when investigation has first+last DM + local phone (Partner-aligned)."""
     if result is None:
         return False
-    if result.contact_name.strip() and is_local_callable_phone(result.contact_phone):
-        if not is_junk_role(_role_text(result.contact_role, result.contact_name)):
-            return True
-    for contact in result.site_contacts:
-        if not contact.name.strip() or not is_local_callable_phone(contact.phone):
-            continue
-        if is_junk_role(_role_text(contact.label, contact.name)):
-            continue
+
+    def _ok(name: str, role: str, phone: str) -> bool:
+        return (
+            is_named_person(name)
+            and is_decision_maker_role(role)
+            and is_local_callable_phone(phone)
+        )
+
+    if _ok(result.contact_name, result.contact_role, result.contact_phone):
         return True
-    return False
+    return any(
+        _ok(contact.name, contact.label or contact.role, contact.phone)
+        for contact in result.site_contacts
+    )
 
 
 def investigation_meets_bar(
@@ -485,21 +625,8 @@ def enriched_meets_bar(
             return False, "missing property manager / ownership clue"
 
     if requires_named_decision_maker(enriched.property_type):
-        named_dm = any(
-            c.name.strip()
-            and is_local_callable_phone(c.phone)
-            and not is_junk_role(_role_text(c.label, c.name))
-            for c in enriched.site_contacts
-        )
-        role = enriched.best_contact_role if enriched.best_contact_role != NOT_FOUND else ""
-        # best_contact fields don't always carry a separate name; treat labeled non-junk role
-        if (
-            role.strip()
-            and not is_junk_role(role)
-            and is_local_callable_phone(enriched.best_contact_phone)
-        ):
-            named_dm = True
-        if google_only or not named_dm:
+        # Same predicate as Partner Ready (minus verification_level): first+last DM.
+        if google_only or not has_atomic_named_decision_maker(enriched):
             return False, "needs named decision-maker with local phone (Google main line insufficient)"
 
     return True, f"meets {rules.min_contact_bar} bar"
@@ -510,7 +637,8 @@ def sales_gaps_vs_ideal(enriched: EnrichedLead, rules: EnrichmentRules) -> list[
     met, detail = enriched_meets_bar(enriched, rules)
     if not met:
         gaps.append(detail)
-
+    else:
+        gaps.extend(contact_package_gaps(enriched))
     return gaps
 
 

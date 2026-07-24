@@ -35,11 +35,16 @@ from pallares_leads.enrich.contact_extract import (
 )
 from pallares_leads.enrich.contact_requirements import (
     EnrichmentRules,
+    contact_package_complete,
+    contact_package_gaps,
     enriched_meets_bar,
     get_enrichment_rules,
+    has_atomic_named_decision_maker,
     has_verified_named_decision_maker,
     investigation_meets_bar,
     is_callable_phone,
+    needs_package_enrichment,
+    requires_named_decision_maker,
     tier2_gap_reason,
 )
 from pallares_leads.enrich.domain_verify import scrub_unverified_website
@@ -425,9 +430,10 @@ def _try_bbb_tier(
         if trace:
             trace.record("bbb", ran=False, reason="registry_lookup disabled for category")
         return enriched
-    if _has_verified_person(enriched):
+    # Keep running BBB while the outreach package is thin (need email / 2nd DM).
+    if contact_package_complete(enriched):
         if trace:
-            trace.record("bbb", ran=False, reason="verified person already found")
+            trace.record("bbb", ran=False, reason="contact package complete")
         return enriched
 
     firecrawl.set_cost_context(stage="bbb")
@@ -510,9 +516,12 @@ def _try_license_tier(
                 reason="state_license not enabled for category",
             )
         return enriched
-    if enriched_meets_bar(enriched, tier_rules)[0] and not tier_rules.require_property_manager_clue:
+    if (
+        contact_package_complete(enriched)
+        and not tier_rules.require_property_manager_clue
+    ):
         if trace:
-            trace.record("state_license", ran=False, reason="contact bar already met")
+            trace.record("state_license", ran=False, reason="contact package complete")
         return enriched
 
     firecrawl.set_cost_context(stage="state_license")
@@ -763,14 +772,23 @@ def _try_owner_chain_tier(
         return enriched
 
     bbb_entity = _bbb_entity_seed(enriched)
+    atomic_dm = has_atomic_named_decision_maker(enriched)
     met_before, bar_detail = enriched_meets_bar(enriched, tier_rules)
-    if met_before and not bbb_entity:
+    # CRE: stop expensive owner-chain once we have a Partner-shaped named DM.
+    # Other categories: stop when the sales contact bar is already met.
+    cre = requires_named_decision_maker(work_raw.property_type)
+    already_good = atomic_dm if cre else met_before
+    if already_good and not bbb_entity:
         _record_owner_chain_skip(
             store=store,
             run_id=run_id,
             place_id=work_raw.place_id,
             business=work_raw.business_name,
-            reason=f"contact bar already met: {bar_detail}",
+            reason=(
+                "atomic named DM already found"
+                if cre and atomic_dm
+                else f"contact bar already met: {bar_detail}"
+            ),
             trace=trace,
         )
         return enriched
@@ -1384,9 +1402,16 @@ def enrich_lead(
     investigation = tier1
     tier_rules = get_enrichment_rules(work_raw.property_type, settings.config_dir)
     tier2_needed, tier2_reason = tier2_gap_reason(tier1, work_raw, gaps=gaps, settings=settings)
+    # Even when the minimum bar is met, keep cheap tiers going until we have a
+    # richer package (DM email and/or a second named DM) — not just the first hit.
+    if not tier2_needed:
+        pkg_needed, pkg_reason = needs_package_enrichment(enriched, tier_rules)
+        if pkg_needed:
+            tier2_needed = True
+            tier2_reason = pkg_reason
 
     if tier2_needed:
-        logger.info("  Tier 2 search gap-fill for %s", work_raw.business_name)
+        logger.info("  Tier 2 search gap-fill for %s (%s)", work_raw.business_name, tier2_reason)
         with _enrichment_stage("tier2_search", raw=raw, run_id=run_id, firecrawl=firecrawl):
             search_result = firecrawl.search_contact_gap(work_raw, tier_rules)
             if trace:
@@ -1394,7 +1419,7 @@ def enrich_lead(
                 trace.record(
                     "search_contact",
                     ran=search_result is not None,
-                    reason="contact bar not met after Tier 1",
+                    reason=tier2_reason,
                     credits_est=6 if search_result else 1,
                     inputs={
                         "query": search_info.get("query", ""),
@@ -1411,11 +1436,18 @@ def enrich_lead(
                     enriched, search_result, source_tool="google_places+firecrawl_search"
                 )
                 investigation = search_result
-                if investigation_meets_bar(
+                if contact_package_complete(enriched):
+                    tier2_needed = False
+                    tier2_reason = "contact package complete after Tier 2"
+                elif investigation_meets_bar(
                     search_result, tier_rules, property_type=work_raw.property_type
                 )[0]:
-                    tier2_needed = False
-                    tier2_reason = f"Tier 2 search met contact bar ({tier_rules.min_contact_bar})"
+                    # Bar met but package still thin — continue to leasing/BBB.
+                    pkg_needed, pkg_reason = needs_package_enrichment(enriched, tier_rules)
+                    tier2_needed = pkg_needed
+                    tier2_reason = pkg_reason or (
+                        f"Tier 2 met contact bar ({tier_rules.min_contact_bar})"
+                    )
 
     if tier2_needed:
         with _enrichment_stage("leasing", raw=raw, run_id=run_id, firecrawl=firecrawl):
@@ -1427,9 +1459,13 @@ def enrich_lead(
                 tier_rules,
                 trace=trace,
             )
-            if leasing_met:
+            if contact_package_complete(enriched):
                 tier2_needed = False
-                tier2_reason = "leasing/PDF tier met contact bar"
+                tier2_reason = "contact package complete after leasing/PDF"
+            elif leasing_met:
+                pkg_needed, pkg_reason = needs_package_enrichment(enriched, tier_rules)
+                tier2_needed = pkg_needed
+                tier2_reason = pkg_reason or "leasing/PDF tier met contact bar"
 
     if trace:
         trace.record(
@@ -1475,10 +1511,17 @@ def enrich_lead(
             trace=trace,
         )
 
-    # Capped Firecrawl Agent for hard gaps after Tier 2 + BBB/DRE, before owner chain.
+    # Expensive agent: CRE until a Partner-shaped named DM; other categories until
+    # the sales contact bar. Never burn agent just to chase a second contact/email.
+    atomic_pre_agent = has_atomic_named_decision_maker(enriched)
     bar_met_pre_agent, _ = enriched_meets_bar(enriched, tier_rules)
+    cre_needs_dm = requires_named_decision_maker(work_raw.property_type)
+    run_agent = (
+        (cre_needs_dm and not atomic_pre_agent)
+        or (not cre_needs_dm and not bar_met_pre_agent)
+    )
     if (
-        not bar_met_pre_agent
+        run_agent
         and firecrawl
         and not firecrawl.should_stop_expensive_stages()
         and settings.firecrawl_agent_max_credits > 0
@@ -1506,7 +1549,7 @@ def enrich_lead(
         trace.record(
             "firecrawl_agent",
             ran=False,
-            reason="skipped — bar met, credit stop, or agent disabled",
+            reason="skipped — named DM/bar met, credit stop, or agent disabled",
         )
 
     with _enrichment_stage("owner_chain", raw=raw, run_id=run_id, firecrawl=firecrawl):
@@ -1553,7 +1596,8 @@ def enrich_lead(
             logger.info("  Insurance: %d mention(s) found", len(insurance_facts))
 
     bar_met, _bar_detail = enriched_meets_bar(enriched, tier_rules)
-    if not bar_met:
+    pkg_needed, pkg_reason = needs_package_enrichment(enriched, tier_rules)
+    if not bar_met or pkg_needed:
         with _enrichment_stage(
             "source_checklist",
             raw=raw,
@@ -1586,7 +1630,7 @@ def enrich_lead(
                 trace.record(
                     "source_checklist",
                     ran=True,
-                    reason=f"{len(checklist_results)} source(s) evaluated",
+                    reason=pkg_reason or f"{len(checklist_results)} source(s) evaluated",
                     outputs={
                         "checks": [
                             {"source": r.source_key, "status": r.status, "url": r.url}
@@ -1595,7 +1639,7 @@ def enrich_lead(
                     },
                 )
     elif trace:
-        trace.record("source_checklist", ran=False, reason="contact bar already met")
+        trace.record("source_checklist", ran=False, reason="contact package complete")
 
     merge_firecrawl_into_lead(enriched, raw, investigation)
     finalize_enrichment_notes(enriched, raw, gaps, investigation)
@@ -1608,8 +1652,16 @@ def enrich_lead(
     enriched = _apply_verification_fields(enriched)
     enriched = _apply_lead_score(enriched)
     verified_dm = has_verified_named_decision_maker(enriched)
-    # Partial phone evidence stays inventory; unverified/no-DM becomes a researched miss.
-    researched_miss = not verified_dm and enriched.verification_level != "partial"
+    atomic_dm = has_atomic_named_decision_maker(enriched)
+    # CRE: ladder exhausted without a named DM is a researched miss even when a
+    # Google/mainline phone made verification_level=partial — do not re-burn.
+    # Non-CRE: partial phone evidence stays inventory; unverified becomes a miss.
+    if requires_named_decision_maker(enriched.property_type) and not atomic_dm:
+        researched_miss = True
+        miss_note = "researched_miss: CRE ladder exhausted — no named decision-maker"
+    else:
+        researched_miss = not verified_dm and enriched.verification_level != "partial"
+        miss_note = "researched_miss: no verified named decision-maker"
 
     if store and firecrawl and firecrawl.session_credits_used:
         store.commit_cost_events()
@@ -1618,10 +1670,16 @@ def enrich_lead(
     rejections = firecrawl.session_rejections if firecrawl else []
     _persist_facts(store, run_id, enriched, rejections=rejections)
 
+    # Operator signal: Ready DM exists but package is still thin (no email / no backup).
+    if verified_dm:
+        thin = contact_package_gaps(enriched)
+        if thin:
+            pkg_note = "package thin: " + ", ".join(thin)
+            enriched.notes = f"{enriched.notes}; {pkg_note}" if enriched.notes else pkg_note
+
     if researched_miss:
         # Record the miss so skip_known will not re-research; hide from inventory.
         enriched.investigation_status = InvestigationStatus.SKIPPED
-        miss_note = "researched_miss: no verified named decision-maker"
         enriched.notes = f"{enriched.notes}; {miss_note}" if enriched.notes else miss_note
         logger.info(
             "Researched miss %s — stored as skipped (score=%s, verification=%s)",

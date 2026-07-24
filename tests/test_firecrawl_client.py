@@ -247,30 +247,113 @@ def test_normalize_team_credit_usage_marks_extra_credits() -> None:
     assert payload["extraCredits"] == 20_000
 
 
-@patch("pallares_leads.enrich.firecrawl_client.httpx.Client")
-def test_scrape_pdf_snippet_uses_pdf_parser(mock_client_cls: MagicMock) -> None:
-    settings = Settings(firecrawl_api_key="test-key")
-    client = mock_client_cls.return_value.__enter__.return_value
-    response = MagicMock()
-    response.status_code = 200
-    response.json.return_value = {"data": {"markdown": "# Broker Flyer\n631 parking spaces"}}
-    client.post.return_value = response
+@patch("pallares_leads.enrich.firecrawl_client.Firecrawl")
+def test_scrape_pdf_snippet_uses_pdf_parser(mock_sdk_cls: MagicMock) -> None:
+    from firecrawl.v2.types import PDFParser
 
+    settings = Settings(firecrawl_api_key="test-key")
+    sdk = mock_sdk_cls.return_value
+    sdk.scrape.return_value = type("D", (), {"markdown": "# Broker Flyer\n631 parking spaces"})()
     fc = FirecrawlClient(settings)
     snippet = fc.scrape_pdf_snippet("https://pearsonrealty.com/brochure.pdf")
-
     assert snippet is not None
     assert "631 parking" in snippet
-    body = client.post.call_args.kwargs["json"]
-    assert body["parsers"] == [{"type": "pdf", "mode": "auto", "maxPages": 15}]
+    kwargs = sdk.scrape.call_args.kwargs
+    assert kwargs.get("proxy") == "basic"
+    parsers = kwargs.get("parsers") or []
+    assert len(parsers) == 1
+    assert isinstance(parsers[0], PDFParser)
+    assert parsers[0].max_pages == 15
 
 
-@patch("pallares_leads.enrich.firecrawl_client.httpx.Client")
-def test_scrape_pdf_snippet_blocks_listing_aggregators(mock_client_cls: MagicMock) -> None:
-    # LoopNet/CoStar/Crexi/Showcase are never fetched (ToS-barred) — no HTTP call at all.
+def test_scrape_pdf_snippet_blocks_listing_aggregators() -> None:
+    # LoopNet/CoStar/Crexi/Showcase are never fetched (ToS-barred) — no SDK call at all.
     settings = Settings(firecrawl_api_key="test-key")
-    client = mock_client_cls.return_value.__enter__.return_value
     fc = FirecrawlClient(settings)
-    assert fc.scrape_pdf_snippet("https://images1.showcase.com/brochure.pdf") is None
-    assert fc.scrape_pdf_snippet("https://www.loopnet.com/a/flyer.pdf") is None
-    client.post.assert_not_called()
+    with patch.object(fc, "_sdk_call_with_retry") as mock_sdk:
+        assert fc.scrape_pdf_snippet("https://images1.showcase.com/brochure.pdf") is None
+        assert fc.scrape_pdf_snippet("https://www.loopnet.com/a/flyer.pdf") is None
+        mock_sdk.assert_not_called()
+
+
+def test_scrape_kwargs_pins_basic_proxy() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    fc = FirecrawlClient(settings)
+    kwargs = fc._scrape_kwargs()
+    assert kwargs["proxy"] == "basic"
+    assert kwargs["block_ads"] is True
+    assert fc._scrape_kwargs(proxy="auto")["proxy"] == "auto"
+
+
+@patch.object(FirecrawlClient, "_scrape_json")
+@patch.object(FirecrawlClient, "map_contact_urls")
+@patch.object(FirecrawlClient, "_sdk_call_with_retry")
+def test_scrape_lead_tries_homepage_json_before_map(
+    mock_sdk, mock_map, mock_scrape_json
+) -> None:
+    from pallares_leads.enrich.schema import LeadInvestigationResult
+
+    settings = Settings(firecrawl_api_key="test-key")
+    raw = _raw_lead()
+    homepage = MagicMock()
+    homepage.markdown = "Welcome to our store."
+    homepage.links = ["https://example.com/menu"]  # no contact hints
+    mock_sdk.return_value = homepage
+    mock_scrape_json.return_value = LeadInvestigationResult(contact_phone="(559) 638-3333")
+
+    fc = FirecrawlClient(settings)
+    _SHARED_MAP_CACHE.clear()
+    result = fc.scrape_lead(raw)
+
+    assert result is not None
+    mock_scrape_json.assert_called_once_with("https://example.com", raw)
+    mock_map.assert_not_called()
+    _SHARED_MAP_CACHE.clear()
+
+
+def test_capture_scrape_meta_records_proxy_and_cache() -> None:
+    settings = Settings(firecrawl_api_key="test-key")
+    fc = FirecrawlClient(settings)
+    fc._capture_scrape_meta(
+        {"data": {"metadata": {"proxyUsed": "basic", "cacheState": "hit", "creditsUsed": 1}}}
+    )
+    assert fc._pending_credit_meta["proxy_used"] == "basic"
+    assert fc._pending_credit_meta["cache_state"] == "hit"
+
+
+def test_can_afford_skips_when_remaining_below_budget() -> None:
+    settings = Settings(firecrawl_api_key="test-key", firecrawl_agent_max_credits=10)
+    fc = FirecrawlClient(settings)
+    assert fc.can_afford(10) is True  # unknown remaining → do not block
+    fc._remember_team_remaining(5)
+    assert fc.can_afford(10) is False
+    assert fc.can_afford(5) is True
+    fc._debit_team_remaining(3)
+    assert fc.can_afford(5) is False
+    assert fc.run_capped_agent(_raw_lead()) is None
+
+
+@patch("pallares_leads.enrich.firecrawl_client.Firecrawl")
+def test_owner_chain_agent_uses_settings_credit_budget(mock_sdk_cls: MagicMock) -> None:
+    settings = Settings(
+        firecrawl_api_key="test-key",
+        firecrawl_agent_max_credits=10,
+        firecrawl_agent_model="spark-1-mini",
+    )
+    sdk = mock_sdk_cls.return_value
+    sdk.agent.return_value = type(
+        "R", (), {"id": "a1", "status": "completed", "data": {"owner_name": "Acme LLC"}}
+    )()
+    fc = FirecrawlClient(settings)
+    fc._remember_team_remaining(50)
+    data = fc.run_owner_chain_agent(
+        entity_name="Acme LLC",
+        party_name="Acme",
+        address="1 Main",
+        city="Reedley",
+        state_name="California",
+        sos_url="https://example.com/sos",
+    )
+    assert data == {"owner_name": "Acme LLC"}
+    assert sdk.agent.call_args.kwargs["max_credits"] == 10
+    assert sdk.agent.call_args.kwargs["model"] == "spark-1-mini"

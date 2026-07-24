@@ -16,12 +16,21 @@ _CONTACT_ITEM_SCHEMA: dict[str, Any] = {
                 "(facilities, property manager, leasing, GM) — not patient lines"
             ),
         },
-        "name": {"type": "string", "description": "Person's name if known"},
-        "phone": {"type": "string", "description": "Direct phone or department line"},
-        "email": {"type": "string", "description": "Email if listed"},
+        "name": {
+            "type": "string",
+            "description": "Full person name (first and last) when listed — never a role title alone",
+        },
+        "phone": {"type": "string", "description": "Direct local phone or department line"},
+        "email": {
+            "type": "string",
+            "description": "Direct email if listed (preferred for each named decision-maker)",
+        },
         "priority": {
             "type": "string",
-            "description": "best = top choice for exterior cleaning outreach; good; fallback",
+            "description": (
+                "best = primary decision-maker for exterior cleaning; "
+                "good = strong alternate; fallback = last resort"
+            ),
         },
     },
 }
@@ -31,15 +40,22 @@ _LEAD_CONTACT_PROPERTIES: dict[str, Any] = {
         "type": "array",
         "items": _CONTACT_ITEM_SCHEMA,
         "description": (
-            "Every reachable contact found on the property website or contact page — "
-            "store manager, facilities, GM, department lines, etc. Include phones and "
-            "label who is best to call about exterior cleaning."
+            "Return ALL distinct decision-makers found (target 2+ when the page lists them): "
+            "facilities manager, property manager, leasing, owner, GM, maintenance. "
+            "Prefer named people with local phone AND email. Do not stop after the first "
+            "contact — capture primary and backup when available. Skip reception/patient lines."
         ),
     },
-    "contact_name": {"type": "string", "description": "Single best person to call (legacy)"},
+    "contact_name": {
+        "type": "string",
+        "description": "Best decision-maker full name (first + last) for outreach",
+    },
     "contact_role": {"type": "string", "description": "Their role for the best contact"},
-    "contact_phone": {"type": "string", "description": "Best direct phone for outreach"},
-    "contact_email": {"type": "string", "description": "Best email or empty if only a form"},
+    "contact_phone": {"type": "string", "description": "Best direct local phone for outreach"},
+    "contact_email": {
+        "type": "string",
+        "description": "Best direct email for the primary decision-maker when listed",
+    },
     "contact_form_url": {
         "type": "string",
         "description": "URL of a contact form if no email is listed",
@@ -168,9 +184,13 @@ def _location_context(raw: RawLead) -> str:
 def extract_prompt(raw: RawLead) -> str:
     return (
         f"For {raw.business_name} at {_location_context(raw)} ({raw.lead_category}), scrape "
-        f"their website and contact/leasing pages. Return site_contacts: facilities, property "
-        f"manager, leasing, GM, or department lines with label, name, phone, email, and priority "
-        f"(best/good/fallback) for Pallares exterior-services brokerage outreach. "
+        f"their website and contact/leasing pages. Extract a contact PACKAGE for Pallares "
+        f"exterior-services brokerage: return EVERY named decision-maker you find "
+        f"(facilities, property manager, leasing, owner, GM, maintenance) in site_contacts — "
+        f"aim for a primary AND a backup when the page lists more than one. For each contact "
+        f"include full name (first+last), role/label, local phone, email when listed, and "
+        f"priority (best/good/fallback). Prefer people with both phone and email. Do not stop "
+        f"after the first name. Skip reception, patient, and front-desk lines. "
         f"Also return property_manager, exterior_signals, recommended_services, website_url, "
         f"and source_urls."
     )

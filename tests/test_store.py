@@ -238,7 +238,7 @@ def test_concurrent_record_cost_events(store: LeadStore) -> None:
 
 
 def test_skip_known_requires_quality_complete(store: LeadStore) -> None:
-    """Partial (not unverified) enrichments are not skipped forever under skip_known."""
+    """Non-CRE partial enrichments are not skipped forever under skip_known."""
     raw = _raw(place_id="places/partial-quality")
     lead = EnrichedLead.model_validate(raw.model_dump())
     lead.investigation_status = InvestigationStatus.ENRICHED
@@ -247,7 +247,7 @@ def test_skip_known_requires_quality_complete(store: LeadStore) -> None:
     store.upsert_enriched(
         lead,
         market_key="reedley",
-        category_key="strip_mall",
+        category_key="gas_station",
         run_id="r-quality",
         lead_score=10,
     )
@@ -256,6 +256,37 @@ def test_skip_known_requires_quality_complete(store: LeadStore) -> None:
             raw.place_id, skip_known=True, force_refresh=False, refresh_after_days=None
         )
         is False
+    )
+
+
+def test_cre_partial_without_named_dm_is_researched_miss(store: LeadStore) -> None:
+    """CRE with a phone but no atomic named DM must not re-burn under skip_known."""
+    raw = RawLead(
+        place_id="places/cre-partial-miss",
+        business_name="Reedley Plaza",
+        formatted_address="100 Main",
+        city="Reedley",
+        state="CA",
+        property_type="strip_mall",
+        lead_category="Strip Mall",
+        market_key="reedley",
+    )
+    lead = EnrichedLead.model_validate(raw.model_dump())
+    lead.investigation_status = InvestigationStatus.ENRICHED
+    lead.verification_level = "partial"
+    lead.main_phone = "(559) 555-0100"
+    store.upsert_enriched(
+        lead,
+        market_key="reedley",
+        category_key="strip_mall",
+        run_id="r-cre-miss",
+        lead_score=10,
+    )
+    assert (
+        store.should_skip(
+            raw.place_id, skip_known=True, force_refresh=False, refresh_after_days=None
+        )
+        is True
     )
 
 

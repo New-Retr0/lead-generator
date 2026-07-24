@@ -67,9 +67,78 @@ class GroundingResult:
 # extractor's PAIRING_WINDOW_CHARS so both paths use one notion of "near".
 PAIRING_WINDOW_CHARS = 250
 
+# Split HTML into coarse blocks for association grounding (same parent region).
+# Intentionally omit td/th so two-column team rows stay one block (split on tr).
+_HTML_BLOCK_SPLIT = re.compile(
+    r"</(?:p|div|li|tr|section|article|aside|header|footer|main|"
+    r"h[1-6]|ul|ol|table|dl|dt|dd|blockquote)\b[^>]*>",
+    re.IGNORECASE,
+)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
 
 def _squash(text: str) -> str:
     return " ".join(text.split()).casefold()
+
+
+def _html_blocks(html: str) -> list[str]:
+    """Plain-text chunks from block-level HTML regions (nav/footer still included)."""
+    blocks: list[str] = []
+    for chunk in _HTML_BLOCK_SPLIT.split(html):
+        text = " ".join(_HTML_TAG_RE.sub(" ", chunk).split())
+        if text:
+            blocks.append(text)
+    return blocks
+
+
+def _text_contains_value(haystack: str, value: str, *, is_phone: bool) -> bool:
+    if is_phone:
+        digits = phone_digits(value)
+        if len(digits) != 10:
+            return False
+        return digits in re.sub(r"\D", "", haystack)
+    needle = _squash(value)
+    return bool(needle) and needle in _squash(haystack)
+
+
+def _same_html_block(
+    name: str, value: str, html: str, *, is_phone: bool
+) -> bool | None:
+    """True if name+value share a block, False if both appear but never together, else None."""
+    blocks = _html_blocks(html)
+    if not blocks:
+        return None
+    name_idxs = [
+        i
+        for i, block in enumerate(blocks)
+        if _text_contains_value(block, name, is_phone=False)
+    ]
+    value_idxs = [
+        i
+        for i, block in enumerate(blocks)
+        if _text_contains_value(block, value, is_phone=is_phone)
+    ]
+    if not name_idxs or not value_idxs:
+        return None
+    return bool(set(name_idxs) & set(value_idxs))
+
+
+def _should_unbind_association(
+    name: str,
+    value: str,
+    page_text: str,
+    *,
+    is_phone: bool,
+    page_html: str | None = None,
+) -> bool:
+    """Unbind when name and reachable value are confidently not the same contact."""
+    if page_html and page_html.strip():
+        same = _same_html_block(name, value, page_html, is_phone=is_phone)
+        if same is True:
+            return False
+        if same is False:
+            return True
+    return _confidently_apart(name, value, page_text, is_phone=is_phone)
 
 
 def is_placeholder_name(name: str) -> bool:
@@ -170,15 +239,20 @@ def ground_investigation(
     page_text: str,
     *,
     source_label: str = "",
+    page_html: str | None = None,
 ) -> GroundingResult:
     """Strip every name/phone/email the LLM returned that is not present in page_text.
 
     Phones must digit-match, emails exact-match, names whole-name-match. Labels/roles
     are kept (they describe a department, not a fabricated person) but a contact whose
     name fails grounding loses the name, and a contact with nothing grounded is dropped.
+
+    When ``page_html`` is provided, association uses same-DOM-block co-occurrence first,
+    then falls back to the markdown proximity window.
     """
     rejections: list[Rejection] = []
     quotes: dict[str, str] = {}
+    html = page_html if isinstance(page_html, str) and page_html.strip() else None
 
     def check_phone(phone: str, context: str) -> str:
         if not phone.strip():
@@ -242,10 +316,14 @@ def ground_investigation(
         # unbind it from the person (business reachability is still carried by the
         # Google main_phone / other contacts) and mark the contact corroborated.
         unpaired = False
-        if name and phone and _confidently_apart(name, phone, page_text, is_phone=True):
+        if name and phone and _should_unbind_association(
+            name, phone, page_text, is_phone=True, page_html=html
+        ):
             phone = ""
             unpaired = True
-        if name and email and _confidently_apart(name, email, page_text, is_phone=False):
+        if name and email and _should_unbind_association(
+            name, email, page_text, is_phone=False, page_html=html
+        ):
             email = ""
             unpaired = True
         if not (name or phone or email):
@@ -277,11 +355,13 @@ def ground_investigation(
     top_name = check_name(result.contact_name, result.contact_role)
     top_phone = check_phone(result.contact_phone, result.contact_role)
     top_email = check_email(result.contact_email, result.contact_role)
-    if top_name and top_phone and _confidently_apart(top_name, top_phone, page_text, is_phone=True):
+    if top_name and top_phone and _should_unbind_association(
+        top_name, top_phone, page_text, is_phone=True, page_html=html
+    ):
         top_phone = ""
         pairing_downgrades += 1
-    if top_name and top_email and _confidently_apart(
-        top_name, top_email, page_text, is_phone=False
+    if top_name and top_email and _should_unbind_association(
+        top_name, top_email, page_text, is_phone=False, page_html=html
     ):
         top_email = ""
         pairing_downgrades += 1

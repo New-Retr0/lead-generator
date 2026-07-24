@@ -15,7 +15,11 @@ import psycopg
 
 from pallares_leads.db.local_cache import LocalCache
 from pallares_leads.db.pg import PgAdapter, connect, parse_json_field
-from pallares_leads.enrich.contact_requirements import has_verified_named_decision_maker
+from pallares_leads.enrich.contact_requirements import (
+    has_atomic_named_decision_maker,
+    has_verified_named_decision_maker,
+    requires_named_decision_maker,
+)
 from pallares_leads.resolve.dud_gate import PERMANENT_DUD_REASONS
 from pallares_leads.schemas import EnrichedLead, InvestigationStatus, RawLead
 from pallares_leads.settings import get_settings
@@ -166,6 +170,21 @@ class LeadStore:
         # Historical triage inventory: fully enriched but still unverified.
         if status == "enriched" and LeadStore._verification_level(row) == "unverified":
             return True
+        # CRE ladder exhausted: phone/partial evidence but no Partner-shaped named DM.
+        if status == "enriched":
+            payload = row["enriched_json"] if "enriched_json" in row.keys() else None
+            if payload:
+                try:
+                    data = parse_json_field(payload) if not isinstance(payload, dict) else payload
+                    if isinstance(data, dict):
+                        enriched = EnrichedLead.model_validate(data)
+                        if (
+                            requires_named_decision_maker(enriched.property_type)
+                            and not has_atomic_named_decision_maker(enriched)
+                        ):
+                            return True
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
         return False
 
     @staticmethod

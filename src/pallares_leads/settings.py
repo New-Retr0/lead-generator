@@ -179,15 +179,8 @@ class Settings(BaseSettings):
     # (enrichment_status='enriched' AND confidence <> 'Low' AND lead_score >= 25 AND
     # is_verified_decision_maker(...)). There is no Python-side min-score knob — a
     # dead `min_export_score` setting was removed 2026-07-20 to avoid a false affordance.
-
-    places_search_radius_m: int = Field(
-        default=25_000,
-        json_schema_extra=_meta("Discovery", help="Nearby Search radius in meters"),
-    )
-    max_places_per_query: int = Field(
-        default=20,
-        json_schema_extra=_meta("Discovery", help="Max Places results per query page"),
-    )
+    # Discovery radius comes from config/markets.yaml `search_radius_m` (not a Settings
+    # field). Places page size is the API max (20) in discover/places.py.
 
     firecrawl_timeout_ms: int = Field(
         default=30_000,
@@ -199,12 +192,38 @@ class Settings(BaseSettings):
             "Firecrawl", help="Use Firecrawl cache when younger than this (ms)"
         ),
     )
+    firecrawl_scrape_proxy: str = Field(
+        default="basic",
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Scrape proxy",
+            help=(
+                'Primary scrape proxy: "basic" (1 credit) or "auto" '
+                "(may bill 5 on enhanced fallback)."
+            ),
+        ),
+    )
+    firecrawl_proxy_escalate: bool = Field(
+        default=True,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Proxy escalate",
+            help=(
+                'When primary proxy is "basic", retry once with proxy=auto '
+                "on dead-end/captcha pages."
+            ),
+        ),
+    )
     firecrawl_agent_max_credits: int = Field(
         default=10,
         json_schema_extra=_meta(
             "Firecrawl",
             title="Agent max credits",
-            help="Cap Firecrawl /agent credits for hard contact gaps (0 = disabled).",
+            help=(
+                "Cap Firecrawl /agent credits per call for contact-gap agent and "
+                "owner-chain agent (0 = disable both). Skipped automatically when "
+                "team remaining credits are below this budget."
+            ),
         ),
     )
     firecrawl_agent_model: str = Field(
@@ -248,20 +267,6 @@ class Settings(BaseSettings):
         json_schema_extra=_meta(
             "Firecrawl",
             help="Optional Firecrawl search tbs recency filter (e.g. qdr:w); empty = off",
-        ),
-    )
-    firecrawl_news_search_enabled: bool = Field(
-        default=False,
-        json_schema_extra=_meta(
-            "Firecrawl",
-            help="Opt-in Firecrawl news search helper (default off)",
-        ),
-    )
-    firecrawl_change_tracking_enabled: bool = Field(
-        default=False,
-        json_schema_extra=_meta(
-            "Firecrawl",
-            help="Opt-in Firecrawl scrape changeTracking helper (default off)",
         ),
     )
     owner_chain_max_per_run: int = Field(

@@ -137,5 +137,16 @@
         }
       ]
     }
+  },
+  {
+    "name": "single-token name rejected",
+    "expected": false,
+    "lead": {
+      "verification_level": "verified",
+      "best_contact_name": "Manager",
+      "best_contact_role": "Property Manager",
+      "best_contact_phone": "(559) 638-1111",
+      "site_contacts": []
+    }
   }
 ]
