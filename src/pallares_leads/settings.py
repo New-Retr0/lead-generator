@@ -239,6 +239,55 @@ class Settings(BaseSettings):
             "Without this the SDK polls forever and can stall a whole market cell.",
         ),
     )
+    firecrawl_interact_enabled: bool = Field(
+        default=True,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Interact escalation",
+            help=(
+                "When CRE still lacks a named DM after Tier-1/2, open the last scrape "
+                "in Interact to expand Team/Contact UI and re-extract contacts."
+            ),
+        ),
+    )
+    firecrawl_interact_timeout_s: int = Field(
+        default=90,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Interact timeout (seconds)",
+            help="Per-prompt timeout for Firecrawl /interact after scrape.",
+        ),
+    )
+    firecrawl_search_feedback: bool = Field(
+        default=True,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Search feedback",
+            help=(
+                "When Tier-2 search yields no usable contact page, submit search "
+                "feedback (may refund 1 credit) so Firecrawl can improve results."
+            ),
+        ),
+    )
+    firecrawl_monitor_ready_pages: bool = Field(
+        default=False,
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Monitor Ready contact pages",
+            help=(
+                "Opt-in: after a Partner-ready DM is found, create a weekly Firecrawl "
+                "page monitor on the contact source URL (charges recurring scrape credits)."
+            ),
+        ),
+    )
+    firecrawl_monitor_cron: str = Field(
+        default="0 15 * * 1",
+        json_schema_extra=_meta(
+            "Firecrawl",
+            title="Monitor cron",
+            help="Cron schedule (UTC) for Ready-page monitors when monitoring is enabled.",
+        ),
+    )
     enrichment_lead_timeout_s: int = Field(
         default=600,
         json_schema_extra=_meta(

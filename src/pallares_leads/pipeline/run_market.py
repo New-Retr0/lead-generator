@@ -1511,11 +1511,52 @@ def enrich_lead(
             trace=trace,
         )
 
+    # Interact: expand Team/Contact UI on the last scrape before burning /agent.
+    atomic_pre_agent = has_atomic_named_decision_maker(enriched)
+    bar_met_pre_agent, _ = enriched_meets_bar(enriched, tier_rules)
+    cre_needs_dm = requires_named_decision_maker(work_raw.property_type)
+    if (
+        cre_needs_dm
+        and not atomic_pre_agent
+        and firecrawl
+        and settings.firecrawl_interact_enabled
+        and not firecrawl.should_stop_expensive_stages()
+    ):
+        with _enrichment_stage("interact", raw=raw, run_id=run_id, firecrawl=firecrawl):
+            interact_result = firecrawl.run_interact_contact_gap(work_raw)
+            if interact_result:
+                enriched = apply_investigation(
+                    enriched,
+                    interact_result,
+                    source_tool="google_places+firecrawl_interact",
+                )
+                investigation = interact_result
+                atomic_pre_agent = has_atomic_named_decision_maker(enriched)
+                if trace:
+                    trace.record(
+                        "interact",
+                        ran=True,
+                        reason="interact expanded contact UI",
+                        credits_est=3,
+                        outputs=_investigation_outputs(interact_result),
+                    )
+            elif trace:
+                trace.record(
+                    "interact",
+                    ran=False,
+                    reason="no grounded contacts from interact",
+                )
+    elif trace and cre_needs_dm:
+        trace.record(
+            "interact",
+            ran=False,
+            reason="skipped — named DM already found, disabled, or credit stop",
+        )
+
     # Expensive agent: CRE until a Partner-shaped named DM; other categories until
     # the sales contact bar. Never burn agent just to chase a second contact/email.
     atomic_pre_agent = has_atomic_named_decision_maker(enriched)
     bar_met_pre_agent, _ = enriched_meets_bar(enriched, tier_rules)
-    cre_needs_dm = requires_named_decision_maker(work_raw.property_type)
     run_agent = (
         (cre_needs_dm and not atomic_pre_agent)
         or (not cre_needs_dm and not bar_met_pre_agent)
@@ -1676,6 +1717,23 @@ def enrich_lead(
         if thin:
             pkg_note = "package thin: " + ", ".join(thin)
             enriched.notes = f"{enriched.notes}; {pkg_note}" if enriched.notes else pkg_note
+        # Opt-in weekly monitor on the contact evidence page (staff change alerts).
+        if firecrawl and settings.firecrawl_monitor_ready_pages:
+            monitor_url = (
+                enriched.contact_source_url
+                if enriched.contact_source_url not in ("", NOT_FOUND)
+                else enriched.website
+            )
+            if monitor_url and monitor_url != NOT_FOUND:
+                monitor_id = firecrawl.ensure_ready_page_monitor(
+                    url=str(monitor_url),
+                    business_name=enriched.business_name,
+                )
+                if monitor_id:
+                    mon_note = f"firecrawl_monitor:{monitor_id}"
+                    enriched.notes = (
+                        f"{enriched.notes}; {mon_note}" if enriched.notes else mon_note
+                    )
 
     if researched_miss:
         # Record the miss so skip_known will not re-research; hide from inventory.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 from pallares_leads.enrich.firecrawl_client import _SHARED_MAP_CACHE, FirecrawlClient
@@ -361,11 +362,134 @@ def test_scrape_lead_cached_contact_page_skips_homepage_bundle(mock_scrape_json)
 def test_capture_scrape_meta_records_proxy_and_cache() -> None:
     settings = Settings(firecrawl_api_key="test-key")
     fc = FirecrawlClient(settings)
+    fc.last_scrape_target = "https://example.com/contact"
     fc._capture_scrape_meta(
-        {"data": {"metadata": {"proxyUsed": "basic", "cacheState": "hit", "creditsUsed": 1}}}
+        {
+            "data": {
+                "metadata": {
+                    "proxyUsed": "basic",
+                    "cacheState": "hit",
+                    "creditsUsed": 1,
+                    "scrapeId": "scrape-123",
+                    "sourceURL": "https://example.com/contact",
+                }
+            }
+        }
     )
     assert fc._pending_credit_meta["proxy_used"] == "basic"
     assert fc._pending_credit_meta["cache_state"] == "hit"
+    assert fc.last_scrape_id == "scrape-123"
+    assert fc.session_scrape_ids["https://example.com/contact"] == "scrape-123"
+
+
+def test_highlight_contact_score_prefers_dm_pages() -> None:
+    contact = FirecrawlClient._highlight_contact_score(
+        "https://plaza.com/team",
+        "Our Team",
+        "Facilities Manager Pat Rivera (559) 638-1111 pat@plaza.com",
+    )
+    blog = FirecrawlClient._highlight_contact_score(
+        "https://plaza.com/blog/news",
+        "Grand opening",
+        "We cut a ribbon last week.",
+    )
+    assert contact > blog
+
+
+def test_parse_json_from_interact_output() -> None:
+    blob = FirecrawlClient._parse_json_from_text(
+        '```json\n{"contact_name": "Pat Rivera", "contact_phone": "(559) 638-1111"}\n```'
+    )
+    assert blob is not None
+    assert blob["contact_name"] == "Pat Rivera"
+
+
+@patch.object(FirecrawlClient, "_http_search")
+@patch.object(FirecrawlClient, "_scrape_json")
+@patch.object(FirecrawlClient, "submit_search_feedback")
+def test_search_contact_gap_ranks_highlights_and_feedbacks_on_miss(
+    mock_feedback, mock_scrape_json, mock_http_search
+) -> None:
+    from pallares_leads.enrich.contact_requirements import EnrichmentRules
+
+    settings = Settings(firecrawl_api_key="test-key", firecrawl_search_feedback=True)
+    raw = _raw_lead(website="https://plaza.example", property_type="strip_mall")
+    mock_http_search.return_value = (
+        {
+            "web": [
+                {
+                    "url": "https://plaza.example/blog",
+                    "title": "News",
+                    "description": "Ribbon cutting photos",
+                },
+                {
+                    "url": "https://plaza.example/team",
+                    "title": "Team",
+                    "description": "Facilities Manager Pat Rivera phone (559) 638-1111",
+                },
+            ]
+        },
+        "search-job-1",
+    )
+    mock_scrape_json.return_value = None
+
+    fc = FirecrawlClient(settings)
+    result = fc.search_contact_gap(raw, EnrichmentRules(min_contact_bar="labeled_phone"))
+
+    assert result is None
+    # Highest-scoring highlight URL scraped first.
+    assert mock_scrape_json.call_args_list[0].args[0] == "https://plaza.example/team"
+    mock_feedback.assert_called()
+    assert "search-job-1" in fc.last_search_job_ids
+
+
+def test_run_interact_contact_gap_grounds_json() -> None:
+    from pallares_leads.enrich.schema import LeadInvestigationResult
+
+    settings = Settings(
+        firecrawl_api_key="test-key",
+        firecrawl_interact_enabled=True,
+    )
+    raw = _raw_lead(property_type="strip_mall")
+    fc = FirecrawlClient(settings)
+    fc.last_scrape_id = "scrape-abc"
+    fc.last_scrape_target = "https://example.com"
+
+    expand = MagicMock(output="ok")
+    page_text = MagicMock(output="Pat Rivera Facilities Manager (559) 638-1111")
+    extract = MagicMock(
+        output=json.dumps(
+            {
+                "contact_name": "Pat Rivera",
+                "contact_role": "Facilities Manager",
+                "contact_phone": "(559) 638-1111",
+                "site_contacts": [
+                    {
+                        "name": "Pat Rivera",
+                        "label": "Facilities Manager",
+                        "phone": "(559) 638-1111",
+                    }
+                ],
+            }
+        )
+    )
+
+    grounded = LeadInvestigationResult(
+        contact_name="Pat Rivera",
+        contact_role="Facilities Manager",
+        contact_phone="(559) 638-1111",
+    )
+
+    with (
+        patch.object(fc, "_sdk_call_with_retry", side_effect=[expand, page_text, extract]),
+        patch.object(fc._sdk, "stop_interaction") as mock_stop,
+        patch.object(fc, "_ground_and_record", return_value=grounded) as mock_ground,
+    ):
+        result = fc.run_interact_contact_gap(raw)
+
+    assert result is grounded
+    mock_ground.assert_called_once()
+    mock_stop.assert_called_once_with("scrape-abc")
 
 
 def test_can_afford_skips_when_remaining_below_budget() -> None:

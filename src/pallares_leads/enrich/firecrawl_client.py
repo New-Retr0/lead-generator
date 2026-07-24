@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 from firecrawl import Firecrawl
-from firecrawl.v2.types import JsonFormat, PDFParser
+from firecrawl.v2.types import JsonFormat, MonitorSchedule, MonitorTarget, PDFParser
 from firecrawl.v2.utils.error_handler import PaymentRequiredError, RateLimitError
 
 from pallares_leads.db.raw_archive import record_capture
@@ -64,6 +64,26 @@ CONTACT_URL_HINTS = (
 BROKER_PDF_HINTS = ("pearson", "cbre", "flyer")
 PDF_SNIPPET_MAX_CHARS = 3000
 SKIP_URL_HINTS = ("maps.google.com", "google.com/maps", "mapquest.com", "goo.gl/maps")
+
+# Score Tier-2 search highlights / URLs before paying for JSON scrapes.
+_HIGHLIGHT_SCORE_TERMS = (
+    "facilit",
+    "property manager",
+    "property management",
+    "leasing",
+    "maintenance",
+    "operations",
+    "owner",
+    "director",
+    "general manager",
+    "contact",
+    "team",
+    "staff",
+    "phone",
+    "tel:",
+    "@",
+    "email",
+)
 
 # Hosts we must never fetch — commercial-listing aggregators whose Terms bar automated
 # access. Enforced at every Firecrawl fetch entry point (scrape/scrape_json/pdf).
@@ -127,8 +147,11 @@ class FirecrawlClient:
         self._sdk = Firecrawl(api_key=self._api_key, timeout=self._http_timeout_s)
         self.last_map_info: dict[str, Any] = {}
         self.last_scrape_target: str = ""
+        self.last_scrape_id: str | None = None
+        self.session_scrape_ids: dict[str, str] = {}
         self.last_search_info: dict[str, Any] = {}
         self.last_contact_search_info: dict[str, Any] = {}
+        self.last_search_job_ids: list[str] = []
         self.last_credits_used: int = 0
         self.last_credits_source: str = "none"  # reported | estimated | none
         self.last_credits_estimated: int | None = None
@@ -452,7 +475,7 @@ class FirecrawlClient:
         return {}
 
     def _capture_scrape_meta(self, doc: Any) -> None:
-        """Stash proxy_used / cache_state for the next cost_events row."""
+        """Stash proxy_used / cache_state / scrape_id for cost events + Interact."""
         meta = self._metadata_dict(doc)
         proxy_used = meta.get("proxy_used") or meta.get("proxyUsed")
         cache_state = meta.get("cache_state") or meta.get("cacheState")
@@ -460,6 +483,19 @@ class FirecrawlClient:
             self._pending_credit_meta["proxy_used"] = str(proxy_used)
         if cache_state:
             self._pending_credit_meta["cache_state"] = str(cache_state)
+        scrape_id = meta.get("scrape_id") or meta.get("scrapeId")
+        if scrape_id:
+            sid = str(scrape_id)
+            self.last_scrape_id = sid
+            self._pending_credit_meta["scrape_id"] = sid
+            url = (
+                meta.get("source_url")
+                or meta.get("sourceURL")
+                or meta.get("url")
+                or self.last_scrape_target
+            )
+            if url:
+                self.session_scrape_ids[str(url).split("#")[0].rstrip("/")] = sid
 
     @staticmethod
     def _credits_from_document(doc: Any) -> int | None:
@@ -1426,23 +1462,70 @@ class FirecrawlClient:
         *,
         include_news: bool = False,
     ) -> list[tuple[str, str, str]]:
-        """Flatten SDK search results to (url, title, markdown) tuples."""
+        """Flatten search results to (url, title, highlight) tuples.
+
+        ``highlight`` prefers Search Highlights (description/snippet) over full markdown.
+        """
         rows: list[tuple[str, str, str]] = []
-        groups: list[Any] = [getattr(search_data, "web", None)]
-        if include_news:
-            groups.append(getattr(search_data, "news", None))
+        if isinstance(search_data, dict):
+            groups = [search_data.get("web")]
+            if include_news:
+                groups.append(search_data.get("news"))
+        else:
+            groups = [getattr(search_data, "web", None)]
+            if include_news:
+                groups.append(getattr(search_data, "news", None))
         for group in groups:
             if not group:
                 continue
             for item in group:
-                url = getattr(item, "url", None) or ""
-                if not url and hasattr(item, "metadata_dict"):
-                    url = item.metadata_dict.get("sourceURL") or item.metadata_dict.get("url") or ""
-                title = getattr(item, "title", None) or getattr(item, "description", None) or ""
-                markdown = getattr(item, "markdown", None) or getattr(item, "snippet", None) or ""
+                if isinstance(item, dict):
+                    url = str(item.get("url") or "")
+                    title = str(item.get("title") or item.get("description") or "")
+                    highlight = str(
+                        item.get("description")
+                        or item.get("snippet")
+                        or item.get("markdown")
+                        or ""
+                    )
+                else:
+                    url = getattr(item, "url", None) or ""
+                    if not url and hasattr(item, "metadata_dict"):
+                        url = (
+                            item.metadata_dict.get("sourceURL")
+                            or item.metadata_dict.get("url")
+                            or ""
+                        )
+                    title = (
+                        getattr(item, "title", None)
+                        or getattr(item, "description", None)
+                        or ""
+                    )
+                    highlight = (
+                        getattr(item, "description", None)
+                        or getattr(item, "snippet", None)
+                        or getattr(item, "markdown", None)
+                        or ""
+                    )
                 if url:
-                    rows.append((str(url), str(title or ""), str(markdown or "")))
+                    rows.append((str(url), str(title or ""), str(highlight or "")))
         return rows
+
+    @staticmethod
+    def _highlight_contact_score(url: str, title: str, highlight: str) -> int:
+        """Higher = more likely to hold a named DM / contact page."""
+        blob = f"{url} {title} {highlight}".lower()
+        score = 0
+        for hint in CONTACT_URL_HINTS:
+            if hint in url.lower():
+                score += 4
+        for term in _HIGHLIGHT_SCORE_TERMS:
+            if term in blob:
+                score += 2
+        # Prefer local-looking phones in highlights.
+        if any(ch.isdigit() for ch in highlight) and ("(" in highlight or "-" in highlight):
+            score += 1
+        return score
 
     def _sdk_search(self, query: str, *, operation: str = "search", **kwargs: Any):
         search_kwargs = dict(kwargs)
@@ -1455,6 +1538,117 @@ class FirecrawlClient:
             label=f"Firecrawl {operation}",
             operation=operation,
         )
+
+    def _http_search(
+        self,
+        query: str,
+        *,
+        operation: str = "search",
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], str | None]:
+        """POST /v2/search via HTTP so we can capture job id for search-feedback."""
+        body: dict[str, Any] = {
+            "query": query,
+            "limit": int(kwargs.get("limit") or 5),
+            "ignoreInvalidUrls": True,
+        }
+        if kwargs.get("location"):
+            body["location"] = kwargs["location"]
+        if kwargs.get("include_domains"):
+            body["includeDomains"] = list(kwargs["include_domains"])
+        if kwargs.get("exclude_domains"):
+            body["excludeDomains"] = list(kwargs["exclude_domains"])
+        recency = (self._settings.firecrawl_search_recency or "").strip()
+        tbs = kwargs.get("tbs") or recency
+        if tbs:
+            body["tbs"] = tbs
+
+        def _do() -> httpx.Response:
+            with httpx.Client(timeout=self._http_timeout_s) as client:
+                return client.post(
+                    f"{self.BASE_URL}/search",
+                    headers=self._headers(),
+                    json=body,
+                )
+
+        started = time.perf_counter()
+        try:
+            response = request_with_retry(_do, label=f"Firecrawl {operation}")
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Firecrawl HTTP search failed for %r: %s", query, exc)
+            return {"web": []}, None
+
+        self._last_op_duration_ms = int((time.perf_counter() - started) * 1000)
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        self._track_credits(payload, operation=operation)
+        job_id = payload.get("id") or payload.get("jobId") or payload.get("job_id")
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        return data if isinstance(data, dict) else {"web": []}, (
+            str(job_id) if job_id else None
+        )
+
+    def submit_search_feedback(
+        self,
+        job_id: str,
+        *,
+        query: str,
+        reason: str = "no usable decision-maker contact page",
+    ) -> bool:
+        """Submit /v2/search/{id}/feedback — may refund 1 credit on first submit."""
+        if not job_id or not self._settings.firecrawl_search_feedback:
+            return False
+        body = {
+            "missingContent": [
+                {
+                    "topic": "named decision-maker contact",
+                    "description": (
+                        f"Query {query!r} did not surface a usable facilities/PM/"
+                        f"owner contact page ({reason})."
+                    ),
+                }
+            ],
+            "querySuggestions": (
+                "Prefer property management, leasing, facilities, and team/contact "
+                "pages with named people and local phone numbers."
+            ),
+            "origin": "api",
+            "integration": "pallares-leads",
+        }
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    f"{self.BASE_URL}/search/{job_id}/feedback",
+                    headers=self._headers(),
+                    json=body,
+                )
+            if response.status_code >= 400:
+                logger.info(
+                    "Search feedback %s → HTTP %s", job_id, response.status_code
+                )
+                return False
+            payload = response.json() if response.content else {}
+            refunded = payload.get("creditsRefunded") if isinstance(payload, dict) else None
+            logger.info(
+                "Search feedback submitted for %s (creditsRefunded=%s)",
+                job_id,
+                refunded,
+            )
+            if refunded and self._team_credits_remaining is not None:
+                try:
+                    self._team_credits_remaining += float(refunded)
+                except (TypeError, ValueError):
+                    pass
+            return True
+        except Exception as exc:
+            logger.info("Search feedback failed for %s: %s", job_id, exc)
+            return False
 
     def search_website(self, raw: RawLead) -> str | None:
         """Find official website when Google Places has none — must pass DNS + HTTP check."""
@@ -1519,7 +1713,11 @@ class FirecrawlClient:
         raw: RawLead,
         rules: EnrichmentRules,
     ) -> LeadInvestigationResult | None:
-        """Tier 2: v2 search with scrapeOptions + domain/location filters + scrape+JSON."""
+        """Tier 2: URL search → rank by highlights → scrape+JSON top 3.
+
+        Uses HTTP search so we can submit search-feedback (credit refund) when
+        no candidate yields a usable contact page.
+        """
         if self.should_stop_expensive_stages():
             return None
         self.set_cost_context(stage="tier2_search")
@@ -1570,44 +1768,47 @@ class FirecrawlClient:
 
         location = f"{raw.city},{raw.state},United States"
         last_query = ""
-        # Production choice (was live A/B vs JsonFormat-in-search scrape_options):
-        # URL-only search → _scrape_json top 3. Avoids paying for markdown that
-        # JSON would re-fetch. Dead-ends are filtered after JSON scrape.
-        collected: list[str] = []
+        # (url, title, highlight, score)
+        ranked: list[tuple[str, str, str, int]] = []
         seen: set[str] = set()
+        self.last_search_job_ids = []
 
         for query in queries[:2]:
             last_query = query
             search_kwargs: dict[str, Any] = {
-                "operation": "search_contact",
                 "limit": 5,
                 "location": location,
             }
-            # Firecrawl rejects requests that set both include_domains and
-            # exclude_domains — prefer include when we have a known host.
             if include_domains:
                 search_kwargs["include_domains"] = include_domains
             else:
-                search_kwargs["exclude_domains"] = EXCLUDE_SEARCH_DOMAINS
+                search_kwargs["exclude_domains"] = list(EXCLUDE_SEARCH_DOMAINS)
             try:
-                search_data = self._sdk_search(query, **search_kwargs)
+                search_data, job_id = self._http_search(
+                    query, operation="search_contact", **search_kwargs
+                )
+            except OutOfCreditsError:
+                raise
             except TypeError:
                 search_kwargs.pop("exclude_domains", None)
                 search_kwargs.pop("include_domains", None)
                 try:
-                    search_data = self._sdk_search(query, **search_kwargs)
+                    search_data, job_id = self._http_search(
+                        query, operation="search_contact", **search_kwargs
+                    )
                 except OutOfCreditsError:
                     raise
                 except Exception as exc:
                     logger.warning("Tier 2 search failed for %r: %s", query, exc)
                     continue
-            except OutOfCreditsError:
-                raise
             except Exception as exc:
                 logger.warning("Tier 2 search failed for %r: %s", query, exc)
                 continue
 
-            for url, _title, _markdown in self._search_items(search_data):
+            if job_id:
+                self.last_search_job_ids.append(job_id)
+
+            for url, title, highlight in self._search_items(search_data):
                 lower = url.lower()
                 key = url.split("#")[0].rstrip("/")
                 if key in seen:
@@ -1619,21 +1820,33 @@ class FirecrawlClient:
                 if is_skipped_domain(url) or is_prohibited_fetch_host(url):
                     continue
                 seen.add(key)
-                collected.append(url)
+                score = self._highlight_contact_score(url, title, highlight)
+                ranked.append((url, title, highlight, score))
 
         if self._store:
             self._store.commit_cost_events()
 
+        ranked.sort(key=lambda row: row[3], reverse=True)
+        candidates = [url for url, _t, _h, _s in ranked[:6]]
         self.last_contact_search_info = {
             "query": last_query,
-            "candidates": collected[:6],
+            "candidates": candidates,
+            "scores": [
+                {"url": url, "score": score, "title": title[:80]}
+                for url, title, _h, score in ranked[:6]
+            ],
+            "search_job_ids": list(self.last_search_job_ids),
         }
 
-        if not collected:
+        if not ranked:
+            self._feedback_failed_contact_searches(last_query, reason="no candidate URLs")
             return None
 
-        logger.info("  Tier 2 scrape+JSON: %d candidate URL(s)", min(3, len(collected)))
-        for url in collected[:3]:
+        logger.info(
+            "  Tier 2 scrape+JSON: %d candidate URL(s) (highlight-ranked)",
+            min(3, len(ranked)),
+        )
+        for url, _title, _highlight, _score in ranked[:3]:
             self.set_cost_context(stage="tier2_search")
             result = self._scrape_json(url, raw)
             if result is None:
@@ -1645,7 +1858,17 @@ class FirecrawlClient:
             if investigation_meets_bar(result, rules, property_type=raw.property_type)[0]:
                 self.last_contact_search_info["matched_url"] = url
                 return result
+
+        self._feedback_failed_contact_searches(
+            last_query, reason="top candidates had no usable named DM contact"
+        )
         return None
+
+    def _feedback_failed_contact_searches(self, query: str, *, reason: str) -> None:
+        if not self._settings.firecrawl_search_feedback:
+            return
+        for job_id in self.last_search_job_ids:
+            self.submit_search_feedback(job_id, query=query, reason=reason)
 
     def search_web(self, query: str, *, limit: int = 5) -> list[dict[str, str]]:
         """Firecrawl web search returning url/title snippets."""
@@ -1665,6 +1888,224 @@ class FirecrawlClient:
         for url, title, _markdown in self._search_items(search_data):
             results.append({"url": url, "title": title})
         return results
+
+    def _resolve_scrape_id_for_interact(self, raw: RawLead) -> str | None:
+        """Return a scrapeId for Interact, scraping the website once if needed."""
+        if self.last_scrape_id:
+            return self.last_scrape_id
+        website = (raw.website or "").split("#")[0].rstrip("/")
+        if website and website in self.session_scrape_ids:
+            return self.session_scrape_ids[website]
+        # Match any cached scrape for this host.
+        for url, sid in self.session_scrape_ids.items():
+            if website and self._urls_equivalent(url, website):
+                return sid
+        if not website or is_prohibited_fetch_host(website):
+            return None
+        if self.should_stop_expensive_stages() or not self.can_afford(1):
+            return None
+        self.last_scrape_target = website
+        self.set_cost_context(stage="interact")
+        try:
+            doc = self._sdk_call_with_retry(
+                lambda: self._sdk.scrape(
+                    website,
+                    formats=["markdown"],
+                    **self._scrape_kwargs(),
+                ),
+                label="Firecrawl scrape (pre-interact)",
+                operation="scrape",
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.warning("Pre-interact scrape failed for %s: %s", website, exc)
+            return None
+        return self.last_scrape_id
+
+    def run_interact_contact_gap(self, raw: RawLead) -> LeadInvestigationResult | None:
+        """Expand Team/Contact UI via Interact, then re-extract grounded contacts.
+
+        Used for CRE when cheap tiers still lack a Partner-shaped named DM.
+        """
+        if not self._settings.firecrawl_interact_enabled:
+            return None
+        if self.should_stop_expensive_stages():
+            return None
+        # Budget: expand + extract (~2 interact units) + affordability gate.
+        if not self.can_afford(3):
+            return None
+
+        scrape_id = self._resolve_scrape_id_for_interact(raw)
+        if not scrape_id:
+            return None
+
+        timeout = max(30, int(self._settings.firecrawl_interact_timeout_s))
+        self.set_cost_context(stage="interact")
+        target_url = self.last_scrape_target or raw.website or ""
+
+        try:
+            self._sdk_call_with_retry(
+                lambda: self._sdk.interact(
+                    scrape_id,
+                    prompt=(
+                        "If this page has Team, Contact, Staff, Directory, Leasing, "
+                        "Management, or Show more controls, open them. Stay on this site."
+                    ),
+                    timeout=timeout,
+                ),
+                label="Firecrawl interact expand",
+                operation="scrape",
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.info("Interact expand failed for %s: %s", raw.business_name, exc)
+
+        page_text = ""
+        try:
+            text_resp = self._sdk_call_with_retry(
+                lambda: self._sdk.interact(
+                    scrape_id,
+                    code="return await page.evaluate(() => document.body.innerText)",
+                    language="node",
+                    timeout=timeout,
+                ),
+                label="Firecrawl interact page text",
+                operation="scrape",
+            )
+            page_text = str(
+                getattr(text_resp, "output", None)
+                or getattr(text_resp, "result", None)
+                or getattr(text_resp, "stdout", None)
+                or ""
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.info("Interact page text failed for %s: %s", raw.business_name, exc)
+
+        extract_prompt_text = (
+            f"{extract_prompt(raw)} After any Team/Contact UI was opened, return ONLY a "
+            "JSON object with site_contacts (name, label, phone, email, priority), "
+            "contact_name, contact_role, contact_phone, contact_email, property_manager, "
+            "exterior_signals, website_url, source_urls. Prefer first+last names."
+        )
+        try:
+            extract_resp = self._sdk_call_with_retry(
+                lambda: self._sdk.interact(
+                    scrape_id,
+                    prompt=extract_prompt_text,
+                    timeout=timeout,
+                ),
+                label="Firecrawl interact extract",
+                operation="scrape_json",
+            )
+        except OutOfCreditsError:
+            raise
+        except Exception as exc:
+            logger.info("Interact extract failed for %s: %s", raw.business_name, exc)
+            try:
+                self._sdk.stop_interaction(scrape_id)
+            except Exception:
+                pass
+            return None
+
+        try:
+            self._sdk.stop_interaction(scrape_id)
+        except Exception:
+            pass
+
+        output = str(
+            getattr(extract_resp, "output", None)
+            or getattr(extract_resp, "result", None)
+            or ""
+        )
+        json_blob = self._parse_json_from_text(output)
+        if not json_blob:
+            logger.info("Interact extract returned no JSON for %s", raw.business_name)
+            return None
+
+        result = LeadInvestigationResult.from_api_payload(json_blob)
+        if not result:
+            return None
+        if not page_text.strip():
+            page_text = output
+        grounded = self._ground_and_record(
+            result,
+            page_text,
+            url=target_url or "interact",
+        )
+        return grounded
+
+    @staticmethod
+    def _parse_json_from_text(text: str) -> dict[str, Any] | None:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return None
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        try:
+            parsed = json.loads(cleaned)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start < 0 or end <= start:
+                return None
+            try:
+                parsed = json.loads(cleaned[start : end + 1])
+                return parsed if isinstance(parsed, dict) else None
+            except json.JSONDecodeError:
+                return None
+
+    def ensure_ready_page_monitor(
+        self,
+        *,
+        url: str,
+        business_name: str,
+    ) -> str | None:
+        """Create a weekly page monitor for a Ready lead contact URL (opt-in)."""
+        if not self._settings.firecrawl_monitor_ready_pages:
+            return None
+        if not url or is_prohibited_fetch_host(url):
+            return None
+        cron = (self._settings.firecrawl_monitor_cron or "0 15 * * 1").strip()
+        name = f"pallares-ready: {business_name}"[:120]
+        try:
+            monitor = self._sdk.create_monitor(
+                name=name,
+                schedule=MonitorSchedule(cron=cron, timezone="UTC"),
+                targets=[
+                    MonitorTarget(
+                        type="scrape",
+                        urls=[url],
+                    )
+                ],
+                goal=(
+                    "Alert when named contacts, phones, or emails on this facilities/"
+                    "property-management page change. Ignore cosmetic or marketing edits."
+                ),
+                judge_enabled=True,
+            )
+            monitor_id = getattr(monitor, "id", None) or (
+                monitor.get("id") if isinstance(monitor, dict) else None
+            )
+            logger.info(
+                "Created Ready-page monitor %s for %s (%s)",
+                monitor_id,
+                business_name,
+                url,
+            )
+            return str(monitor_id) if monitor_id else None
+        except Exception as exc:
+            logger.info("Ready-page monitor failed for %s: %s", business_name, exc)
+            return None
 
     _OWNER_CHAIN_AGENT_SCHEMA: dict[str, Any] = {
         "type": "object",
